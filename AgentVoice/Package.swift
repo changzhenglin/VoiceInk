@@ -8,13 +8,16 @@ let package = Package(
         .library(name: "AgentVoice", targets: ["AgentVoice"]),
     ],
     dependencies: [
-        // GRDB 在 Task 3（StorageEngine）时加入，Task 2 纯协议无外部依赖
+        .package(path: "../GRDB.swift"),
     ],
     targets: [
         .target(
             name: "AgentVoice",
-            dependencies: [],
-            path: "Sources/AgentVoice"
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Sources/AgentVoice",
+            resources: [.copy("Resources")]
         ),
         .testTarget(
             name: "AgentVoiceTests",

@@ -1,0 +1,39 @@
+{
+  "command_type": "ops_config",
+  "target_scope": "edge",
+  "config_kind": "voice_input_policy",
+  "payload": {
+    "scene_rules": [
+      {
+        "scene_type": "coding",
+        "detect": {
+          "app_bundle_ids": ["com.microsoft.VSCode", "com.jetbrains.*", "com.cursor.*"],
+          "file_extensions": [".py", ".ts", ".js", ".go", ".rs", ".c", ".h", ".swift"]
+        },
+        "provider_mode": "cloud",
+        "polish_model": "qwen-max",
+        "l_level": "L3",
+        "prompt_template": "coding_intent",
+        "knowledge_context": "project_terms"
+      },
+      {
+        "scene_type": "office_writing",
+        "detect": {
+          "app_bundle_ids": ["com.microsoft.Word", "com.apple.iWork.Pages", "md.obsidian"],
+          "file_extensions": [".md", ".docx", ".txt"]
+        },
+        "provider_mode": "cloud",
+        "polish_model": "qwen-plus",
+        "l_level": "L3",
+        "prompt_template": "office_polish",
+        "knowledge_context": null
+      }
+    ],
+    "default_scene": "office_writing",
+    "provider_mode": "cloud",
+    "degraded_policy": {
+      "cloud_fail": "L2_local",
+      "local_fail": "L1_raw_text"
+    }
+  }
+}
