@@ -24,8 +24,79 @@ public final class CloudPolishProvider: PolishProvider, @unchecked Sendable {
     public func polish(_ raw: String, scene: SceneContext,
                        knowledge: KnowledgeContext,
                        traceId: String) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish(throwing: PolishError.transport("not implemented"))
+        let prompt = PromptTemplates.build(raw: raw, scene: scene, knowledge: knowledge)
+        let commandId = UUID().uuidString
+        let envelope = buildEnvelope(prompt: prompt, commandId: commandId)
+        let host = hubHost
+        let port = hubPort
+        let timeout = timeoutSeconds
+
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var ws: URLSessionWebSocketTask? = nil
+                do {
+                    // ① 构建 URL（guard 防崩溃，对齐 codex P1 #3）
+                    var components = URLComponents()
+                    components.scheme = "ws"
+                    components.host = host
+                    components.port = port
+                    guard let url = components.url else {
+                        throw PolishError.transport("hub URL 构建失败：host=\(host), port=\(port)")
+                    }
+
+                    // ② 建 WS 连接（配置总超时）
+                    let config = URLSessionConfiguration.ephemeral
+                    config.timeoutIntervalForRequest = timeout
+                    config.timeoutIntervalForResource = timeout
+                    let session = URLSession(configuration: config)
+                    let socket = session.webSocketTask(with: url)
+                    ws = socket
+                    socket.resume()
+
+                    // ③ 发 envelope
+                    try await socket.send(.string(envelope))
+
+                    // ④ recv ACK
+                    let ackMsg = try await socket.receive()
+                    guard case .string(let ackJson) = ackMsg else {
+                        throw PolishError.transport("ACK 非 text 帧")
+                    }
+                    try self.parseAck(ackJson)
+
+                    // ⑤ recv result（单事务，一条）
+                    let resultMsg = try await socket.receive()
+                    let resultJson: String
+                    switch resultMsg {
+                    case .string(let text):
+                        resultJson = text
+                    case .data(let data):
+                        guard let text = String(data: data, encoding: .utf8) else {
+                            throw PolishError.transport("result 非 UTF-8")
+                        }
+                        resultJson = text
+                    @unknown default:
+                        throw PolishError.transport("未知 WS 帧类型")
+                    }
+
+                    // ⑥ 解析 result（command_id 校验 + 状态映射）
+                    let text = try self.parseResult(resultJson, expectedCommandId: commandId)
+
+                    // ⑦ yield 完整文本（单事务，一次）→ finish
+                    continuation.yield(text)
+                    continuation.finish()
+
+                    socket.cancel(with: .normalClosure, reason: nil)
+                } catch let error as PolishError {
+                    ws?.cancel(with: .goingAway, reason: nil)
+                    continuation.finish(throwing: error)
+                } catch {
+                    ws?.cancel(with: .goingAway, reason: nil)
+                    continuation.finish(throwing: PolishError.transport(error.localizedDescription))
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
         }
     }
 

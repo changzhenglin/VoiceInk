@@ -280,4 +280,62 @@ final class CloudPolishTests: XCTestCase {
             }
         }
     }
+
+    // ── Task 5: polish() 完整流 ──
+
+    /// polish() 无 hub 时抛 transport（不是 badPayload 或 malformedResult）
+    func testPolishNoHubThrowsTransport() async {
+        let provider = CloudPolishProvider(hubPort: 1)  // 不可能连上的端口
+        let scene = SceneContext(bundleId: "com.microsoft.VSCode", sceneType: .coding)
+
+        var caughtError: Error?
+        let stream = provider.polish("测试", scene: scene, knowledge: .empty, traceId: "t-001")
+        do {
+            for try await _ in stream {}
+        } catch {
+            caughtError = error
+        }
+        // 先解包再匹配（Error? 不能直接 guard case）
+        guard let pe = caughtError as? PolishError, case .transport = pe else {
+            return XCTFail("expected transport error, got \(String(describing: caughtError))")
+        }
+    }
+
+    /// truthfulness：polish() 失败必 throw，不静默返回空流
+    func testPolishFailureThrows() async {
+        let provider = CloudPolishProvider(hubPort: 1)
+        let scene = SceneContext(bundleId: "test", sceneType: .coding)
+
+        var threw = false
+        let stream = provider.polish("hello", scene: scene, knowledge: .empty, traceId: "t-002")
+        do {
+            for try await _ in stream {}
+        } catch {
+            threw = true
+        }
+        XCTAssertTrue(threw, "polish() 失败必须 throw，不得静默返回空流")
+    }
+
+    /// providerId 符合 PolishProvider 协议
+    func testPolishProviderConformance() {
+        let provider: PolishProvider = CloudPolishProvider(hubPort: 18792)
+        XCTAssertEqual(provider.providerId, "cloud-polish-hub")
+    }
+
+    /// hubHost 非法（含空格）→ transport 错误，不崩溃
+    func testPolishInvalidHostThrowsNotCrash() async {
+        let provider = CloudPolishProvider(hubHost: "bad host", hubPort: 18792)
+        let scene = SceneContext(bundleId: "test", sceneType: .coding)
+
+        var caughtError: Error?
+        let stream = provider.polish("hello", scene: scene, knowledge: .empty, traceId: "t-003")
+        do {
+            for try await _ in stream {}
+        } catch {
+            caughtError = error
+        }
+        guard let pe = caughtError as? PolishError, case .transport = pe else {
+            return XCTFail("expected transport error for invalid host, got \(String(describing: caughtError))")
+        }
+    }
 }
