@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import AgentVoice
 
 final class KnowledgeStoreTests: XCTestCase {
@@ -35,9 +36,15 @@ final class KnowledgeStoreTests: XCTestCase {
     }
 
     func testQueryFailureReturnsEmpty() throws {
-        // 模拟查询失败：传入无效路径不应崩溃
-        let store = try makeStore()
-        let ctx = try store.query(projectPath: "")
-        XCTAssertNotNil(ctx) // 不崩溃，返回空上下文
+        let engine = try StorageEngine(path: nil) // 内存数据库
+        let store = KnowledgeStore(engine: engine)
+        // 制造真实查询错误：删除 terms 表，使 query 内部 SQL 抛异常
+        try engine.writer.write { db in
+            try db.execute(sql: "DROP TABLE terms")
+        }
+        // 降级铁律（spec §7.5）：查询失败 → .empty，不崩溃
+        let ctx = try store.query(projectPath: "/test")
+        XCTAssertTrue(ctx.terms.isEmpty, "降级后 terms 应为空")
+        XCTAssertNil(ctx.conventions, "降级后 conventions 应为 nil")
     }
 }

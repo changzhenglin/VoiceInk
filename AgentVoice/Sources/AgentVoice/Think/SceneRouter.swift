@@ -23,7 +23,9 @@ public final class SceneRouter: Sendable {
     /// 根据场景上下文路由到具体的 provider + prompt + L 级
     /// Codex P1#1：路由在 ASR 执行之前完成，Route.asrProvider 告诉 Sense 层用哪个 ASR
     public func route(scene: SceneContext) -> Route {
-        guard let rule = policy.matchScene(bundleId: scene.bundleId, fileExt: scene.fileExt) else {
+        // 单一分类事实源：Detector 已确定 sceneType，Router 只按 sceneType 查规则，
+        // 不重新用 bundleId/fileExt 匹配（避免与 Detector 分类规则漂移，M0.3 final review fix）
+        guard let rule = policy.sceneRules.first(where: { $0.sceneType == scene.sceneType.rawValue }) else {
             // 无匹配规则，使用最保守的默认值
             return Route(sceneType: "office_writing", asrProvider: "dashscope",
                          providerMode: "cloud",

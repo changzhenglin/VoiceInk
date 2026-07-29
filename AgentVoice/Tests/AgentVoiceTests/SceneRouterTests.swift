@@ -49,4 +49,16 @@ final class SceneRouterTests: XCTestCase {
         XCTAssertEqual(router.degradedAction(cloudFailed: true), "L2_local")
         XCTAssertEqual(router.degradedAction(cloudFailed: false), "L1_raw_text")
     }
+
+    /// 跨组件回归：Detector 分类 .java 为 coding → Router 路由到 coding 规则（单一事实源）
+    func testDetectorRouterConsistency() throws {
+        let router = try makeRouter()
+        // Detector 把未知 app + .java 分类为 coding
+        let scene = MacSceneDetector.classifyScene(bundleId: "com.unknown.app", fileExt: ".java")
+        XCTAssertEqual(scene.sceneType, .coding)
+        // Router 信任 Detector 的 sceneType，路由到 coding 规则
+        let route = router.route(scene: scene)
+        XCTAssertEqual(route.polishModel, "qwen-max")
+        XCTAssertEqual(route.promptTemplate, "coding_intent")
+    }
 }
