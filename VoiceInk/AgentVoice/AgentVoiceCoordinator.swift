@@ -176,7 +176,11 @@ final class AgentVoiceCoordinator: ObservableObject {
             if let reason = result.reason, reason.contains("辅助功能权限") {
                 errorMessage = "辅助功能权限未授予，请在 系统设置 → 隐私与安全性 → 辅助功能 中授权 VoiceInk"
             } else {
-                errorMessage = "语音输入失败: \(result.reason ?? "未知错误")。文本已复制到剪贴板，可手动 ⌘V 粘贴"
+                // review I-2 fold：仅在实际写入了剪贴板时才声称"已复制"（truthfulness）
+                let clipboardHint = (result.text?.isEmpty == false)
+                    ? "文本已复制到剪贴板，可手动 ⌘V 粘贴"
+                    : ""
+                errorMessage = "语音输入失败: \(result.reason ?? "未知错误")。\(clipboardHint)"
             }
             Self.postNotification(title: "AgentVoice", body: errorMessage)
 

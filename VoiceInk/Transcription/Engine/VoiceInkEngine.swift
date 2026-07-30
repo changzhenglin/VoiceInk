@@ -206,6 +206,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             // AgentVoice 分叉
             // codex P1#8 fold：使用录音开始时快照的 coordinator（非实时读取）
+            // review I-3 known hole：pending MainActor Task 理论上可能未 drain，
+            // 尾部 10-30ms 静音丢失概率极低（Phase 1 改同步 buffer 或 Task.yield）
             if let coordinator = activeAgentVoiceSession, !shouldCancelRecording {
                 activeAgentVoiceSession = nil  // 清除会话快照
                 let buffer = agentVoiceAudioBuffer
@@ -743,6 +745,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingUseCase = .newSession
         activePipelineUseCase = .newSession
         clearActiveRecordingContext()
+        // review I-1 fold：全量 reset 也清理 AgentVoice 会话状态
+        activeAgentVoiceSession = nil
+        agentVoiceAudioBuffer = []
+        recorder.onAudioChunk = nil
         await recorder.stopRecording()
         recordedFile = nil
         recordingState = .idle
@@ -770,6 +776,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
         recordedFile = nil
         partialTranscript = ""
         recordingState = .idle
+        // review I-1 fold：cancel 时清理 AgentVoice 会话状态，
+        // 防残留 activeAgentVoiceSession 劫持后续非 AgentVoice 录音
+        activeAgentVoiceSession = nil
+        agentVoiceAudioBuffer = []
+        recorder.onAudioChunk = nil
         await cleanupResources()
     }
 
