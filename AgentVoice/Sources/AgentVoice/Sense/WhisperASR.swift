@@ -52,8 +52,7 @@ public final class WhisperASR: ASRProvider, @unchecked Sendable {
     private let transcriber: any WhisperTranscribing
     private var state: WhisperASRState = .idle
     private var accumulatedPCM: [Int16] = []
-    private var currentTraceId: String = ""
-    /// 保护 state / accumulatedPCM / currentTraceId 的并发访问
+    /// 保护 state / accumulatedPCM 的并发访问
     private let lock = NSLock()
 
     public init(transcriber: any WhisperTranscribing) {
@@ -70,7 +69,7 @@ public final class WhisperASR: ASRProvider, @unchecked Sendable {
         }
         state = .recording
         accumulatedPCM = []
-        currentTraceId = traceId
+        _ = traceId // traceId 由 pipeline 层贯穿日志，本 provider 无网络协议不消费
     }
 
     public func feed(_ frame: AudioFrame) async throws {
@@ -124,7 +123,6 @@ public final class WhisperASR: ASRProvider, @unchecked Sendable {
         lock.lock()
         state = .idle
         accumulatedPCM = []
-        currentTraceId = ""
         lock.unlock()
     }
 }

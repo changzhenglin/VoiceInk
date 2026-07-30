@@ -97,7 +97,7 @@ final class WhisperASRTests: XCTestCase {
             try await whisper.feed(AudioFrame(pcm: [1], timestamp: 0))
             XCTFail("feed 在 startSession 之前应 throw")
         } catch {
-            // 预期：非法状态转换
+            XCTAssertTrue(error is WhisperASRError, "应为 WhisperASRError.invalidState")
         }
     }
 
@@ -107,8 +107,22 @@ final class WhisperASRTests: XCTestCase {
             _ = try await whisper.final()
             XCTFail("final 在 startSession 之前应 throw")
         } catch {
-            // 预期：非法状态转换
+            XCTAssertTrue(error is WhisperASRError, "应为 WhisperASRError.invalidState")
         }
+    }
+
+    /// 覆盖状态机文档声明的分支：recording 中重复 startSession 应 throw
+    func testStartSessionDuringRecordingThrows() async throws {
+        let whisper = WhisperASR(transcriber: MockTranscriber())
+        try await whisper.startSession(traceId: "session-a")
+
+        do {
+            try await whisper.startSession(traceId: "session-b")
+            XCTFail("recording 中重复 startSession 应 throw")
+        } catch {
+            XCTAssertTrue(error is WhisperASRError, "应为 WhisperASRError.invalidState")
+        }
+        await whisper.endSession()
     }
 
     func testDoubleFinalThrows() async throws {
@@ -122,7 +136,7 @@ final class WhisperASRTests: XCTestCase {
             _ = try await whisper.final()
             XCTFail("重复 final 应 throw")
         } catch {
-            // 预期：已转写完成，不能重复
+            XCTAssertTrue(error is WhisperASRError, "应为 WhisperASRError.invalidState")
         }
         XCTAssertEqual(mock.callCount, 1, "transcriber 只应被调用一次")
         await whisper.endSession()
@@ -202,7 +216,7 @@ final class WhisperASRTests: XCTestCase {
             _ = try await whisper.final()
             XCTFail("endSession 后 final 应 throw")
         } catch {
-            // 预期
+            XCTAssertTrue(error is WhisperASRError, "应为 WhisperASRError.invalidState")
         }
         XCTAssertEqual(mock.callCount, 0)
     }
