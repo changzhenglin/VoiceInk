@@ -121,6 +121,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
     let assistantChat: AssistantChatService?
     private let pipeline: TranscriptionPipeline
 
+    // MARK: - AgentVoice 集成
+    var agentVoiceCoordinator: AgentVoiceCoordinator?
+    /// codex P1#8 fold：录音开始时快照的 coordinator（防中途开关切换导致分叉不一致）
+    private var activeAgentVoiceSession: AgentVoiceCoordinator?
+    private var agentVoiceAudioBuffer: [Data] = []
+    var statusAdapter: AgentVoiceStatusAdapter?
+    /// outside voice #2 fold：不用 @AppStorage（NSObject 中不响应 SwiftUI 刷新）
+    /// 每次 toggleRecord 时即时读 UserDefaults
+    var agentVoiceEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "agentVoiceEnabled")
+    }
+
     let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "VoiceInkEngine")
 
     init(
@@ -192,6 +204,26 @@ class VoiceInkEngine: NSObject, ObservableObject {
             recordingState = .transcribing
             await recorder.stopRecording()
 
+            // AgentVoice 分叉
+            // codex P1#8 fold：使用录音开始时快照的 coordinator（非实时读取）
+            if let coordinator = activeAgentVoiceSession, !shouldCancelRecording {
+                activeAgentVoiceSession = nil  // 清除会话快照
+                let buffer = agentVoiceAudioBuffer
+                agentVoiceAudioBuffer = []
+                recorder.onAudioChunk = nil
+                Task { @MainActor in
+                    await coordinator.run(audioBuffer: buffer)
+                    recordingState = .idle
+                }
+                return  // 不走原链
+            }
+            // AgentVoice 会话清理（取消时或 coordinator 不存在）
+            if activeAgentVoiceSession != nil {
+                activeAgentVoiceSession = nil
+                agentVoiceAudioBuffer = []
+                recorder.onAudioChunk = nil
+            }
+
             if let recordedFile {
                 if !shouldCancelRecording {
                     let transcription = makeRecordingTranscription(
@@ -237,6 +269,47 @@ class VoiceInkEngine: NSObject, ObservableObject {
             requestRecordPermission { [self] granted in
                 if granted {
                     Task { @MainActor [self] in
+                        // codex P1#7 fold：AgentVoice 不依赖 VoiceInk 原链模型配置，
+                        // 必须在 passesRecordingPreflight() 之前分叉（否则无 VoiceInk 模型时无法录音）
+                        if self.agentVoiceEnabled, self.agentVoiceCoordinator != nil {
+                            // AgentVoice 录音路径（跳过原链 preflight + model resolution）
+                            let startID = UUID()
+                            self.activeRecordingStartID = startID
+                            let fileName = "\(UUID().uuidString).wav"
+                            let permanentURL = self.recordingsDirectory.appendingPathComponent(fileName)
+                            self.recordedFile = permanentURL
+                            self.recordingState = .starting
+
+                            // codex P1#8 fold：录音开始时快照 coordinator（防中途开关切换）
+                            self.activeAgentVoiceSession = self.agentVoiceCoordinator
+                            self.agentVoiceAudioBuffer = []
+
+                            // codex P1#6 fold：onAudioChunk 必须在 startRecording 之前安装
+                            // （CoreAudio 启动后立即产帧，装晚了丢头部音频）
+                            // outside voice #5 fold：onAudioChunk 从 CoreAudio 线程调用，
+                            // 必须 hop 到 MainActor 再改 buffer（防数据竞争）
+                            self.recorder.onAudioChunk = { [weak self] data in
+                                Task { @MainActor in
+                                    self?.agentVoiceAudioBuffer.append(data)
+                                }
+                            }
+                            self.statusAdapter?.update(.listening)
+
+                            do {
+                                try await self.recorder.startRecording(toOutputFile: permanentURL)
+                                self.recordingState = .recording
+                            } catch {
+                                self.logger.error("AgentVoice recording failed to start: \(error, privacy: .public)")
+                                await self.recorder.stopRecording()
+                                self.recordedFile = nil
+                                self.recordingState = .idle
+                                self.activeRecordingStartID = nil
+                                self.activeAgentVoiceSession = nil
+                                self.agentVoiceAudioBuffer = []
+                                self.recorder.onAudioChunk = nil
+                            }
+                        } else {
+                        // 原链（既有 preflight + transcriptionConfiguration + startRecording，不动）
                         guard await self.passesRecordingPreflight() else { return }
 
                         let startID = UUID()
@@ -399,6 +472,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 title: String(localized: "Recording failed to start"), type: .error)
                             await self.recorderUIManager?.dismissRecorderPanel()
                         }
+                        } // AgentVoice else 闭合
                     }
                 } else {
                     logger.error("Recording permission denied")

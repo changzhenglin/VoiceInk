@@ -1,3 +1,4 @@
+import AgentVoice
 import AppIntents
 import AppKit
 import FluidAudio
@@ -19,6 +20,7 @@ struct VoiceInkApp: App {
     @StateObject private var recordingShortcutManager: RecordingShortcutManager
     @StateObject private var updaterViewModel: UpdaterViewModel
     @StateObject private var menuBarManager: MenuBarManager
+    @StateObject private var agentVoiceStatusAdapter: AgentVoiceStatusAdapter
     @StateObject private var mainWindowNavigation = MainWindowNavigation.shared
     @StateObject private var aiService = AIService()
     @StateObject private var enhancementService: AIEnhancementService
@@ -162,7 +164,43 @@ struct VoiceInkApp: App {
         )
         _prewarmService = StateObject(wrappedValue: prewarmService)
 
+        let agentVoiceStatusAdapter = AgentVoiceStatusAdapter()
+        _agentVoiceStatusAdapter = StateObject(wrappedValue: agentVoiceStatusAdapter)
+
         appDelegate.menuBarManager = menuBarManager
+
+        // ── AgentVoice 集成组装 ──
+        engine.statusAdapter = agentVoiceStatusAdapter
+
+        Task { @MainActor in
+            do {
+                let configStore = ConfigStore()
+                let policy = try configStore.loadDefault().payload
+                let storageEngine = try StorageEngine(path: nil)
+                let sceneDetector = MacSceneDetector()
+                let router = SceneRouter(policy: policy)
+                let knowledgeStore = KnowledgeStore(engine: storageEngine)
+                let whisperTranscriber = VoiceInkWhisperTranscriber(
+                    whisperModelManager: whisperModelManager)
+                let hubPort = UserDefaults.standard.integer(forKey: "agentVoiceHubPort")
+
+                let coordinator = AgentVoiceCoordinator(
+                    sceneDetector: sceneDetector,
+                    router: router,
+                    knowledgeStore: knowledgeStore,
+                    whisperTranscriber: whisperTranscriber,
+                    statusAdapter: agentVoiceStatusAdapter,
+                    hubPort: hubPort > 0 ? hubPort : 9876,
+                    dashScopeAPIKeyProvider: {
+                        APIKeyManager.shared.getAPIKey(forProvider: "dashscope")
+                    })
+
+                engine.agentVoiceCoordinator = coordinator
+            } catch {
+                let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AgentVoice")
+                logger.error("AgentVoice 初始化失败: \(error.localizedDescription)")
+            }
+        }
 
         // Ensure no lingering recording state from previous runs
         Task {
@@ -381,15 +419,28 @@ struct VoiceInkApp: App {
                 .environmentObject(aiService)
                 .environmentObject(enhancementService)
         } label: {
-            let image: NSImage = {
-                let ratio = $0.size.height / $0.size.width
-                $0.size.height = 22
-                $0.size.width = 22 / ratio
-                return $0
-            }(NSImage(named: "menuBarIcon")!)
-
-            Image(nsImage: image)
-                .background(MainWindowRequestBridge(menuBarManager: menuBarManager))
+            Group {
+                switch agentVoiceStatusAdapter.status {
+                case .idle:
+                    let image: NSImage = {
+                        let ratio = $0.size.height / $0.size.width
+                        $0.size.height = 22
+                        $0.size.width = 22 / ratio
+                        return $0
+                    }(NSImage(named: "menuBarIcon")!)
+                    Image(nsImage: image)
+                case .listening:
+                    Image(systemName: "mic.fill")
+                case .processing:
+                    Image(systemName: "ellipsis")
+                        .symbolEffect(.pulse)  // Design review D4 fold：呼吸动画，用户感知"在处理中"
+                case .done:
+                    Image(systemName: "checkmark.circle.fill")
+                case .error:
+                    Image(systemName: "xmark.circle.fill")
+                }
+            }
+            .background(MainWindowRequestBridge(menuBarManager: menuBarManager))
         }
         .menuBarExtraStyle(.menu)
 
