@@ -65,6 +65,10 @@ enum AppDefaults {
             // Model
             "PrewarmModelOnWake": true,
 
+            // AgentVoice
+            "agentVoiceEnabled": false,
+            "agentVoiceHubPort": 9876,
+
         ])
 
         PasteMethod.migrateLegacyUserDefaultIfNeeded()

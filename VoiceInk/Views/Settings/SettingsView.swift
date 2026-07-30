@@ -31,6 +31,14 @@ struct SettingsView: View {
     @State private var isMiddleClickExpanded = false
     @State private var isRestoreClipboardExpanded = false
 
+    // MARK: - AgentVoice
+    @AppStorage("agentVoiceEnabled") private var agentVoiceEnabled = false
+    @AppStorage("agentVoiceHubPort") private var agentVoiceHubPort = 9876
+    @State private var dashScopeAPIKeyInput = ""
+    @State private var hasDashScopeKey = APIKeyManager.shared.hasAPIKey(forProvider: "dashscope")
+    /// Design review D5 fold：AX 权限状态（checklist 显示用）
+    @State private var axTrusted = AXIsProcessTrusted()
+
     var body: some View {
         Form {
             Section {
@@ -229,6 +237,76 @@ struct SettingsView: View {
                     HStack(spacing: 4) {
                         Text("Live Text Display")
                         InfoTip("Shows live text while recording with realtime models.")
+                    }
+                }
+            }
+
+            Section("AgentVoice") {
+                Toggle("使用 AgentVoice 语音管线", isOn: $agentVoiceEnabled)
+
+                if agentVoiceEnabled {
+                    // Design review D5 fold：首次使用 checklist（用户一眼看到还缺什么）
+                    GroupBox("配置状态") {
+                        // ① 辅助功能权限
+                        HStack {
+                            Image(systemName: axTrusted ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(axTrusted ? .green : .red)
+                            Text("辅助功能权限")
+                            Spacer()
+                            if !axTrusted {
+                                Button("去授权") {
+                                    // 打开系统设置 → 隐私与安全性 → 辅助功能
+                                    NSWorkspace.shared.open(URL(string:
+                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                                }
+                            }
+                        }
+                        // ② DashScope API Key（可选，无则 fallback Whisper）
+                        HStack {
+                            Image(systemName: hasDashScopeKey ? "checkmark.circle.fill" : "minus.circle")
+                                .foregroundStyle(hasDashScopeKey ? .green : .secondary)
+                            Text("DashScope API Key")
+                            if !hasDashScopeKey {
+                                Text("（可选，无则本地 Whisper）")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        // ③ hub 端口（可选，无则润色降级直出原文）
+                        HStack {
+                            Image(systemName: "minus.circle")
+                                .foregroundStyle(.secondary)
+                            Text("润色 hub")
+                            Text("（可选，无则直出原文）")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    SecureField("DashScope API Key", text: $dashScopeAPIKeyInput)
+                        .onSubmit {
+                            if !dashScopeAPIKeyInput.isEmpty {
+                                APIKeyManager.shared.saveAPIKey(dashScopeAPIKeyInput, forProvider: "dashscope")
+                                dashScopeAPIKeyInput = ""
+                                hasDashScopeKey = APIKeyManager.shared.hasAPIKey(forProvider: "dashscope")
+                            }
+                        }
+
+                    if hasDashScopeKey {
+                        HStack {
+                            Text("✅ DashScope API Key 已配置")
+                                .foregroundStyle(.green)
+                            Button("删除") {
+                                APIKeyManager.shared.deleteAPIKey(forProvider: "dashscope")
+                                hasDashScopeKey = false
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Text("润色 hub 端口")
+                        TextField("9876", value: $agentVoiceHubPort, format: .number)
+                            .frame(width: 80)
                     }
                 }
             }
