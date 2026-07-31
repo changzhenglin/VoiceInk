@@ -34,6 +34,7 @@ struct SettingsView: View {
     // MARK: - AgentVoice
     @AppStorage("agentVoiceEnabled") private var agentVoiceEnabled = false
     @AppStorage("agentVoiceHubPort") private var agentVoiceHubPort = 9876
+    @AppStorage("agentVoiceASRMode") private var agentVoiceASRMode = "auto"
     @State private var dashScopeAPIKeyInput = ""
     @State private var hasDashScopeKey = APIKeyManager.shared.hasAPIKey(forProvider: "dashscope")
     /// Design review D5 fold：AX 权限状态（checklist 显示用）
@@ -245,6 +246,14 @@ struct SettingsView: View {
                 Toggle("使用 AgentVoice 语音管线", isOn: $agentVoiceEnabled)
 
                 if agentVoiceEnabled {
+                    // ASR 模式选择器（自动 / 本地优先 / 云端优先）
+                    Picker("语音识别（ASR）", selection: $agentVoiceASRMode) {
+                        Text("自动").tag("auto")
+                        Text("本地优先").tag("local")
+                        Text("云端优先").tag("cloud")
+                    }
+                    .pickerStyle(.segmented)
+
                     // Design review D5 fold：首次使用 checklist（用户一眼看到还缺什么）
                     GroupBox("配置状态") {
                         // ① 辅助功能权限

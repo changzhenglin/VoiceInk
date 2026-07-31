@@ -68,6 +68,7 @@ enum AppDefaults {
             // AgentVoice
             "agentVoiceEnabled": false,
             "agentVoiceHubPort": 9876,
+            "agentVoiceASRMode": "auto",
 
         ])
 

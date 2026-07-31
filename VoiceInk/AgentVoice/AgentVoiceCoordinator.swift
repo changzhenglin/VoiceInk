@@ -74,20 +74,34 @@ final class AgentVoiceCoordinator: ObservableObject {
 
     // MARK: - ASR 选择（暴露给测试）
 
-    /// 根据 route + API Key 可用性选择 ASR provider
-    /// 优先级（本地优先验证阶段）：
-    ///   route=whisper → Apple Speech（macOS 26+）→ WhisperASR
-    ///   route=dashscope → DashScope（有 key）→ Apple Speech → WhisperASR
-    func selectASR(routeASRProvider: String) -> any ASRProvider {
-        if routeASRProvider == "whisper" {
+    /// 根据 route + API Key 可用性 + 用户 ASR 模式偏好选择 ASR provider
+    /// 用户模式（Settings Picker，UserDefaults "agentVoiceASRMode"）：
+    ///   "auto"（默认）：按 route 决定——route=whisper → 本地；route=dashscope → 有 key 走云端，无 key fallback 本地
+    ///   "local"：强制本地（Apple Speech macOS 26+ → Whisper 兜底），忽略 route 与 key
+    ///   "cloud"：优先云端 DashScope（有 key），无 key fallback 本地（保证始终有 ASR）
+    /// asrMode 默认参数读 UserDefaults，测试可显式传参覆盖（避免全局状态污染）
+    func selectASR(routeASRProvider: String,
+                   asrMode: String = UserDefaults.standard.string(forKey: "agentVoiceASRMode") ?? "auto") -> any ASRProvider {
+        switch asrMode {
+        case "local":
+            return localASR()
+        case "cloud":
+            if let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty {
+                return DashScopeASR(apiKey: apiKey)
+            }
+            logger.warning("云端优先但无 DashScope API Key，fallback 到本地 ASR")
+            return localASR()
+        default:  // "auto"
+            if routeASRProvider == "whisper" {
+                return localASR()
+            }
+            // route 说 dashscope（或其他云端）
+            if let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty {
+                return DashScopeASR(apiKey: apiKey)
+            }
+            logger.warning("无 DashScope API Key，fallback 到本地 ASR")
             return localASR()
         }
-        // route 说 dashscope（或其他云端）
-        if let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty {
-            return DashScopeASR(apiKey: apiKey)
-        }
-        logger.warning("无 DashScope API Key，fallback 到本地 ASR")
-        return localASR()
     }
 
     /// 本地 ASR 选择：Apple Speech 优先（macOS 26+），Whisper 兜底
