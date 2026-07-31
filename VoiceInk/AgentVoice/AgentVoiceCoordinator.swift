@@ -26,6 +26,7 @@ final class AgentVoiceCoordinator: ObservableObject {
 
     // ── 懒构造的 ASR 实例 ──
     private lazy var whisperASR: WhisperASR = WhisperASR(transcriber: whisperTranscriber)
+    private lazy var appleSpeechASR: AppleSpeechASR = AppleSpeechASR(locale: "zh-CN")
 
     /// 暴露给测试断言状态映射（codex P1#10 fold）
     var statusAdapterForTest: AgentVoiceStatusAdapter { statusAdapter }
@@ -74,17 +75,27 @@ final class AgentVoiceCoordinator: ObservableObject {
     // MARK: - ASR 选择（暴露给测试）
 
     /// 根据 route + API Key 可用性选择 ASR provider
-    /// 降级：route 说 dashscope 但无 API Key → fallback whisperASR
+    /// 优先级（本地优先验证阶段）：
+    ///   route=whisper → Apple Speech（macOS 26+）→ WhisperASR
+    ///   route=dashscope → DashScope（有 key）→ Apple Speech → WhisperASR
     func selectASR(routeASRProvider: String) -> any ASRProvider {
         if routeASRProvider == "whisper" {
-            return whisperASR
+            return localASR()
         }
         // route 说 dashscope（或其他云端）
-        guard let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty else {
-            logger.warning("无 DashScope API Key，fallback 到 WhisperASR")
-            return whisperASR
+        if let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty {
+            return DashScopeASR(apiKey: apiKey)
         }
-        return DashScopeASR(apiKey: apiKey)
+        logger.warning("无 DashScope API Key，fallback 到本地 ASR")
+        return localASR()
+    }
+
+    /// 本地 ASR 选择：Apple Speech 优先（macOS 26+），Whisper 兜底
+    private func localASR() -> any ASRProvider {
+        if #available(macOS 26, *) {
+            return appleSpeechASR
+        }
+        return whisperASR
     }
 
     // MARK: - 主入口
@@ -138,8 +149,12 @@ final class AgentVoiceCoordinator: ObservableObject {
             continuation.finish()
         }
 
+        logger.info("选 ASR: \(asr.providerId), scene: \(scene.bundleId ?? "nil")/\(scene.sceneType.rawValue)")
+
         // ⑥ 执行 pipeline
         let result = await pipeline.run(audioFrames: stream)
+
+        logger.info("pipeline 结果: state=\(result.state.rawValue) asr=\(result.asrProvider)")
 
         // ⑦ 结果处理
         handleResult(result)

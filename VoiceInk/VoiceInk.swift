@@ -174,8 +174,29 @@ struct VoiceInkApp: App {
 
         Task { @MainActor in
             do {
-                let configStore = ConfigStore()
-                let policy = try configStore.loadDefault().payload
+                // ConfigStore.loadDefault() 在 Xcode 构建时因 .copy("Resources")
+                // 导致 Bundle.module 路径多一层 Resources/，需 fallback 手动加载
+                let policy: VoiceInputPolicy.Payload
+                if let loaded = try? ConfigStore().loadDefault() {
+                    policy = loaded.payload
+                } else {
+                    // Xcode fallback：从 AgentVoice bundle 的 Resources 子目录加载
+                    guard let bundleURL = Bundle.main.resourceURL?
+                        .appendingPathComponent("AgentVoice_AgentVoice.bundle"),
+                        let avBundle = Bundle(url: bundleURL),
+                        let jsonURL = avBundle.url(
+                            forResource: "default-voice-input-policy",
+                            withExtension: "json",
+                            subdirectory: "Resources"),
+                        let data = try? Data(contentsOf: jsonURL),
+                        let decoded = try? JSONDecoder().decode(VoiceInputPolicy.self, from: data)
+                    else {
+                        throw ConfigError.resourceNotFound(
+                            "default-voice-input-policy.json (Xcode bundle fallback)")
+                    }
+                    policy = decoded.payload
+                }
+
                 let storageEngine = try StorageEngine(path: nil)
                 let sceneDetector = MacSceneDetector()
                 let router = SceneRouter(policy: policy)

@@ -216,6 +216,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 Task { @MainActor in
                     await coordinator.run(audioBuffer: buffer)
                     recordingState = .idle
+                    await recorderUIManager?.dismissRecorderPanel()
                 }
                 return  // 不走原链
             }

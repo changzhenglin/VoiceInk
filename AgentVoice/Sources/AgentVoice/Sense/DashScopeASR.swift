@@ -11,9 +11,13 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
     private let partialContinuation: AsyncStream<String>.Continuation
     private let partialStream: AsyncStream<String>
     private var finalResult: String = ""
+    /// 已定稿的句子（end_time > 0 的 result-generated）
+    private var completedSentences: [String] = []
+    /// 当前未定稿的句子文本（最后一个 result-generated，可能被后续覆盖）
+    private var pendingSentence: String = ""
     private var sessionActive = false
     private var currentTraceId: String = ""
-    /// 保护 finalResult / sessionActive 的并发访问（receiveLoop Task 与调用方）
+    /// 保护并发访问
     private let lock = NSLock()
 
     public init(apiKey: String, model: String = "paraformer-realtime-v2") {
@@ -71,7 +75,8 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
         let traceId = currentTraceId
         lock.unlock()
 
-        let finishMsg = "{\"header\":{\"action\":\"finish-task\",\"task_id\":\"\(traceId)\",\"streaming\":\"duplex\"}}"
+        // DashScope 协议要求 finish-task 必须携带 payload 字段（即使为空）
+        let finishMsg = "{\"header\":{\"action\":\"finish-task\",\"task_id\":\"\(traceId)\",\"streaming\":\"duplex\"},\"payload\":{\"input\":{}}}"
         try await webSocket?.send(.string(finishMsg))
 
         // 等待最终结果（最多 5 秒）
@@ -81,11 +86,19 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
             let result = finalResult
             let active = sessionActive
             lock.unlock()
-            if !result.isEmpty || !active { return result }
+            if !result.isEmpty || !active { break }
             try await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
         lock.lock()
-        let result = finalResult
+        // 优先 finalResult（task-finished 赋值），否则拼接已完成+pending
+        let result: String
+        if !finalResult.isEmpty {
+            result = finalResult
+        } else {
+            var all = completedSentences
+            if !pendingSentence.isEmpty { all.append(pendingSentence) }
+            result = all.joined()
+        }
         lock.unlock()
         return result
     }
@@ -167,28 +180,50 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
     }
 
     /// 解析 ASR 响应 JSON
+    ///
+    /// Paraformer 按句子分段返回 result-generated 事件：
+    /// - end_time 为 null：中间结果（同一句子的 partial，后续覆盖前序）
+    /// - end_time > 0：句子定稿（追加到完成列表）
+    /// - task-finished：全部完成，拼接所有句子
     private func parseASRResponse(_ json: String) {
         guard let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let header = obj["header"] as? [String: Any],
-              let payload = obj["payload"] as? [String: Any],
-              let output = payload["output"] as? [String: Any] else { return }
+              let header = obj["header"] as? [String: Any] else { return }
 
-        if let sentence = output["sentence"] as? [String: Any],
-           let text = sentence["text"] as? String {
-            partialContinuation.yield(text)
-            // sentence-end 事件标记最终结果
-            let eventName = header["event"] as? String
-            if eventName == "result-generated" {
-                // 中间结果，仅 yield partial
-            } else if text.isEmpty == false {
-                // task-finished 或含 end_time 的结果视为最终
-                if let endTime = sentence["end_time"] as? Int, endTime > 0 {
-                    lock.lock()
-                    finalResult = text
-                    lock.unlock()
-                }
-            }
+        let eventName = header["event"] as? String ?? ""
+
+        // task-failed：服务端报错
+        if eventName == "task-failed" {
+            lock.lock()
+            sessionActive = false
+            lock.unlock()
+            return
         }
+
+        guard let payload = obj["payload"] as? [String: Any],
+              let output = payload["output"] as? [String: Any],
+              let sentence = output["sentence"] as? [String: Any],
+              let text = sentence["text"] as? String,
+              !text.isEmpty else { return }
+
+        partialContinuation.yield(text)
+
+        lock.lock()
+        let endTime = sentence["end_time"] as? NSNumber
+        if endTime != nil && endTime!.doubleValue > 0 {
+            // 句子定稿：追加到完成列表，清除 pending
+            completedSentences.append(text)
+            pendingSentence = ""
+        } else {
+            // 未定稿（中间结果）：覆盖 pending
+            pendingSentence = text
+        }
+        // task-finished：拼接全部
+        if eventName != "result-generated" {
+            var all = completedSentences
+            if !pendingSentence.isEmpty { all.append(pendingSentence) }
+            finalResult = all.joined()
+        }
+        lock.unlock()
     }
 }

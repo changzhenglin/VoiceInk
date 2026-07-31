@@ -87,7 +87,11 @@ final class VoiceInkWhisperTranscriber: WhisperTranscribing, @unchecked Sendable
         // 四步必须在同一事务内执行（WhisperContext actor 只保证单调用串行，
         // 不保证跨调用事务性）。Phase 0 接受：VoiceInk 单用户单实例，
         // 不存在并发转写竞争（PTT 语义天然串行：一次只有一段录音）。
-        await context.setLanguage(nil)   // auto detect
+        // 语言：读用户配置（与原链 SelectedLanguage 一致），nil 时 whisper auto-detect
+        // 对中文语音不可靠（base 模型常输出 [BLANK_AUDIO]/foreign language），
+        // 故无配置时默认 "zh"
+        let language = UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "zh"
+        await context.setLanguage(language)
         await context.setPrompt(nil)     // 无 prompt
 
         // ⑥ 转写
