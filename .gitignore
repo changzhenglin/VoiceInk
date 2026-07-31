@@ -33,6 +33,11 @@ playground.xcworkspace
 build/
 .local-build/
 
+# 盲测 harness（Task 12）：venv 含 DASHSCOPE_API_KEY，绝不入库
+.blindtest-venv/
+tools/blind-test/audio/
+tools/blind-test/out/
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However
