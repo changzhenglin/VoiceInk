@@ -213,7 +213,9 @@ public final class AttentionEventStore: @unchecked Sendable {
             return "{}"
         }
         Self.strip(&obj)
-        let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
+        // F10：canonical 再序列化（.sortedKeys 固定键序）——指纹跨解析稳定，
+        // 对齐 Task 2 stablePayloadFingerprint 的 canonical JSON 裁决
+        let data = (try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])) ?? Data()
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
