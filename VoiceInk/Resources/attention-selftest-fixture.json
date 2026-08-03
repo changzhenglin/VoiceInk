@@ -1,0 +1,12 @@
+[
+  {"hook":"SessionStart","session":"b7c2a467-356f-4c49-aa07-0a018862016c","ts":1700000000},
+  {"hook":"SessionStart","session":"75f25d5b-b003-4457-a54c-c1d28f52bb0c","ts":1700000060},
+  {"hook":"SessionStart","session":"29f9a1bc-35c8-40d5-aa3c-6558f614104d","ts":1700000120},
+  {"hook":"Stop","session":"29f9a1bc-35c8-40d5-aa3c-6558f614104d","ts":1700000180},
+  {"hook":"SessionEnd","session":"29f9a1bc-35c8-40d5-aa3c-6558f614104d","ts":1700000240},
+  {"hook":"Stop","session":"75f25d5b-b003-4457-a54c-c1d28f52bb0c","ts":1700000300},
+  {"hook":"Stop","session":"daa4f68a-df7a-48cf-887a-36a82d0b68ef","ts":1700000360},
+  {"hook":"Stop","session":"951190ee-6b7b-49fb-ae3a-8589da88d055","ts":1700000420},
+  {"hook":"StopFailure","session":"a104e916-1d96-494c-bcc1-9bac7d3037e7","ts":1700000480},
+  {"hook":"StopFailure","session":"0aaf9e87-3b47-4862-a005-4e85c4681ab6","ts":1700000540}
+]

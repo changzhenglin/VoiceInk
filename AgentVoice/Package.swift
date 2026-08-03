@@ -22,7 +22,8 @@ let package = Package(
         .testTarget(
             name: "AgentVoiceTests",
             dependencies: ["AgentVoice"],
-            path: "Tests/AgentVoiceTests"
+            path: "Tests/AgentVoiceTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )
