@@ -98,4 +98,30 @@ final class AttentionEventRouterTests: XCTestCase {
         XCTAssertEqual(router2.currentSnapshots().first?.activityFact, .waitingUser)
         XCTAssertEqual(router2.currentItems().count, 1)
     }
+
+    func testC5ResolveSurvivesReplayAndMutationsPersist() throws {
+        // C5（codex P0）+ C3：用户操作持久化——resolved/snoozed 跨重启不丢（老林拍板补测）
+        let store = try AttentionEventStore(path: nil)
+        let router = AttentionEventRouter(store: store)
+        let payload = #"{"session_id":"14141414-1414-1414-1414-141414141414"}"#
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let r = router.ingest(hookEventName: "Notification", payloadJson: payload, observedAt: now)
+        guard case .accepted = r else { return XCTFail("got \(r)") }
+        guard let item = router.currentItems().first else { return XCTFail("no item") }
+        // resolve → 重启 → 仍 resolved（C5 核心保证）
+        router.resolve(item: item, at: now + 1)
+        XCTAssertEqual(router.currentItems().first?.status, .resolved)
+        let router2 = AttentionEventRouter(store: store)
+        router2.replayFromStore()
+        XCTAssertEqual(router2.currentItems().first?.status, .resolved)
+        // snooze → 重启 → 仍 snoozed；wake → 重启 → 回 new（C3 全 mutation 持久化）
+        router2.snooze(item: router2.currentItems()[0], at: now + 2)
+        let router3 = AttentionEventRouter(store: store)
+        router3.replayFromStore()
+        XCTAssertEqual(router3.currentItems().first?.status, .snoozed)
+        router3.wake(item: router3.currentItems()[0], at: now + 3)
+        let router4 = AttentionEventRouter(store: store)
+        router4.replayFromStore()
+        XCTAssertEqual(router4.currentItems().first?.status, .new)
+    }
 }
