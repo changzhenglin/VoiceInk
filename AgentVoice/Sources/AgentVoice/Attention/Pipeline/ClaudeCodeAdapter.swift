@@ -65,11 +65,19 @@ public struct ClaudeCodeAdapter: Sendable {
             cwdLabel: cwdLabel, cwdRef: cwdRef)    // C20：F4 短标识/导航数据源
     }
 
-    /// C6：canonical payload 内容指纹——排序后的 key=value 拼接；
-    /// 排除接收侧字段与投递层字段（seq/delivery_id 走 basis 显式组合，不进内容指纹）
+    /// C6：canonical payload 内容指纹——`JSONSerialization` + `.sortedKeys` 递归排序键的
+    /// canonical JSON 字符串；跨进程同输入同输出（不依赖进程内 hash seed/插入序），
+    /// 满足 C6 幂等要求（receiver 重启后同一 delivery 重试产生同一 event_id）。
+    /// 排除接收侧/投递层字段（seq/delivery_id 走 basis 显式组合，不进内容指纹）。
     static func stablePayloadFingerprint(_ payload: [String: Any]) -> String {
-        payload.filter { $0.key != "seq" && $0.key != "delivery_id" }
-            .sorted { $0.key < $1.key }
+        let filtered: [String: Any] = payload.filter { $0.key != "seq" && $0.key != "delivery_id" }
+        // 优先 canonical JSON（递归键排序）；生产数据都来自 JSON 解析，理论可序列化
+        if let data = try? JSONSerialization.data(withJSONObject: filtered, options: [.sortedKeys]),
+           let canonical = String(data: data, encoding: .utf8) {
+            return canonical
+        }
+        // Fallback：序列化失败时保留原排序插值拼接（known hole，仅防御性）
+        return filtered.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: "&")
     }
