@@ -101,7 +101,7 @@ final class AttentionRetentionSchedulerTests: XCTestCase {
         scheduler.maxRows = 3
         let result = scheduler.runMaintenance(now: now)
         XCTAssertEqual(result.pruned, 1)            // old 超热层
-        XCTAssertEqual(result.capacityDeleted, 2)   // 5 行超 3 上限 → excess 2
-        XCTAssertEqual(store.events(since: .distantPast).map(\.eventId), ["r3", "r4"])
+        XCTAssertEqual(result.capacityDeleted, 2)   // 5 行超 3 上限 → 删最旧 2 行（changesCount）
+        XCTAssertEqual(store.events(since: .distantPast).map(\.eventId), ["r2", "r3", "r4"])
     }
 }

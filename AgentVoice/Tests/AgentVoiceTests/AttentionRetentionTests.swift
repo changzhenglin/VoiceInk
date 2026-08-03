@@ -27,7 +27,7 @@ final class AttentionRetentionTests: XCTestCase {
         for i in 0..<5 { _ = store.append(ev(id: "e\(i)", at: base + TimeInterval(i))) }
         let deleted = store.enforceCapacity(maxRows: 3)
         XCTAssertEqual(deleted, 2)
-        XCTAssertEqual(store.events(since: .distantPast).map(\.eventId), ["e3", "e4"])
+        XCTAssertEqual(store.events(since: .distantPast).map(\.eventId), ["e2", "e3", "e4"])
     }
 
     func testEventsSinceUntilBoundedQuery() throws {

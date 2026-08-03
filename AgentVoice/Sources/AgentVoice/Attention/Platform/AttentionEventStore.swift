@@ -303,25 +303,18 @@ extension AttentionEventStore {
         }
     }
 
-    /// 容量守卫：热层上限 maxRows（默认 50k 行）。超限时删除最旧批次，
-    /// 返回超出上限的行数（total - maxRows）。
-    /// 口径说明：物理删除含容量边界行（observed_at ≤ 第 maxRows 新行），
-    /// 即实际删 excess+1 行、保留最新 maxRows-1 行——冻结测试
-    /// testCapacityGuardDeletesOldest 的断言口径（5 行 maxRows=3 → 返回 2、
-    /// 保留 e3/e4）；边界同秒事件一并删除，留一行余量，prototype 级可接受。
+    /// 容量守卫：热层上限 maxRows（默认 50k 行）。超限时删最旧、保留最新 maxRows 行，
+    /// 返回实际删除行数（changesCount）。plan Step 3 SQL 原语义；冻结断言笔误
+    /// （["e3","e4"]→["e2","e3","e4"]）已由控制器修正，语义回正。
     public func enforceCapacity(maxRows: Int = 50_000) -> Int {
         do {
             return try dbQueue.write { db in
-                let total = try Int.fetchOne(db, sql:
-                    "SELECT COUNT(*) FROM attention_events") ?? 0
-                let excess = total - maxRows
-                guard excess > 0 else { return 0 }
                 try db.execute(sql: """
-                    DELETE FROM attention_events WHERE observed_at <= (
-                        SELECT observed_at FROM attention_events
-                        ORDER BY observed_at DESC LIMIT 1 OFFSET ?)
-                    """, arguments: [maxRows - 1])
-                return excess
+                    DELETE FROM attention_events WHERE event_id NOT IN (
+                        SELECT event_id FROM attention_events
+                        ORDER BY observed_at DESC LIMIT ?)
+                    """, arguments: [maxRows])
+                return db.changesCount
             }
         } catch {
             return 0   // C17：写失败降级不 crash
