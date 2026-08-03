@@ -76,13 +76,18 @@ public final class AttentionEventStore: @unchecked Sendable {
     }
 
     public func events(since: Date) -> [NormalizedAgentEvent] {
-        let rows = try! dbQueue.read { db in
-            try String.fetchAll(db, sql:
-                "SELECT event_json FROM attention_events WHERE observed_at >= ? ORDER BY observed_at",
-                arguments: [since])
+        // C17：读路径禁 try!，磁盘/损坏/关闭态降级空集
+        do {
+            let rows = try dbQueue.read { db in
+                try String.fetchAll(db, sql:
+                    "SELECT event_json FROM attention_events WHERE observed_at >= ? ORDER BY observed_at",
+                    arguments: [since])
+            }
+            return rows.compactMap { $0.data(using: .utf8) }
+                .compactMap { try? JSONDecoder().decode(NormalizedAgentEvent.self, from: $0) }
+        } catch {
+            return []
         }
-        return rows.compactMap { $0.data(using: .utf8) }
-            .compactMap { try? JSONDecoder().decode(NormalizedAgentEvent.self, from: $0) }
     }
 
     /// 用户纠错：追加审计事件，不改写原始事件（spec §5.2）
