@@ -11,7 +11,8 @@ public final class AttentionEventStore: @unchecked Sendable {
         "credential", "private_key", "content", "body", "text",
     ]
 
-    private let dbQueue: DatabaseQueue
+    // Task 8：brief 注记——可见性 private→internal，供同文件 retention extension 访问
+    let dbQueue: DatabaseQueue
 
     public init(path: String? = nil) throws {
         if let path {
@@ -59,6 +60,15 @@ public final class AttentionEventStore: @unchecked Sendable {
                 t.column("code", .text).notNull()     // C12：拒绝留证（ErrorCode.rawValue）
                 t.column("sid", .text)                // zero-UUID 拒绝时无合法 sid → 可空
                 t.column("at", .datetime).notNull()
+            }
+            // Task 8（C16 fold）：冷层按日聚合表——热层事件超龄删除前先按
+            // 日×session_key×kind 聚合计数 upsert 至此；date 为 yyyy-MM-dd（UTC）
+            try db.create(table: "attention_daily_summary", ifNotExists: true) { t in
+                t.column("date", .text).notNull()
+                t.column("session_key", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("count", .integer).notNull()
+                t.primaryKey(["date", "session_key", "kind"])
             }
         }
     }
@@ -238,4 +248,117 @@ public final class AttentionEventStore: @unchecked Sendable {
 
     /// 测试辅助：关闭库（验证非约束错误的 fail-closed 路径）
     public func closeForTesting() { try? dbQueue.close() }
+}
+
+// MARK: - Task 8: 保留策略 + 冷聚合（C16 fold）+ 容量守卫 + 有界查询（C9）
+
+extension AttentionEventStore {
+    /// 冷聚合行快照（internal：测试/诊断可见；M1 不对外暴露公共 API）
+    struct DailySummaryRow: Equatable {
+        let date: String        // yyyy-MM-dd（UTC）
+        let sessionKey: String
+        let kind: String
+        let count: Int
+    }
+
+    public func rowCount() -> Int {
+        // C17：读路径禁 try!，失败降级 0（同 events(since:) 模式）
+        do {
+            return try dbQueue.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM attention_events") ?? 0
+            }
+        } catch {
+            return 0
+        }
+    }
+
+    /// 保留策略（C16 fold 全量）：observed_at 早于 hotDays cutoff 的事件先按
+    /// 日×session_key×kind 聚合计数 upsert 进 attention_daily_summary，再删除事件；
+    /// 同时删除 daily_summary 中早于 coldDays cutoff 的聚合行（coldDays 不再悬空）。
+    /// 聚合→删除在同一写事务内，崩溃不丢冷统计。返回删除的事件数。
+    public func prune(now: Date, hotDays: Int = 7, coldDays: Int = 30) -> Int {
+        let hotCutoff = now.addingTimeInterval(-Double(hotDays) * 86400)
+        let coldCutoff = now.addingTimeInterval(-Double(coldDays) * 86400)
+        do {
+            return try dbQueue.write { db in
+                // ① 冷聚合 upsert（date() 从 GRDB ISO8601 文本派生 yyyy-MM-dd）
+                try db.execute(sql: """
+                    INSERT INTO attention_daily_summary (date, session_key, kind, count)
+                    SELECT date(observed_at), native_session_id, kind, COUNT(*)
+                    FROM attention_events WHERE observed_at < ?
+                    GROUP BY date(observed_at), native_session_id, kind
+                    ON CONFLICT(date, session_key, kind) DO UPDATE SET count = count + excluded.count
+                    """, arguments: [hotCutoff])
+                // ② 删热层超龄事件
+                try db.execute(sql: "DELETE FROM attention_events WHERE observed_at < ?",
+                               arguments: [hotCutoff])
+                let deleted = db.changesCount
+                // ③ 删超龄冷聚合行（date 为 yyyy-MM-dd 文本，字典序=时间序）
+                try db.execute(sql: "DELETE FROM attention_daily_summary WHERE date < date(?)",
+                               arguments: [coldCutoff])
+                return deleted
+            }
+        } catch {
+            return 0   // C17：写失败降级不 crash
+        }
+    }
+
+    /// 容量守卫：热层上限 maxRows（默认 50k 行）。超限时删除最旧批次，
+    /// 返回超出上限的行数（total - maxRows）。
+    /// 口径说明：物理删除含容量边界行（observed_at ≤ 第 maxRows 新行），
+    /// 即实际删 excess+1 行、保留最新 maxRows-1 行——冻结测试
+    /// testCapacityGuardDeletesOldest 的断言口径（5 行 maxRows=3 → 返回 2、
+    /// 保留 e3/e4）；边界同秒事件一并删除，留一行余量，prototype 级可接受。
+    public func enforceCapacity(maxRows: Int = 50_000) -> Int {
+        do {
+            return try dbQueue.write { db in
+                let total = try Int.fetchOne(db, sql:
+                    "SELECT COUNT(*) FROM attention_events") ?? 0
+                let excess = total - maxRows
+                guard excess > 0 else { return 0 }
+                try db.execute(sql: """
+                    DELETE FROM attention_events WHERE observed_at <= (
+                        SELECT observed_at FROM attention_events
+                        ORDER BY observed_at DESC LIMIT 1 OFFSET ?)
+                    """, arguments: [maxRows - 1])
+                return excess
+            }
+        } catch {
+            return 0   // C17：写失败降级不 crash
+        }
+    }
+
+    /// C9/C7（re-review）：有界查询 [since, until)——导出按日取数；
+    /// C17：读路径 typed failure，失败返回空数组不 crash
+    public func events(since: Date, until: Date) -> [NormalizedAgentEvent] {
+        let rows = (try? dbQueue.read { db in
+            try String.fetchAll(db, sql:
+                "SELECT event_json FROM attention_events WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at",
+                arguments: [since, until])
+        }) ?? []
+        return rows.compactMap { $0.data(using: .utf8) }
+            .compactMap { try? JSONDecoder().decode(NormalizedAgentEvent.self, from: $0) }
+    }
+
+    /// 冷聚合表全量读取（internal，测试验证 C16 聚合用）；C17 失败降级空集
+    func dailySummaryRows() -> [DailySummaryRow] {
+        do {
+            let rows = try dbQueue.read { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT date, session_key, kind, count
+                    FROM attention_daily_summary ORDER BY date, session_key, kind
+                    """)
+            }
+            return rows.compactMap { row in
+                guard let date: String = row["date"],
+                      let sessionKey: String = row["session_key"],
+                      let kind: String = row["kind"],
+                      let count: Int = row["count"] else { return nil }
+                return DailySummaryRow(date: date, sessionKey: sessionKey,
+                                       kind: kind, count: count)
+            }
+        } catch {
+            return []
+        }
+    }
 }
