@@ -62,11 +62,19 @@ final class AttentionDetailPanelController: NSObject, NSWindowDelegate {
         p.isMovableByWindowBackground = true
         p.contentViewController = hc
         p.delegate = self
+        // 强制首次布局让窗口 frame 定型：NSHostingController 赋值后 SwiftUI 内容未完成首次布局，
+        // 此时 p.frame 不是最终宽度，直接用它算原点会把面板挤出屏幕右缘（Task 18 验收真机 bug）
+        hc.view.layoutSubtreeIfNeeded()
+        p.layoutIfNeeded()
         // 首次打开定位到主屏可视区右上（菜单栏附近；再次打开保持用户拖动后的位置）
         if let screen = NSScreen.main {
             let f = screen.visibleFrame
-            p.setFrameOrigin(NSPoint(x: f.maxX - p.frame.width - 24,
-                                     y: f.maxY - p.frame.height - 24))
+            var origin = NSPoint(x: f.maxX - p.frame.width - 24,
+                                 y: f.maxY - p.frame.height - 24)
+            // 钳制进可视区（双保险：即使 frame 仍异常也保证面板可见）
+            origin.x = max(f.minX, min(origin.x, f.maxX - p.frame.width))
+            origin.y = max(f.minY, min(origin.y, f.maxY - p.frame.height))
+            p.setFrameOrigin(origin)
         }
         panel = p
         hosting = hc
