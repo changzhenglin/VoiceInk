@@ -57,7 +57,12 @@ final class HookInstaller {
         ]
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         for event in ["Stop", "Notification", "PreToolUse", "StopFailure", "SessionStart", "SessionEnd"] {
-            hooks[event] = [entry]
+            // 条目级 merge（I1 fix）：移除我方旧条目（token/port 变化时自然更新），
+            // 保留第三方条目（同键共存）；不整数组替换（避免静默吞掉第三方 hooks）
+            var entries = hooks[event] as? [[String: Any]] ?? []
+            entries.removeAll { isEntryOurs($0) }
+            entries.append(entry)
+            hooks[event] = entries
         }
         settings["hooks"] = hooks
         settings["voice_coding_attention"] = ["installed_claude_version": claudeVersion,
@@ -100,10 +105,14 @@ final class HookInstaller {
         (try? Data(contentsOf: URL(fileURLWithPath: settingsPath)))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
     }
+    /// 单 entry 是否我方（command 含 attention-hook-deliver 标记）
+    private func isEntryOurs(_ entry: [String: Any]) -> Bool {
+        let inner = entry["hooks"] as? [[String: Any]] ?? []
+        return inner.contains { ($0["command"] as? String)?.contains("attention-hook-deliver") == true }
+    }
     private func isOurs(_ value: Any?) -> Bool {
         guard let arr = value as? [[String: Any]] else { return false }
-        return arr.contains { ($0["hooks"] as? [[String: Any]])?
-            .contains { ($0["command"] as? String)?.contains("attention-hook-deliver") == true } == true }
+        return arr.contains { isEntryOurs($0) }
     }
     private func installScript() -> String {
         let dest = FileManager.default.homeDirectoryForCurrentUser
