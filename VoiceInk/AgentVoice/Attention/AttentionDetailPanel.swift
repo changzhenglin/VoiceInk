@@ -327,7 +327,7 @@ private struct AttentionTrustDetailSection: View {
 // MARK: - 动作按钮（去处理/标记已处理/稍后/纠错）
 
 private struct AttentionActionSection: View {
-    let store: AttentionStore
+    @ObservedObject var store: AttentionStore
     let session: SessionDisplay
     @State private var showCorrection = false
     @State private var correctionReason = ""
@@ -355,6 +355,12 @@ private struct AttentionActionSection: View {
                 }
                 .disabled(activeItems.isEmpty)
                 Button("纠错…") { showCorrection.toggle() }
+            }
+            // Task 17：导航反馈（C19 降级 / E-AX-NAV-FAILED 提示）
+            if let navFeedback = store.navFeedback {
+                Text(navFeedback)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if showCorrection {
                 HStack(spacing: 8) {

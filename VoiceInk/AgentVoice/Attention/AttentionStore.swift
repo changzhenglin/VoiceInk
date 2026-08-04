@@ -30,6 +30,9 @@ final class AttentionStore: ObservableObject {
     @Published var overflow: OverflowInfo?
     @Published var enabled = false
     @Published var versionDrift = false
+    /// Task 17：导航反馈（.focused → nil 清除；.fallbackAppActivated → 提示用户自行找窗口；
+    /// .failed → 导航失败提示）。面板动作按钮区一行 secondary 文案读取。
+    @Published var navFeedback: String?
 
     private var router: AttentionEventRouter?
     private var server: AttentionHTTPServer?
@@ -172,6 +175,16 @@ final class AttentionStore: ObservableObject {
     }
     func navigate(_ session: SessionDisplay) {
         // Task 17 接线（C19：cwd 全路径经宿主层运行时映射，契约表只存 label+ref）
+        let cwd = router?.cwdPath(for: session.id)
+        let result = AXNavigator().navigate(sessionKey: session.id, cwd: cwd)
+        switch result {
+        case .focused:
+            navFeedback = nil   // 精准聚焦成功，清除提示
+        case .fallbackAppActivated(let appName):
+            navFeedback = "已切到终端（\(appName)），请自行找窗口"
+        case .failed:
+            navFeedback = "导航失败，请手动切换窗口"
+        }
     }
 
     // MARK: - Task 16：详情面板只读接口（复用既有包层 API，不新增包层查询 API）
