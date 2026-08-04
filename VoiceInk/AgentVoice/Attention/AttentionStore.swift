@@ -7,6 +7,7 @@ struct SessionDisplay: Identifiable, Equatable {
     let id: String            // sessionKey
     let shortLabel: String    // cwd basename 标签 + 冲突后缀
     let activityFact: ActivityFact
+    let freshness: FreshnessState   // Task 16：分区输入（stale → 需要检查，spec §3.3）
     let connection: ConnectionState
     let attention: AttentionLevel
     let lastEventAt: Date     // C18：事件真实时间戳，不是刷新时间
@@ -96,7 +97,8 @@ final class AttentionStore: ObservableObject {
         server?.stop()
         HookInstaller(token: Self.sharedAuthToken()).uninstall()
         router = nil; server = nil
-        enabled = false; sessions = []; pendingCount = 0; overflow = nil
+        // Task 14 review M4①：versionDrift 一并重置（上一轮 enable 的 drift 残留不跨开关）
+        enabled = false; sessions = []; pendingCount = 0; overflow = nil; versionDrift = false
     }
 
     /// 投影刷新（C18：真实时间戳/显式 rank 排序/同名后缀/completed 超 24h 过滤）
@@ -123,7 +125,8 @@ final class AttentionStore: ObservableObject {
                 id: s.sessionKey,
                 shortLabel: shortLabel(for: s.sessionKey, router: router,
                                        taken: displays.map(\.shortLabel)),
-                activityFact: s.activityFact, connection: s.connection,
+                activityFact: s.activityFact, freshness: s.freshness,
+                connection: s.connection,
                 attention: s.attention,
                 lastEventAt: last ?? now,   // C18：真实时间戳（缺失退化刷新时间）
                 sourceLevel: "experimental_fragile"))
@@ -150,15 +153,33 @@ final class AttentionStore: ObservableObject {
     }
 
     // MARK: - C3：面板动作委托 router mutation API（C5 持久化在 router/store 层）
+    // Task 14 review M4②：动作后立即 refresh()——2s tick 前用户可见反馈（投影即时更新）
 
-    func resolve(_ item: AttentionItem) { router?.resolve(item: item, at: Date()) }
-    func snooze(_ item: AttentionItem) { router?.snooze(item: item, at: Date()) }
+    func resolve(_ item: AttentionItem) { router?.resolve(item: item, at: Date()); refresh() }
+    func snooze(_ item: AttentionItem) { router?.snooze(item: item, at: Date()); refresh() }
     // re-review 接口补桥：Task 16 面板纠错按钮消费（C8：reason 持久）
     func correct(sessionKey: String, reason: String) {
         router?.correct(sessionKey: sessionKey, reason: reason, at: Date())
+        refresh()
     }
     func navigate(_ session: SessionDisplay) {
         // Task 17 接线（C19：cwd 全路径经宿主层运行时映射，契约表只存 label+ref）
+    }
+
+    // MARK: - Task 16：详情面板只读接口（复用既有包层 API，不新增包层查询 API）
+
+    /// 会话的注意力项（面板「标记已处理/稍后」按钮的 item 输入；未启用时空集）
+    func attentionItems(for sessionKey: String) -> [AttentionItem] {
+        router?.currentItems().filter { $0.sessionKey == sessionKey } ?? []
+    }
+
+    /// 会话近 limit 条事件（面板 TrustDetail 时间线）。数据源为既有包层 API
+    /// `AttentionEventStore.events(since:)`（observed_at 升序），suffix 取最近。
+    func recentEvents(for sessionKey: String, limit: Int = 5) -> [NormalizedAgentEvent] {
+        guard let router else { return [] }
+        let events = router.store.events(since: .distantPast)
+            .filter { $0.nativeSessionId == sessionKey }
+        return Array(events.suffix(limit))
     }
 
     private func shortLabel(for sessionKey: String, router: AttentionEventRouter,
