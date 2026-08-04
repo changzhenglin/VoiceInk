@@ -1,16 +1,5 @@
 import SwiftUI
 
-// C2 兼容桥：Task 14 替换为 AttentionStore.sharedAuthToken()。
-// 键与值语义与 C2 完全一致（同一 UserDefaults 持久化键 attentionAuthToken，
-// 缺失则 UUID 生成并持久化）——全 app 单 token，不存在双 token。
-private func attentionAuthToken() -> String {
-    let key = "attentionAuthToken"
-    if let t = UserDefaults.standard.string(forKey: key) { return t }
-    let t = UUID().uuidString
-    UserDefaults.standard.set(t, forKey: key)
-    return t
-}
-
 /// Agent 收件箱功能总开关（ADJ-4：默认关闭；版本 drift 仅徽标提示，不停用）。
 /// 过渡形态（控制器裁决④）：开→直接 HookInstaller.install（冲突/失败弹 Alert），
 /// 关→uninstall。事务式 enable（store→server→hooks+回滚）由 Task 14
@@ -107,7 +96,7 @@ struct AttentionSettingsView: View {
     }
 
     private func performInstall() {
-        let installer = HookInstaller(token: attentionAuthToken())
+        let installer = HookInstaller(token: AttentionStore.sharedAuthToken())
         // 与 Task 14 enable() 口径一致：探测失败记 "unknown"（fail-open，不停用）
         let version = currentVersion ?? "unknown"
         switch installer.install(claudeVersion: version) {
@@ -124,7 +113,7 @@ struct AttentionSettingsView: View {
     }
 
     private func performUninstall() {
-        HookInstaller(token: attentionAuthToken()).uninstall()
+        HookInstaller(token: AttentionStore.sharedAuthToken()).uninstall()
         installedVersion = nil
         enabled = false
     }
@@ -132,7 +121,7 @@ struct AttentionSettingsView: View {
     /// 开关真值以 settings.json 为准（HookInstaller 读写同一文件）——
     /// 不另存 enabled 持久化键，避免与 Task 14 AttentionStore 状态双源。
     private func refreshVersions() async {
-        let installed = HookInstaller(token: attentionAuthToken()).installedClaudeVersion()
+        let installed = HookInstaller(token: AttentionStore.sharedAuthToken()).installedClaudeVersion()
         // 版本探测会 spawn 子进程（waitUntilExit 阻塞）——放后台，不卡主线程
         let current = await Task.detached(priority: .utility) {
             ClaudeVersionProbe.current()

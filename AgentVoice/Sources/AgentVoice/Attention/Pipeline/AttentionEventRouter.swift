@@ -141,6 +141,11 @@ public final class AttentionEventRouter: @unchecked Sendable {
             }
         case .none: break
         }
+        // 携带项 A（ADJ-2 闭合）：sessionEnd 成功入库后释放 mutex ownership——
+        // 修 owner 表只增不减的泄漏，同 session 结束后重新声明无冲突残留
+        if event.kind == .sessionEnd {
+            mutex.release(sessionId: event.nativeSessionId)
+        }
         return .accepted(snapshot: snapshot)
     }
 
@@ -185,6 +190,12 @@ public final class AttentionEventRouter: @unchecked Sendable {
     public func lastEventAt(for sessionKey: String) -> Date? {
         lock.lock(); defer { lock.unlock() }
         return sessionLastEventAt[sessionKey]
+    }
+
+    /// internal 测试 seam（非公开契约）：委托 mutex 查 ownership 持有状态，
+    /// 供携带项 A release wiring 测试观测用（同阶段① Task 4 dbQueue internal 先例）。
+    func holdsOwnership(sessionId: String) -> Bool {
+        mutex.holds(sessionId: sessionId)
     }
 
     // MARK: - C3：mutation API（Task 16 面板动作的管道入口；C5 持久化）

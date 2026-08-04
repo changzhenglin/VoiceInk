@@ -1,17 +1,6 @@
 import SwiftUI
 import AgentVoice
 
-// C2 兼容桥：Task 14 替换为 AttentionStore.sharedAuthToken()。
-// 与 AttentionSettingsView.swift 内同名桥同键同语义（UserDefaults 键
-// attentionAuthToken，缺失则 UUID 生成并持久化）——全 app 单 token。
-private func attentionAuthToken() -> String {
-    let key = "attentionAuthToken"
-    if let t = UserDefaults.standard.string(forKey: key) { return t }
-    let t = UUID().uuidString
-    UserDefaults.standard.set(t, forKey: key)
-    return t
-}
-
 /// 自检结果（C21）：pass + 摘要（PASS 列证据 / FAIL 列未过断言）
 private struct SelfTestResult: Equatable, Sendable {
     let pass: Bool
@@ -149,7 +138,7 @@ struct AttentionDiagnosticsView: View {
     // MARK: - Actions
 
     private func performUninstall() {
-        HookInstaller(token: attentionAuthToken()).uninstall()
+        HookInstaller(token: AttentionStore.sharedAuthToken()).uninstall()
         installedVersion = nil
         showUninstalled = true
     }
@@ -172,7 +161,7 @@ struct AttentionDiagnosticsView: View {
     }
 
     private func refreshVersions() async {
-        let installed = HookInstaller(token: attentionAuthToken()).installedClaudeVersion()
+        let installed = HookInstaller(token: AttentionStore.sharedAuthToken()).installedClaudeVersion()
         // 版本探测 spawn 子进程（阻塞调用）——放后台
         let current = await Task.detached(priority: .utility) {
             ClaudeVersionProbe.current()

@@ -25,4 +25,11 @@ public final class SessionMutex: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         owner.removeValue(forKey: sessionId)
     }
+
+    /// internal 测试 seam（非公开契约）：是否持有该 session 的 ownership。
+    /// 供携带项 A release wiring 测试观测用（同阶段① Task 4 dbQueue internal 先例）。
+    func holds(sessionId: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return owner[sessionId] != nil
+    }
 }
