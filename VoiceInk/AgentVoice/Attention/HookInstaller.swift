@@ -16,6 +16,9 @@ final class HookInstaller {
     private let settingsPath: String
     private let port: UInt16
     private let token: String
+    /// 我方管理的事件键（install 写入 / uninstall 清理范围）；
+    /// 不相关键（PreCompact 等其他插件的 hooks）不在安装/卸载范围，不阻塞安装。
+    private static let managedEventNames = ["Stop", "Notification", "PreToolUse", "StopFailure", "SessionStart", "SessionEnd"]
 
     init(settingsPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/settings.json").path,
@@ -39,9 +42,10 @@ final class HookInstaller {
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             settings = existing
         }
-        // merge 保护：已有非 VoiceInk hooks → 报冲突让 UI 层确认
+        // merge 保护：我方管理的 6 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
+        // 不相关键（PreCompact 等其他插件 hooks）不在安装/卸载范围，不阻塞。
         if let hooks = settings["hooks"] as? [String: Any] {
-            let foreign = hooks.keys.filter { !isOurs(hooks[$0]) }
+            let foreign = hooks.keys.filter { Self.managedEventNames.contains($0) && !isOurs(hooks[$0]) }
             if !foreign.isEmpty { return .conflict(existingHooks: foreign) }
         }
         // 备份
@@ -56,7 +60,7 @@ final class HookInstaller {
                        "command": "ATTENTION_PORT=\(port) ATTENTION_TOKEN=\(token) \(scriptPath)"]]
         ]
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        for event in ["Stop", "Notification", "PreToolUse", "StopFailure", "SessionStart", "SessionEnd"] {
+        for event in Self.managedEventNames {
             // 条目级 merge（I1 fix）：移除我方旧条目（token/port 变化时自然更新），
             // 保留第三方条目（同键共存）；不整数组替换（避免静默吞掉第三方 hooks）
             var entries = hooks[event] as? [[String: Any]] ?? []
