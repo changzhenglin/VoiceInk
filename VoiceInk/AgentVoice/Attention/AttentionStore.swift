@@ -85,9 +85,14 @@ final class AttentionStore: ObservableObject {
         router = r; server = s; retentionScheduler = sched
         enabled = true
         // 2s 投影刷新（菜单栏/面板数据源；Task 15/16 消费）
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        // M2 修复（Task 14 review 携带）：Timer()+RunLoop.main.add(.common) 单注册——
+        // 菜单展开期间 RunLoop 处于 tracking mode，.default 注册的 scheduledTimer 会冻结；
+        // 不得用 scheduledTimer 再 add（default+common 双注册会双触发）
+        let refreshTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        RunLoop.main.add(refreshTimer, forMode: .common)
+        timer = refreshTimer
     }
 
     /// enable 逆操作：timer/scheduler/server/hooks/投影状态全清（幂等）
@@ -116,7 +121,10 @@ final class AttentionStore: ObservableObject {
         let items = router.currentItems()
         let now = Date()
         var displays: [SessionDisplay] = []
-        for s in snaps {
+        // M3 修复（Task 14 review 携带）：currentSnapshots() 源自语义上无序的存储迭代——
+        // 投影前按 sessionKey 字典序定序，shortLabel 同名后缀分配随之确定（消除抖动）；
+        // taken 增量累积逻辑不变
+        for s in snaps.sorted(by: { $0.sessionKey < $1.sessionKey }) {
             // C18：completed 超 24h 过滤（「最近完成」只显示近 24h，spec §2.5）
             let last = router.lastEventAt(for: s.sessionKey)
             if s.activityFact == .completed, let last,

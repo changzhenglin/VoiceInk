@@ -9,10 +9,14 @@ private struct SelfTestResult: Equatable, Sendable {
 
 /// 信任诊断页（ADJ-4/C21）：来源级别明示、版本对比+drift 徽标、接收统计、
 /// 一键卸载、导出占位、管道自检。
-/// 接收统计三项为外部注入值（默认 0，控制器裁决③）：活数据源
-/// （server/router 实例）Task 14 才创建，Task 14/15 接线时填充；
+/// 接收统计三项为外部注入值（默认 0，控制器裁决③）：活数据源计数 accessor
+/// 尚不存在（Task 15 受包层零改动约束未接线，见 Task 15 报告 concerns）；
 /// 本视图不创建 server/store 实例（自检的临时内存库除外，裁决②）。
 struct AttentionDiagnosticsView: View {
+    /// 生命周期通道（Task 15 裁决⑥收口）：卸载经 store.disable()（含 hooks 卸载+全清）；
+    /// 由宿主注入（Settings 页 sheet 继承环境 / 菜单栏窗口控制器显式注入）
+    @EnvironmentObject var store: AttentionStore
+
     var receivedCount: Int = 0
     var duplicateCount: Int = 0
     var authRejectCount: Int = 0
@@ -137,8 +141,11 @@ struct AttentionDiagnosticsView: View {
 
     // MARK: - Actions
 
+    /// 卸载经 store.disable() 收口（裁决⑥）：disable() 已含 hook 卸载 +
+    /// timer/scheduler/server/投影全清（幂等）。UX 流程不变，只换生命周期通道。
+    /// installedClaudeVersion 展示查询保留直调（纯读，refreshVersions）。
     private func performUninstall() {
-        HookInstaller(token: AttentionStore.sharedAuthToken()).uninstall()
+        store.disable()
         installedVersion = nil
         showUninstalled = true
     }

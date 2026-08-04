@@ -1,11 +1,13 @@
 import SwiftUI
 
 /// Agent 收件箱功能总开关（ADJ-4：默认关闭；版本 drift 仅徽标提示，不停用）。
-/// 过渡形态（控制器裁决④）：开→直接 HookInstaller.install（冲突/失败弹 Alert），
-/// 关→uninstall。事务式 enable（store→server→hooks+回滚）由 Task 14
-/// AttentionStore.enable() 收口，本视图不实现。
+/// 收口形态（Task 15 接线）：toggle 真值源 = AttentionStore.enabled（单一事实源）；
+/// 开→确认对话框→事务式 store.enable()（store→server→hooks+回滚），
+/// 错误映射既有交互通道（冲突→showConflict / 失败→showInstallFailed）；
+/// 关→store.disable()（timer/scheduler/server/hooks/投影全清，幂等）。
+/// 本视图不再直调 HookInstaller 生命周期接口（版本展示查询除外）。
 struct AttentionSettingsView: View {
-    @State private var enabled = false
+    @EnvironmentObject var store: AttentionStore
     @State private var installedVersion: String?
     @State private var currentVersion: String?
     @State private var showEnableConfirm = false
@@ -52,7 +54,8 @@ struct AttentionSettingsView: View {
             Text(failMessage)
         }
         .sheet(isPresented: $showDiagnostics, onDismiss: {
-            // 诊断页可能已卸载 hook——关闭后刷新开关真值（settings.json 为准）
+            // 诊断页可能已卸载 hook（经 store.disable() 收口）——关闭后刷新版本展示
+            // （toggle 真值 = store.enabled，@Published 自动驱动，无需手动同步）
             Task { await refreshVersions() }
         }) {
             AttentionDiagnosticsView()
@@ -60,10 +63,11 @@ struct AttentionSettingsView: View {
         }
     }
 
-    /// 开关延迟置位：确认/安装成功后才翻 ON；失败保持 OFF（不闪回）
+    /// 开关延迟置位 + 单一事实源：真值 = store.enabled（enable() 成功后 @Published 驱动翻 ON；
+    /// 失败保持 OFF，不闪回）。开→确认对话框；关→store.disable()（幂等全清）
     private var toggleBinding: Binding<Bool> {
         Binding(
-            get: { enabled },
+            get: { store.enabled },
             set: { wantsOn in
                 if wantsOn {
                     showEnableConfirm = true
@@ -95,31 +99,37 @@ struct AttentionSettingsView: View {
         }
     }
 
+    /// 事务式 enable 收口（裁决③）：store→server→hooks+回滚由 AttentionStore.enable() 承担。
+    /// 错误映射到既有交互通道：冲突→showConflict（冲突 hooks 清单）/ 失败→showInstallFailed
     private func performInstall() {
-        let installer = HookInstaller(token: AttentionStore.sharedAuthToken())
-        // 与 Task 14 enable() 口径一致：探测失败记 "unknown"（fail-open，不停用）
-        let version = currentVersion ?? "unknown"
-        switch installer.install(claudeVersion: version) {
-        case .installed:
-            installedVersion = version
-            enabled = true
-        case .conflict(let existing):
-            conflictHooks = existing
-            showConflict = true
-        case .failed(let message):
-            failMessage = message
+        do {
+            try store.enable()
+            installedVersion = HookInstaller(token: AttentionStore.sharedAuthToken())
+                .installedClaudeVersion()
+        } catch let error as HookInstaller.InstallError {
+            switch error {
+            case .conflictUnresolved(let existing):
+                conflictHooks = existing
+                showConflict = true
+            case .installFailed(let message):
+                failMessage = message
+                showInstallFailed = true
+            }
+        } catch {
+            // 存储/server 等非 InstallError（store 初始化失败、bind 失败等）→ 失败通道
+            failMessage = error.localizedDescription
             showInstallFailed = true
         }
     }
 
+    /// 关→store.disable()（disable() 已含 hook 卸载 + timer/scheduler/server/投影全清，幂等）
     private func performUninstall() {
-        HookInstaller(token: AttentionStore.sharedAuthToken()).uninstall()
+        store.disable()
         installedVersion = nil
-        enabled = false
     }
 
-    /// 开关真值以 settings.json 为准（HookInstaller 读写同一文件）——
-    /// 不另存 enabled 持久化键，避免与 Task 14 AttentionStore 状态双源。
+    /// 版本展示刷新（drift 徽标数据源）。开关真值已收口到 store.enabled——
+    /// 不再从 settings.json 派生 enabled，避免与 AttentionStore 双源。
     private func refreshVersions() async {
         let installed = HookInstaller(token: AttentionStore.sharedAuthToken()).installedClaudeVersion()
         // 版本探测会 spawn 子进程（waitUntilExit 阻塞）——放后台，不卡主线程
@@ -128,6 +138,5 @@ struct AttentionSettingsView: View {
         }.value
         installedVersion = installed
         currentVersion = current
-        enabled = installed != nil
     }
 }
