@@ -6,7 +6,8 @@ struct AttentionMenuBarSection: View {
 
     var body: some View {
         if store.enabled {
-            Section("Agent 收件箱") {
+            // 待处理数 = 等待你输入/需要权限确认 事项数（store.pendingCount 口径），非会话数
+            Section("Agent 收件箱 · \(store.pendingCount) 项待处理") {
                 if store.sessions.isEmpty {
                     Text("暂无受管会话").foregroundStyle(.secondary)
                 }
