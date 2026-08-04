@@ -14,6 +14,7 @@ final class AttentionHTTPServer {
     private let maxBody = 65536
     private let maxConcurrent = 16
     private var activeConnections = 0
+    private var admittedConns: Set<ObjectIdentifier> = []  // I1：幂等递减记账
     private let connLock = NSLock()
     private let requestDeadline: TimeInterval = 5   // C14：每请求 deadline
 
@@ -59,11 +60,14 @@ final class AttentionHTTPServer {
             return
         }
         activeConnections += 1
+        admittedConns.insert(ObjectIdentifier(conn))
         connLock.unlock()
         handle(conn)
-        // 每请求 deadline：超时强制断开
+        // 每请求 deadline：超时强制断开（I1：走统一 close 闭合记账）
         DispatchQueue.global().asyncAfter(deadline: .now() + requestDeadline) {
-            [weak conn] in conn?.cancel()
+            [weak self, weak conn] in
+            guard let self, let conn else { return }
+            self.close(conn)
         }
     }
 
@@ -77,7 +81,7 @@ final class AttentionHTTPServer {
         conn.receive(minimumIncompleteLength: 1, maximumLength: maxBody) {
             [weak self] chunk, _, isComplete, error in
             guard let self else { return }
-            if error != nil { return conn.cancel() }
+            if error != nil { return self.close(conn) }
             var buf = buffer
             if let chunk { buf.append(chunk) }
             if buf.count > self.maxBody {
@@ -99,7 +103,7 @@ final class AttentionHTTPServer {
                 if let req = String(data: buf, encoding: .utf8) {
                     return self.process(conn: conn, request: req)
                 }
-                return conn.cancel()
+                return self.close(conn)
             }
             self.receiveFull(conn: conn, buffer: buf)  // 继续收
         }
@@ -143,9 +147,18 @@ final class AttentionHTTPServer {
         let resp = "HTTP/1.1 \(status) OK\r\nContent-Type: application/json\r\n" +
                    "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         conn.send(content: Data(resp.utf8), completion: .contentProcessed { _ in
-            conn.cancel()
-            self.connLock.lock(); self.activeConnections = max(0, self.activeConnections - 1)
-            self.connLock.unlock()
+            self.close(conn)
         })
+    }
+
+    /// I1：统一闭合——cancel + 幂等递减。仅对 admit() 入账过的连接恰好一次递减；
+    /// 503 过载路径从未入账（id 不在 admittedConns），remove 返回 nil 不递减。
+    private func close(_ conn: NWConnection) {
+        conn.cancel()
+        connLock.lock()
+        if admittedConns.remove(ObjectIdentifier(conn)) != nil {
+            activeConnections = max(0, activeConnections - 1)
+        }
+        connLock.unlock()
     }
 }
