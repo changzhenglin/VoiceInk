@@ -139,7 +139,10 @@ struct AttentionDetailPanelView: View {
                 if let session = selectedSession {
                     AttentionTrustDetailSection(store: store, session: session)
                     Divider()
+                    // 验收门 Task 18 fix4：面板内切换会话时，纠错输入区(@State correctionReason/
+                    // showCorrection 跨会话保留可提交到错误会话）。用 session.id 作身份重置子树。
                     AttentionActionSection(store: store, session: session)
+                        .id(session.id)
                 } else {
                     Text("暂无会话可显示")
                         .foregroundStyle(.secondary)

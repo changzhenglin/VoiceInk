@@ -59,6 +59,7 @@ struct AttentionSettingsView: View {
             Task { await refreshVersions() }
         }) {
             AttentionDiagnosticsView()
+                .environmentObject(store)  // 验收门 Task 18 fix4：sheet 语义继承但显式更稳，卸载按钮访问 store 时防缺失 crash
                 .frame(minWidth: 500, idealWidth: 540, minHeight: 540, idealHeight: 600)
         }
     }
