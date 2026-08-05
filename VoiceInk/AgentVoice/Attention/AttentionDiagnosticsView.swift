@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import AgentVoice
 
@@ -7,8 +8,14 @@ private struct SelfTestResult: Equatable, Sendable {
     let summary: String
 }
 
+/// 导出反馈（Task 19 Step 4 裁决①）：throws → 用户可见文案，诊断页内显示不吞错
+private struct ExportFeedback: Equatable {
+    let isError: Bool
+    let message: String
+}
+
 /// 信任诊断页（ADJ-4/C21）：来源级别明示、版本对比+drift 徽标、接收统计、
-/// 一键卸载、导出占位、管道自检。
+/// 一键卸载、影子导出（Task 19 Step 4 接线）、管道自检。
 /// 接收统计三项为外部注入值（默认 0，控制器裁决③）：活数据源计数 accessor
 /// 尚不存在（Task 15 受包层零改动约束未接线，见 Task 15 报告 concerns）；
 /// 本视图不创建 server/store 实例（自检的临时内存库除外，裁决②）。
@@ -27,6 +34,9 @@ struct AttentionDiagnosticsView: View {
     @State private var selfTestResult: SelfTestResult?
     @State private var showUninstallConfirm = false
     @State private var showUninstalled = false
+    // Task 19 Step 4：影子导出接线状态（裁决①错误文案 / 裁决⑤无数据禁用）
+    @State private var dayHasEvents = false
+    @State private var exportFeedback: ExportFeedback?
 
     var body: some View {
         List {
@@ -34,9 +44,14 @@ struct AttentionDiagnosticsView: View {
             versionSection
             statsSection
             selfTestSection
+            exportSection
             actionsSection
         }
-        .task { await refreshVersions() }
+        .task {
+            await refreshVersions()
+            refreshExportGating()
+        }
+        .onChange(of: store.enabled) { _, _ in refreshExportGating() }
         .confirmationDialog("卸载 Agent 收件箱 hooks？",
                             isPresented: $showUninstallConfirm, titleVisibility: .visible) {
             Button("卸载", role: .destructive) { performUninstall() }
@@ -124,18 +139,44 @@ struct AttentionDiagnosticsView: View {
         }
     }
 
+    /// 一键导出区域（Task 19 Step 4 接线，裁决②独立按钮扩展本区域）：
+    /// 当日时间线 CSV/JSON（包层 exportDay/exportJSON）+ 影子对照报告
+    /// （包层 compareWithShadowLog，app 层只渲染 CSV 不重算，裁决④）
+    private var exportSection: some View {
+        Section {
+            Button("导出当日时间线 CSV…") { exportTimelineCSV() }
+                .disabled(!exportEnabled)
+            Button("导出当日时间线 JSON…") { exportTimelineJSON() }
+                .disabled(!exportEnabled)
+            Button("导出影子对照报告…") { exportCompareReport() }
+                .disabled(!exportEnabled)
+            Button("归档到证据目录") { archiveToEvidenceDir() }
+                .disabled(!exportEnabled)
+
+            if let feedback = exportFeedback {
+                HStack(spacing: 6) {
+                    Image(systemName: feedback.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(feedback.isError ? .red : .green)
+                    Text(feedback.message)
+                }
+                .font(.caption)
+                .textSelection(.enabled)
+            }
+        } header: {
+            Text("一键导出")
+        } footer: {
+            Text(exportFooterText)
+        }
+    }
+
     private var actionsSection: some View {
         Section {
             Button("一键卸载 hook", role: .destructive) {
                 showUninstallConfirm = true
             }
             .disabled(installedVersion == nil)
-
-            // 一键导出：阶段③ Task 19 接线，本 task 仅占位（控制器裁决⑤）
-            Button("一键导出") {}
-                .disabled(true)
         } footer: {
-            Text("导出功能待后续版本接线。卸载只移除本功能的 hook 条目，不影响其他工具的 hooks。")
+            Text("卸载只移除本功能的 hook 条目，不影响其他工具的 hooks。")
         }
     }
 
@@ -148,6 +189,158 @@ struct AttentionDiagnosticsView: View {
         store.disable()
         installedVersion = nil
         showUninstalled = true
+    }
+
+    // MARK: - 影子导出（Task 19 Step 4；C9 fold：序列化全在包层 exporter，app 层只加 NSSavePanel 壳）
+
+    /// 裁决⑤：功能未启用或当日（UTC）无事件 → 按钮禁用，不导空文件（Truthfulness）
+    private var exportEnabled: Bool { store.enabled && dayHasEvents }
+
+    private var exportFooterText: String {
+        if !store.enabled {
+            return "导出需先启用 Agent 收件箱（未启用时没有运行中的事件库）。"
+        }
+        if !dayHasEvents {
+            return "当日（UTC 日窗）无事件记录，导出不可用——不导出空文件。"
+        }
+        return "CSV/JSON 为当日四类 hook 事件全量时间线（导出前脱敏复查，违反即中止不写文件）；" +
+            "对照报告为当日导出与 ~/.voice-coding/shadow-log.jsonl 的机械对比。" +
+            "保存面板默认名 shadow-YYYY-MM-DD.csv/.json；" +
+            "归档直写 ~/.voice-coding/shadow-runs/<日>/export.csv（协议命名，覆盖同名）。"
+    }
+
+    private func refreshExportGating() {
+        dayHasEvents = store.enabled && store.hasEvents(on: Date())
+        if !exportEnabled { exportFeedback = nil }   // 不可用态不残留旧反馈
+    }
+
+    private func exportTimelineCSV() {
+        let date = Date()
+        exportViaSavePanel { exporter in
+            // 裁决③：NSSavePanel 默认名 = exporter 默认 shadow-YYYY-MM-DD.csv
+            (exporter.suggestedFileName(for: date), try exporter.exportDay(date: date))
+        }
+    }
+
+    private func exportTimelineJSON() {
+        let date = Date()
+        exportViaSavePanel { exporter in
+            let base = exporter.suggestedFileName(for: date)   // shadow-YYYY-MM-DD.csv
+            let name = (base as NSString).deletingPathExtension + ".json"
+            return (name, try exporter.exportJSON(date: date))
+        }
+    }
+
+    private func exportCompareReport() {
+        let date = Date()
+        exportViaSavePanel { exporter in
+            let report = try exporter.compareWithShadowLog(date: date)
+            return ("compare-report-\(report.dayLabel).csv", Self.renderCompareCSV(report))
+        }
+    }
+
+    /// 裁决①：先生成内容再弹面板——任何 throws（含 sanitizationViolation）都中止导出，
+    /// 不产出空文件；错误转用户可见文案显示在本页。用户在面板取消则静默返回。
+    private func exportViaSavePanel(
+        produce: (AttentionShadowExporter) throws -> (defaultName: String, content: String)
+    ) {
+        guard let exporter = store.shadowExporter() else {
+            exportFeedback = ExportFeedback(isError: true, message: "导出不可用：功能未启用（无运行中的事件库）。")
+            return
+        }
+        let defaultName: String
+        let content: String
+        do {
+            (defaultName, content) = try produce(exporter)
+        } catch {
+            exportFeedback = ExportFeedback(isError: true, message: Self.exportErrorMessage(error))
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = defaultName
+        panel.canCreateDirectories = true
+        panel.title = "导出 \(defaultName)"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }   // 取消：静默
+            do {
+                try content.write(to: url, atomically: true, encoding: .utf8)
+                exportFeedback = ExportFeedback(isError: false, message: "已导出：\(url.path)")
+            } catch {
+                exportFeedback = ExportFeedback(isError: true, message: "保存失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 裁决③：归档场景存协议命名 ~/.voice-coding/shadow-runs/YYYY-MM-DD/export.csv
+    /// （不经 NSSavePanel 直写；与用户导出的 shadow-YYYY-MM-DD.csv 各归其场景，不做单文件双名）
+    private func archiveToEvidenceDir() {
+        guard let exporter = store.shadowExporter() else {
+            exportFeedback = ExportFeedback(isError: true, message: "导出不可用：功能未启用（无运行中的事件库）。")
+            return
+        }
+        let date = Date()
+        do {
+            let csv = try exporter.exportDay(date: date)
+            let day = AttentionStore.utcDayLabel(for: date)
+            let dir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".voice-coding/shadow-runs/\(day)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("export.csv")
+            try csv.write(to: url, atomically: true, encoding: .utf8)
+            exportFeedback = ExportFeedback(isError: false, message: "已归档：\(url.path)")
+        } catch {
+            exportFeedback = ExportFeedback(isError: true, message: Self.exportErrorMessage(error))
+        }
+    }
+
+    /// 裁决②：对照报告渲染为 CSV——列 timestamp/hook_event_name/session 标识/判定
+    /// + 末行汇总。判定与条目全部来自包层 CompareReport（裁决④：只渲染不重算）。
+    /// timestamp 取值：matched/false_positive 取导出侧 exportTimestamp，
+    /// missed 取 shadow 侧 shadowTs（该判定唯一有证据的一侧）。
+    static func renderCompareCSV(_ report: AttentionShadowExporter.CompareReport) -> String {
+        var lines = ["timestamp,hook_event_name,session_id,verdict"]
+        for e in report.entries {
+            let ts: String
+            switch e.verdict {
+            case .matched, .falsePositive: ts = e.exportTimestamp ?? ""
+            case .missed: ts = e.shadowTs ?? ""
+            }
+            lines.append([ts, e.hookEventName ?? "", e.sessionId, e.verdict.rawValue]
+                .map(csvField).joined(separator: ","))
+        }
+        // 汇总行：首列 SUMMARY，次列 key=value 分号连接（避逗号，免引号歧义）
+        let summary = "day=\(report.dayLabel);export=\(report.exportCount);shadow=\(report.shadowCount)" +
+            ";matched=\(report.matchedCount);missed=\(report.missedCount)" +
+            ";false_positive=\(report.falsePositiveCount);malformed=\(report.malformedLineCount)"
+        lines.append("SUMMARY,\(summary),,")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// RFC 4180 字段转义（与包层 csvField 同规则：含逗号/引号/换行加引号，内部引号翻倍）
+    private static func csvField(_ s: String) -> String {
+        if s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains("\r") {
+            return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        return s
+    }
+
+    /// 裁决①：throws → 用户可见错误文案（不吞错）。sanitizationViolation 明示
+    /// 中止导出且未写文件（fail-closed）；文件读取失败特判 shadow-log 缺失。
+    private static func exportErrorMessage(_ error: Error) -> String {
+        if let e = error as? AttentionShadowExporter.ExportError {
+            switch e {
+            case .sanitizationViolation(let eventId):
+                return "导出中止：脱敏复查发现禁止键残留（事件 \(eventId)），fail-closed 未写文件。"
+            case .encodingFailed:
+                return "导出失败：事件编码失败。"
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileReadNoSuchFileError {
+            return "影子对照日志缺失：\(AttentionShadowExporter.defaultShadowLogPath)" +
+                "（投递脚本双写产物不存在），无法生成对照报告。"
+        }
+        return "导出失败：\(error.localizedDescription)"
     }
 
     private func runSelfTest() {

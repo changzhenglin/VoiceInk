@@ -215,6 +215,42 @@ final class AttentionStore: ObservableObject {
         return candidate
     }
 
+    // MARK: - Task 19 Step 4：影子导出桥（消费包层 AttentionShadowExporter，
+    // app 层只加 NSSavePanel 壳；序列化/对比语义全在包层，裁决④不重算）
+
+    /// 导出器（C9 fold：序列化在包内）。未启用时无活 store → nil（裁决⑤：
+    /// 诊断页据此禁用导出按钮，不导空文件）
+    func shadowExporter() -> AttentionShadowExporter? {
+        guard let router else { return nil }
+        return AttentionShadowExporter(store: router.store)
+    }
+
+    /// 当日（UTC 窗）是否有事件——裁决⑤ 无数据禁用判据（只读 gating，
+    /// 与包层 exporter 内部 dayWindow 同口径；不参与 compare 语义）
+    func hasEvents(on date: Date) -> Bool {
+        guard let router else { return false }
+        let window = Self.utcDayWindow(for: date)
+        return !router.store.events(since: window.start, until: window.end).isEmpty
+    }
+
+    /// UTC 日窗 [00:00, 次日00:00)（与包层 exporter dayWindow 同口径）
+    static func utcDayWindow(for date: Date) -> (start: Date, end: Date) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? TimeZone(secondsFromGMT: 0)!
+        let start = cal.startOfDay(for: date)
+        let end = cal.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86400)
+        return (start, end)
+    }
+
+    /// UTC 日标签 yyyy-MM-dd（证据归档目录名用，裁决③协议命名）
+    static func utcDayLabel(for date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+
     private func attentionDBPath() -> String {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/VoiceInk/attention")
