@@ -35,6 +35,8 @@ struct AttentionDiagnosticsView: View {
     @State private var showUninstallConfirm = false
     @State private var showUninstalled = false
     // Task 19 Step 4：影子导出接线状态（裁决①错误文案 / 裁决⑤无数据禁用）
+    // Task 21 前置：对照日期选择——次日早上对照前日完整 UTC 窗口
+    @State private var exportDate = Date()
     @State private var dayHasEvents = false
     @State private var exportFeedback: ExportFeedback?
 
@@ -144,9 +146,13 @@ struct AttentionDiagnosticsView: View {
     /// （包层 compareWithShadowLog，app 层只渲染 CSV 不重算，裁决④）
     private var exportSection: some View {
         Section {
-            Button("导出当日时间线 CSV…") { exportTimelineCSV() }
+            // Task 21 前置：对照日期选择——支持选任意历史日对照其完整 UTC 窗口
+            DatePicker("对照日期", selection: $exportDate, displayedComponents: .date)
+                .onChange(of: exportDate) { _, _ in refreshExportGating() }
+
+            Button("导出时间线 CSV…") { exportTimelineCSV() }
                 .disabled(!exportEnabled)
-            Button("导出当日时间线 JSON…") { exportTimelineJSON() }
+            Button("导出时间线 JSON…") { exportTimelineJSON() }
                 .disabled(!exportEnabled)
             Button("导出影子对照报告…") { exportCompareReport() }
                 .disabled(!exportEnabled)
@@ -201,21 +207,22 @@ struct AttentionDiagnosticsView: View {
             return "导出需先启用 Agent 收件箱（未启用时没有运行中的事件库）。"
         }
         if !dayHasEvents {
-            return "当日（UTC 日窗）无事件记录，导出不可用——不导出空文件。"
+            return "所选日（UTC 日窗）无事件记录，导出不可用——不导出空文件。"
         }
-        return "CSV/JSON 为当日四类 hook 事件全量时间线（导出前脱敏复查，违反即中止不写文件）；" +
-            "对照报告为当日导出与 ~/.voice-coding/shadow-log.jsonl 的机械对比。" +
+        return "CSV/JSON 为所选日四类 hook 事件全量时间线（导出前脱敏复查，违反即中止不写文件）；" +
+            "对照报告为所选日导出与 ~/.voice-coding/shadow-log.jsonl 的机械对比。" +
+            "UTC 日窗 = 所选日 [00:00 UTC, 次日 00:00 UTC)（即北京 08:00–次日 08:00）；" +
             "保存面板默认名 shadow-YYYY-MM-DD.csv/.json；" +
             "归档直写 ~/.voice-coding/shadow-runs/<日>/export.csv（协议命名，覆盖同名）。"
     }
 
     private func refreshExportGating() {
-        dayHasEvents = store.enabled && store.hasEvents(on: Date())
+        dayHasEvents = store.enabled && store.hasEvents(on: exportDate)
         if !exportEnabled { exportFeedback = nil }   // 不可用态不残留旧反馈
     }
 
     private func exportTimelineCSV() {
-        let date = Date()
+        let date = exportDate
         exportViaSavePanel { exporter in
             // 裁决③：NSSavePanel 默认名 = exporter 默认 shadow-YYYY-MM-DD.csv
             (exporter.suggestedFileName(for: date), try exporter.exportDay(date: date))
@@ -223,7 +230,7 @@ struct AttentionDiagnosticsView: View {
     }
 
     private func exportTimelineJSON() {
-        let date = Date()
+        let date = exportDate
         exportViaSavePanel { exporter in
             let base = exporter.suggestedFileName(for: date)   // shadow-YYYY-MM-DD.csv
             let name = (base as NSString).deletingPathExtension + ".json"
@@ -232,7 +239,7 @@ struct AttentionDiagnosticsView: View {
     }
 
     private func exportCompareReport() {
-        let date = Date()
+        let date = exportDate
         exportViaSavePanel { exporter in
             let report = try exporter.compareWithShadowLog(date: date)
             return ("compare-report-\(report.dayLabel).csv", Self.renderCompareCSV(report))
@@ -278,7 +285,7 @@ struct AttentionDiagnosticsView: View {
             exportFeedback = ExportFeedback(isError: true, message: "导出不可用：功能未启用（无运行中的事件库）。")
             return
         }
-        let date = Date()
+        let date = exportDate
         do {
             let csv = try exporter.exportDay(date: date)
             let day = AttentionStore.utcDayLabel(for: date)
