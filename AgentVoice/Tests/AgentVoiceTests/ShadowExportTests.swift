@@ -274,4 +274,62 @@ final class ShadowExportTests: XCTestCase {
         XCTAssertEqual(report.malformedLineCount, 2)
         XCTAssertEqual(report.shadowCount, 1)
     }
+
+    // MARK: - 生产格式兼容（观察期演练 2026-08-05 实锤：投递脚本写 epoch 数字）
+
+    func testCompareAcceptsEpochNumericTsFromProductionScript() throws {
+        // ground truth = 投递脚本双写格式（plan Task 12 逐字代码 "ts": time.time()，
+        // epoch 浮点数字），如 {"hook_event_name":"Stop","session_id":"…","delivery_id":"…","ts":1699956005.537148}
+        let exporter = try makeExporter([
+            makeEvent(id: "e1", sid: sidA, at: Date(timeIntervalSince1970: 1_699_956_000)),  // 10:00
+            makeEvent(id: "e2", sid: sidA, at: Date(timeIntervalSince1970: 1_699_959_600)),  // 11:00
+        ])
+        let path = try writeShadowLog([
+            "{\"hook_event_name\":\"Stop\",\"session_id\":\"\(sidA)\",\"delivery_id\":\"d1\",\"ts\":1699956005.537148}",
+            "{\"hook_event_name\":\"Stop\",\"session_id\":\"\(sidA)\",\"delivery_id\":\"d2\",\"ts\":1699959605}",
+        ])
+        let report = try exporter.compareWithShadowLog(date: dayMid, shadowLogPath: path)
+        XCTAssertEqual(report.malformedLineCount, 0)
+        XCTAssertEqual(report.shadowCount, 2)
+        XCTAssertEqual(report.matchedCount, 2)
+        XCTAssertEqual(report.missedCount, 0)
+        XCTAssertEqual(report.falsePositiveCount, 0)
+        // 事件级配对携带 epoch 侧 delivery_id
+        let m1 = try XCTUnwrap(report.entries.first { $0.verdict == .matched && $0.deliveryId == "d1" })
+        XCTAssertEqual(m1.eventId, "e1")
+        XCTAssertEqual(m1.joinLevel, "event")
+    }
+
+    func testCompareAcceptsEpochTsForSessionLevelEntries() throws {
+        // 无 delivery_id（内容指纹回退场景）的 epoch 数字 ts 同样走会话级比较
+        let exporter = try makeExporter([
+            makeEvent(id: "e5", sid: sidC, at: Date(timeIntervalSince1970: 1_699_956_000)),
+        ])
+        let path = try writeShadowLog([
+            "{\"hook_event_name\":\"Stop\",\"session_id\":\"\(sidC)\",\"ts\":1699956300.5}",
+        ])
+        let report = try exporter.compareWithShadowLog(date: dayMid, shadowLogPath: path)
+        XCTAssertEqual(report.malformedLineCount, 0)
+        XCTAssertEqual(report.matchedCount, 1)
+        let matched = try XCTUnwrap(report.entries.first { $0.verdict == .matched })
+        XCTAssertEqual(matched.joinLevel, "session")
+        XCTAssertEqual(matched.eventId, "e5")
+    }
+
+    func testCompareMixedEpochAndIsoTsCoexist() throws {
+        // 兼容并存：epoch 数字（生产）与 ISO8601 字符串（历史夹具）同日窗过滤仍有效
+        let exporter = try makeExporter([
+            makeEvent(id: "e1", sid: sidA, at: Date(timeIntervalSince1970: 1_699_956_000)),
+        ])
+        let path = try writeShadowLog([
+            "{\"hook_event_name\":\"Stop\",\"session_id\":\"\(sidA)\",\"delivery_id\":\"dEpoch\",\"ts\":1699956005.5}",
+            shadowLine(sid: sidA, hook: "Stop", ts: "2023-11-13T10:00:00Z", deliveryId: "dPrevIso"),  // 前一日，窗外
+        ])
+        let report = try exporter.compareWithShadowLog(date: dayMid, shadowLogPath: path)
+        XCTAssertEqual(report.malformedLineCount, 0)
+        XCTAssertEqual(report.shadowCount, 1)
+        XCTAssertEqual(report.matchedCount, 1)
+        XCTAssertEqual(report.missedCount, 0)
+        XCTAssertEqual(report.falsePositiveCount, 0)
+    }
 }

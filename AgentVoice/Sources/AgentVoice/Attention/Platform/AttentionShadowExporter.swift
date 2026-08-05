@@ -91,6 +91,9 @@ public final class AttentionShadowExporter {
     /// 对比当日导出事件与 shadow-log（ground truth = 投递脚本双写的独立日志）。
     /// - shadow-log 每行 JSON：{"hook_event_name","session_id","delivery_id","ts"}；
     ///   delivery_id 可缺失（内容指纹回退场景）。
+    ///   ts 格式兼容两种：**epoch 数字秒**（生产投递脚本 plan Task 12 逐字
+    ///   `"ts": time.time()`，浮点）与 **ISO8601 字符串**（历史夹具写法）；
+    ///   两者归一为 UTC Date 后走同一日窗过滤与配对（观察期演练 2026-08-05 裁决）。
     /// - 事件级：含 delivery_id 条目按 (session,hook) 分桶、时间排序逐一配对；
     ///   计数相等全 matched，shadow 侧多→missed。
     /// - 会话级：无 delivery_id 条目按 session 分桶，与事件级未配对的导出事件
@@ -111,14 +114,13 @@ public final class AttentionShadowExporter {
                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let hook = obj["hook_event_name"] as? String,
                   let sid = obj["session_id"] as? String,
-                  let tsRaw = obj["ts"] as? String,
-                  let tsDate = Self.parseISO8601(tsRaw) else {
+                  let ts = Self.parseShadowTs(obj["ts"]) else {
                 malformed += 1
                 continue
             }
-            guard tsDate >= window.start, tsDate < window.end else { continue }
+            guard ts.date >= window.start, ts.date < window.end else { continue }
             shadowInDay.append(ShadowEntry(sessionId: sid, hookEventName: hook,
-                deliveryId: obj["delivery_id"] as? String, tsRaw: tsRaw, tsDate: tsDate,
+                deliveryId: obj["delivery_id"] as? String, tsRaw: ts.raw, tsDate: ts.date,
                 lineIndex: shadowInDay.count))
         }
 
@@ -324,5 +326,19 @@ public final class AttentionShadowExporter {
         frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         frac.timeZone = TimeZone(identifier: "UTC")
         return frac.date(from: s)
+    }
+
+    /// shadow-log ts 字段归一解析（观察期演练 2026-08-05 裁决）：
+    /// 生产投递脚本写 epoch 数字秒（`time.time()` 浮点），历史夹具为 ISO8601
+    /// 字符串——两格式并存接受，解析失败返 nil（该行计 malformed）。
+    /// raw 保留源字面量供 CompareReport.Entry.shadowTs 溯源展示。
+    static func parseShadowTs(_ value: Any?) -> (date: Date, raw: String)? {
+        if let epoch = value as? Double {
+            return (Date(timeIntervalSince1970: epoch), "\(epoch)")
+        }
+        if let s = value as? String, let d = parseISO8601(s) {
+            return (d, s)
+        }
+        return nil
     }
 }
