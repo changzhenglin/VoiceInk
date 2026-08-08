@@ -216,13 +216,18 @@ struct AttentionDiagnosticsView: View {
             "归档直写 ~/.voice-coding/shadow-runs/<日>/export.csv（协议命名，覆盖同名）。"
     }
 
+    private var exportUTCDate: Date {
+        AttentionShadowExporter.utcDate(
+            forDisplayedDate: exportDate, in: Calendar.current.timeZone)
+    }
+
     private func refreshExportGating() {
-        dayHasEvents = store.enabled && store.hasEvents(on: exportDate)
+        dayHasEvents = store.enabled && store.hasEvents(on: exportUTCDate)
         if !exportEnabled { exportFeedback = nil }   // 不可用态不残留旧反馈
     }
 
     private func exportTimelineCSV() {
-        let date = exportDate
+        let date = exportUTCDate
         exportViaSavePanel { exporter in
             // 裁决③：NSSavePanel 默认名 = exporter 默认 shadow-YYYY-MM-DD.csv
             (exporter.suggestedFileName(for: date), try exporter.exportDay(date: date))
@@ -230,7 +235,7 @@ struct AttentionDiagnosticsView: View {
     }
 
     private func exportTimelineJSON() {
-        let date = exportDate
+        let date = exportUTCDate
         exportViaSavePanel { exporter in
             let base = exporter.suggestedFileName(for: date)   // shadow-YYYY-MM-DD.csv
             let name = (base as NSString).deletingPathExtension + ".json"
@@ -239,7 +244,7 @@ struct AttentionDiagnosticsView: View {
     }
 
     private func exportCompareReport() {
-        let date = exportDate
+        let date = exportUTCDate
         exportViaSavePanel { exporter in
             let report = try exporter.compareWithShadowLog(date: date)
             return ("compare-report-\(report.dayLabel).csv", Self.renderCompareCSV(report))
@@ -285,7 +290,7 @@ struct AttentionDiagnosticsView: View {
             exportFeedback = ExportFeedback(isError: true, message: "导出不可用：功能未启用（无运行中的事件库）。")
             return
         }
-        let date = exportDate
+        let date = exportUTCDate
         do {
             let csv = try exporter.exportDay(date: date)
             let day = AttentionStore.utcDayLabel(for: date)

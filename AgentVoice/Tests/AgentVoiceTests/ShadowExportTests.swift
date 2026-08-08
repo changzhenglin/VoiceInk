@@ -163,6 +163,20 @@ final class ShadowExportTests: XCTestCase {
         XCTAssertEqual(exporter.suggestedFileName(for: dayMid), "shadow-2023-11-14.csv")
     }
 
+    func testDisplayedLocalDayNormalizesToSameUTCDay() throws {
+        let shanghai = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        var localCalendar = Calendar(identifier: .gregorian)
+        localCalendar.timeZone = shanghai
+        let displayedDate = try XCTUnwrap(localCalendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 7, hour: 0)))
+
+        let normalized = AttentionShadowExporter.utcDate(
+            forDisplayedDate: displayedDate, in: shanghai)
+
+        XCTAssertEqual(AttentionShadowExporter.utcDayLabel(for: normalized), "2026-08-07")
+        XCTAssertEqual(normalized.timeIntervalSince1970, 1_786_060_800, accuracy: 0.001)
+    }
+
     // MARK: - 脱敏复查（A7：复用 store.sanitize，禁止自造禁止键集合）
 
     func testSanitizationRecheckDetectsForbiddenKeys() throws {

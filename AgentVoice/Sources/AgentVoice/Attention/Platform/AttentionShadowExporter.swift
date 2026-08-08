@@ -292,6 +292,26 @@ public final class AttentionShadowExporter {
         return s
     }
 
+    /// 将日期选择器在指定时区显示的年月日，规范化为同标签的 UTC 零点。
+    /// DatePicker 产出绝对时间；若直接按 UTC startOfDay 截断，UTC+ 时区的本地午夜
+    /// 会落到前一 UTC 日，导致界面日期与实际导出窗口错位。
+    public static func utcDate(forDisplayedDate date: Date, in timeZone: TimeZone) -> Date {
+        var displayedCalendar = Calendar(identifier: .gregorian)
+        displayedCalendar.timeZone = timeZone
+        let components = displayedCalendar.dateComponents([.year, .month, .day], from: date)
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(identifier: "UTC") ?? TimeZone(secondsFromGMT: 0)!
+        return utcCalendar.date(from: components) ?? date
+    }
+
+    public static func utcDayLabel(for date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+
     /// UTC 日窗 [start, end)：与 store 冷聚合 date()（UTC）口径一致
     private func dayWindow(for date: Date) -> (start: Date, end: Date) {
         var cal = Calendar(identifier: .gregorian)
@@ -302,11 +322,7 @@ public final class AttentionShadowExporter {
     }
 
     private func dayLabel(for date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
+        Self.utcDayLabel(for: date)
     }
 
     /// A5：ISO8601 UTC（秒精度）；解析侧兼容带/不带小数秒两种 ts 写法
