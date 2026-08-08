@@ -25,6 +25,7 @@ struct VoiceInkApp: App {
     @StateObject private var aiService = AIService()
     @StateObject private var enhancementService: AIEnhancementService
     @StateObject private var activeWindowService = ActiveWindowService.shared
+    @StateObject private var attentionStore: AttentionStore
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
     @AppStorage("enableAnnouncements") private var enableAnnouncements = true
     @State private var showMenuBarIcon = true
@@ -166,6 +167,18 @@ struct VoiceInkApp: App {
 
         let agentVoiceStatusAdapter = AgentVoiceStatusAdapter()
         _agentVoiceStatusAdapter = StateObject(wrappedValue: agentVoiceStatusAdapter)
+
+        // ── Attention 收件箱组装（Task 15）──
+        let attentionStore = AttentionStore()
+        _attentionStore = StateObject(wrappedValue: attentionStore)
+        // 面板/设置窗口控制器 weak 注入（保证面板 open 前已注入）
+        AttentionDetailPanelController.shared.store = attentionStore
+        AttentionSettingsPanelController.shared.store = attentionStore
+        // 启动自动恢复：hooks 已装（用户上次开过）→ replay 恢复投影（C5 派生态持久化语义）；
+        // fail-open：失败不阻塞启动、enabled 保持 false。版本探测不进启动路径（refresh() tick 已含）
+        if HookInstaller(token: AttentionStore.sharedAuthToken()).installedClaudeVersion() != nil {
+            try? attentionStore.enable()
+        }
 
         appDelegate.menuBarManager = menuBarManager
 
@@ -439,6 +452,8 @@ struct VoiceInkApp: App {
                 .environmentObject(updaterViewModel)
                 .environmentObject(aiService)
                 .environmentObject(enhancementService)
+            AttentionMenuBarSection()
+                .environmentObject(attentionStore)
         } label: {
             Group {
                 switch agentVoiceStatusAdapter.status {
@@ -462,6 +477,7 @@ struct VoiceInkApp: App {
                 }
             }
             .background(MainWindowRequestBridge(menuBarManager: menuBarManager))
+            .overlay(alignment: .topTrailing) { attentionPendingBadge }
         }
         .menuBarExtraStyle(.menu)
 
@@ -472,6 +488,20 @@ struct VoiceInkApp: App {
                 }
             }
         #endif
+    }
+
+    /// L1 菜单栏徽标（spec §3.2）：pendingCount>0 时图标角标显示需介入计数，0 则无徽标
+    @ViewBuilder
+    private var attentionPendingBadge: some View {
+        if attentionStore.pendingCount > 0 {
+            Text("\(attentionStore.pendingCount)")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 1)
+                .background(.red, in: Capsule())
+                .offset(x: 5, y: -3)
+        }
     }
 
     /// Only one notification fits on screen, so show at most one launch reminder.
