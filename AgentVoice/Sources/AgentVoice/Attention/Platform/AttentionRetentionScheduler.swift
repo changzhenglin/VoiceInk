@@ -55,11 +55,13 @@ public final class AttentionRetentionScheduler {
         return (pruned, capacityDeleted)
     }
 
-    /// I2（spec §6 L144）：test: 前缀会话 items 1h 自清——删除 observed_at
-    /// 早于 now-testSessionTTL 的 test 事件行，返回删除行数。
+    /// I2（spec §6 L144）：test: 前缀会话 1h 自清——同一写事务内删除超龄
+    /// （now-testSessionTTL）的 test 事件行（observed_at）与 test 会话 attention
+    /// items 行（updated_at），返回删除的事件行数。边界语义两表一致
+    ///（严格 <：恰好 1h 保留、超 1h 清）。
     /// 负向保证：生产会话与无 VOICECODING_TEST 标记的事件（无 test: 前缀）零误删零污染。
     @discardableResult
     public func purgeExpiredTestSessions(now: Date = Date()) -> Int {
-        store.purgeTestPrefixedEvents(before: now.addingTimeInterval(-testSessionTTL))
+        store.purgeTestPrefixedRows(before: now.addingTimeInterval(-testSessionTTL))
     }
 }

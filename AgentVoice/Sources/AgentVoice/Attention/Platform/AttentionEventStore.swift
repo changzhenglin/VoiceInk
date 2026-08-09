@@ -433,10 +433,13 @@ extension AttentionEventStore {
         }
     }
 
-    /// I2：test: 前缀事件中 observed_at 早于 cutoff 的行自清（items 1h 自清的存储面）。
+    /// I2：test: 前缀会话行自清——同一写事务内删除①observed_at 早于 cutoff 的
+    /// attention_events 行 与 ②updated_at 早于 cutoff 的 attention_items 行
+    /// （review fix round 1 补齐：events/items 同事务原子，test 会话 item 行不得残留
+    /// 或重启后经 replay 回内存）。两表边界语义一致（严格 `<`：恰好 1h 保留、超 1h 清）。
     /// 只触 `test:` 前缀会话——生产会话（即使更旧）零误删零污染。
-    /// 返回删除行数；写失败降级 0（C17 同式）。
-    func purgeTestPrefixedEvents(before cutoff: Date) -> Int {
+    /// 返回删除的**事件**行数（items 侧同事务删除，不单独计数）；写失败降级 0（C17 同式）。
+    func purgeTestPrefixedRows(before cutoff: Date) -> Int {
         do {
             return try dbQueue.write { db in
                 // glob 大小写敏感（LIKE 对 ASCII 默认不敏感）——前缀判定精确
@@ -445,7 +448,13 @@ extension AttentionEventStore {
                     WHERE (adapter_type || '|' || native_session_id) GLOB 'test:*'
                       AND observed_at < ?
                     """, arguments: [cutoff])
-                return db.changesCount
+                let deleted = db.changesCount
+                try db.execute(sql: """
+                    DELETE FROM attention_items
+                    WHERE session_key GLOB 'test:*'
+                      AND updated_at < ?
+                    """, arguments: [cutoff])
+                return deleted
             }
         } catch {
             return 0   // C17：写失败降级不 crash
