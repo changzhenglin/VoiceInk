@@ -201,6 +201,13 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         engine.assistantSession.reset()
     }
 
+    /// V1 Task 10（C10-1 ①）：幂等面板呈现——启动崩溃恢复预览呈现专用。
+    /// 与 toggleRecorderPanel 的区别：只呈现面板，不播开始音、不触发录音/结算语义；已显示 → no-op。
+    func presentRecorderPanelIfNeeded() {
+        guard !isRecorderPanelVisible else { return }
+        isRecorderPanelVisible = true   // didSet → showRecorderPanel()（既有呈现路径）
+    }
+
     func resetOnLaunch() async {
         guard let engine = engine else { return }
         logger.notice("Resetting recording state on launch")

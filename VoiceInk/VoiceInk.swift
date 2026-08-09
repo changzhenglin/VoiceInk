@@ -217,7 +217,14 @@ struct VoiceInkApp: App {
                     policy = decoded.payload
                 }
 
-                let storageEngine = try StorageEngine(path: nil)
+                // V1 D5：磁盘持久化（崩溃恢复 + 术语库附带收益）
+                let appSupport = FileManager.default
+                    .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+                try? FileManager.default.createDirectory(
+                    at: appSupport, withIntermediateDirectories: true)
+                let storageEngine = try StorageEngine(
+                    path: appSupport.appendingPathComponent("agentvoice.db").path)
                 let sceneDetector = MacSceneDetector()
                 let router = SceneRouter(policy: policy)
                 let knowledgeStore = KnowledgeStore(engine: storageEngine)
@@ -290,16 +297,30 @@ struct VoiceInkApp: App {
                         .sink { [weak engine] phase in
                             engine?.agentVoicePhaseForward = phase
                         })
+
+                // 启动清理时序（Task 10）：resetOnLaunch 原为独立 Task（本 Task 之后入队），
+                // 其 recordingState 置 idle + 隐藏面板会在恢复呈现之后执行、清掉恢复态，
+                // 故并入本 Task：await 完成清理后再恢复接线，顺序确定性（偏差声明见 task-10-report）。
+                await recorderUIManager.resetOnLaunch()
+
+                // V1 崩溃恢复：查残留流式会话（spec §3.5 #5）
+                if let crashed = try? StreamingSessionStore.recoverActive(engine: storageEngine),
+                   !crashed.isEmpty {
+                    coordinator.presentRecoveredSessions(crashed)
+                    if coordinator.previewSession != nil {
+                        engine.recordingState = .previewing   // 必须设置（F7 fold）：previewPanelMode 渲染守卫
+                        recorderUIManager.presentRecorderPanelIfNeeded()   // C10-1 ①：幂等 present（已显示 no-op）
+                    }
+                }
             } catch {
                 let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AgentVoice")
                 logger.error("AgentVoice 初始化失败: \(error.localizedDescription)")
+                // AgentVoice 初始化失败也执行启动清理（原独立 reset Task 语义保持）
+                await recorderUIManager.resetOnLaunch()
             }
         }
 
-        // Ensure no lingering recording state from previous runs
-        Task {
-            await recorderUIManager.resetOnLaunch()
-        }
+        // 启动清理已并入上方 AgentVoice 组装 Task（Task 10：恢复呈现须在清理完成后，时序确定性）
 
         AppShortcuts.updateAppShortcutParameters()
 
