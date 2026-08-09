@@ -125,6 +125,138 @@ final class ClosureKeysTests: XCTestCase {
         }
         XCTAssertEqual(successes.value, 1, "并发同 receipt 副作用只生效一次")
     }
+
+    // MARK: - 四层互不冒充（spec §8.4）
+
+    func testSameRawStringAcrossLayersAreIndependent() throws {
+        let store = try makeStore()
+        store.setCurrentGeneration(1)
+        // 同一 raw 字符串在四层各自独立成事实——任何一层不得冒充另一层的键
+        XCTAssertTrue(try store.recordEvent(EventID(rawValue: "same-raw")))
+        XCTAssertTrue(try store.recordUserAction(UserActionID(rawValue: "same-raw"),
+                                                 connectionGeneration: 1))
+        XCTAssertTrue(try store.recordAgentCommand(AgentCommandID(rawValue: "same-raw"),
+                                                   connectionGeneration: 1))
+        XCTAssertEqual(try store.eventCount(), 1, "event 层计数只含本层事实")
+        // 各层内重放仍各自幂等拒绝
+        XCTAssertFalse(try store.recordEvent(EventID(rawValue: "same-raw")))
+        XCTAssertFalse(try store.recordUserAction(UserActionID(rawValue: "same-raw"),
+                                                  connectionGeneration: 1))
+        XCTAssertFalse(try store.recordAgentCommand(AgentCommandID(rawValue: "same-raw"),
+                                                    connectionGeneration: 1))
+    }
+
+    // MARK: - plan Produces：dedupe 别名
+
+    func testDedupeAliasIsIdempotent() throws {
+        let store = try makeStore()
+        XCTAssertTrue(try store.dedupe(EventID(rawValue: "evt-d")), "dedupe 首次生效")
+        XCTAssertFalse(try store.dedupe(EventID(rawValue: "evt-d")), "dedupe 重放拒绝")
+    }
+
+    // MARK: - fail-closed：非法键与存储异常
+
+    func testEmptyKeysRejectedFailClosed() throws {
+        let store = try makeStore()
+        store.setCurrentGeneration(1)
+        // 空/纯空白键是非法事实：throw（error 路径），不是幂等 false
+        XCTAssertThrowsError(try store.recordEvent(EventID(rawValue: "")))
+        XCTAssertThrowsError(try store.recordEvent(EventID(rawValue: "   ")))
+        XCTAssertThrowsError(try store.recordReceipt(
+            ReceiptID(channel: "", attentionItemId: "item-1", presentationGeneration: 1)))
+        XCTAssertThrowsError(try store.recordReceipt(
+            ReceiptID(channel: "sound", attentionItemId: " ", presentationGeneration: 1)))
+        XCTAssertThrowsError(try store.recordUserAction(UserActionID(rawValue: ""),
+                                                        connectionGeneration: 1))
+        XCTAssertThrowsError(try store.recordAgentCommand(AgentCommandID(rawValue: ""),
+                                                          connectionGeneration: 1))
+        XCTAssertEqual(try store.eventCount(), 0, "非法键不得落任何事实")
+    }
+
+    func testClosedStoreThrowsNotSilentlyDeduped() throws {
+        let store = try makeStore()
+        XCTAssertTrue(try store.recordEvent(EventID(rawValue: "evt-close")))
+        store.closeForTesting()
+        // 存储异常 → throw（调用方 fail-closed），不得静默返回 true/false 伪装去重结果
+        XCTAssertThrowsError(try store.recordEvent(EventID(rawValue: "evt-close-2")))
+    }
+
+    // MARK: - 并发：user_action / agent_command 同键单事实
+
+    func testConcurrentSameUserActionYieldsSingleFact() throws {
+        let store = try makeStore()
+        store.setCurrentGeneration(3)
+        let aid = UserActionID(rawValue: "act-race")
+        let successes = ConcurrentCounter()
+        DispatchQueue.concurrentPerform(iterations: 32) { _ in
+            if (try? store.recordUserAction(aid, connectionGeneration: 3)) == true {
+                successes.increment()
+            }
+        }
+        XCTAssertEqual(successes.value, 1, "32 路并发同 user_action_id 只生效一次")
+    }
+
+    func testConcurrentSameAgentCommandYieldsSingleFact() throws {
+        let store = try makeStore()
+        store.setCurrentGeneration(3)
+        let cid = AgentCommandID(rawValue: "cmd-race")
+        let successes = ConcurrentCounter()
+        DispatchQueue.concurrentPerform(iterations: 32) { _ in
+            if (try? store.recordAgentCommand(cid, connectionGeneration: 3)) == true {
+                successes.increment()
+            }
+        }
+        XCTAssertEqual(successes.value, 1, "32 路并发同 agent_command_id 只生效一次")
+    }
+
+    // MARK: - 生产 DB 兼容：旧 M1 库 additive migrate（brief 裁决 #6）
+
+    func testLegacyM1DatabaseMigratesAdditivelyAndRowsIntact() throws {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("closure-migrate-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        // ① 造旧 schema 库（M1 形态）：首次打开建 M1 表并写入既有行
+        let legacy = try AttentionEventStore(path: path)
+        let e1 = NormalizedAgentEvent(
+            eventId: "legacy-e1", adapterType: "claude_code",
+            nativeSessionId: "44444444-4444-4444-4444-444444444444",
+            sourceSequence: nil, occurredAt: nil,
+            observedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            kind: .waitingUser, payloadVersion: 1, sanitizedPayloadRef: nil,
+            sourceLevel: "experimental_fragile", sourceClaudeVersion: "2.1.220")
+        XCTAssertEqual(legacy.append(e1), .inserted)
+        XCTAssertEqual(legacy.rowCount(), 1)
+        legacy.closeForTesting()
+
+        // ② 新代码重开旧库：closure 表 additive migrate；既有行完好
+        let reopened = try AttentionEventStore(path: path)
+        XCTAssertEqual(reopened.rowCount(), 1, "重开不丢既有事件")
+        let closure = try ClosureKeyStore(store: reopened)
+        XCTAssertEqual(reopened.rowCount(), 1, "closure migrate 不动 M1 表数据")
+        XCTAssertEqual(reopened.events(since: .distantPast).map(\.eventId), ["legacy-e1"],
+                       "既有行可读且完整")
+
+        // ③ 表集合 = M1 既有表全保留 + closure 新表全追加（只增不改证据）
+        let tables = Set(try closure.tableNamesForTesting())
+        for m1 in ["attention_events", "attention_items", "corrections", "incidents",
+                   "attention_daily_summary", "connection_generations"] {
+            XCTAssertTrue(tables.contains(m1), "M1 既有表保留：\(m1)")
+        }
+        for added in ["closure_events", "closure_receipts", "closure_user_actions",
+                      "closure_agent_commands", "closure_current_generation"] {
+            XCTAssertTrue(tables.contains(added), "closure 新表追加：\(added)")
+        }
+
+        // ④ migrate 后 closure 层即可用；schema 二次重放（模拟另一进程打开）不丢事实
+        XCTAssertTrue(try closure.recordEvent(EventID(rawValue: "legacy-e1")),
+                      "closure 层 dedupe 台账独立于内容层，首次生效")
+        XCTAssertFalse(try closure.recordEvent(EventID(rawValue: "legacy-e1")))
+        let replay = try ClosureKeyStore(store: reopened)
+        XCTAssertFalse(try replay.recordEvent(EventID(rawValue: "legacy-e1")),
+                       "schema 重放不破坏既有 closure 事实")
+        reopened.closeForTesting()
+    }
 }
 
 /// 测试辅助：并发安全计数（非产品代码）
