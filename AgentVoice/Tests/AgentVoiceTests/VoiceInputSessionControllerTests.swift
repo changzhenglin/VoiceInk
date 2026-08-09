@@ -1106,6 +1106,15 @@ final class VoiceInputSessionControllerTests: XCTestCase {
             lock.lock(); let c = _continuation; _continuation = nil; lock.unlock()
             c?.resume()
         }
+        /// round-2：可抛错释放（钉住 catch 腿的挂起窗口，codex re-review 新 P2）
+        func release(throwing: Bool) {
+            lock.lock(); let c = _continuation; _continuation = nil; lock.unlock()
+            if throwing {
+                c?.resume(throwing: InjectError.pasteFailed("fake 注入失败（挂起后）"))
+            } else {
+                c?.resume()
+            }
+        }
     }
 
     /// 注入器外置的 makeSUT 变体（codex P1-2 回归用）。不拓宽既有 makeSUT 的 FakeInjector
@@ -1171,7 +1180,8 @@ final class VoiceInputSessionControllerTests: XCTestCase {
 
         XCTAssertEqual(sut.controller.phase, .recordingBatch)   // 新录音不受旧续体影响
         XCTAssertEqual(injector.injected.count, 1)                   // inject 已发出（重入前），但后续队列操作被守卫拦
-        XCTAssertTrue(try recoverActive().isEmpty)                   // 旧记录由 pttDown settleAll 全结算
+        // 旧记录由 pttDown settleAll 全结算；round-2 P1-4a 后新录音（纯本地）有自己的记录
+        XCTAssertEqual(try recoverActive().count, 1)
     }
 
     /// F2 回归（codex P1-2 误删腿）：previewing confirm 的 inject 挂起期间 PTT 重入
@@ -1225,5 +1235,70 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertNil(lastPreview(sut))
         XCTAssertEqual(sut.injector.injected.count, 0)
         XCTAssertTrue(try recoverActive().isEmpty)   // 取消时已结算
+    }
+
+    // MARK: - codex re-review（round 2）遗留项回归
+
+    /// F4-round2 回归（codex re-review P1-4a）：纯本地模式（无云 ASR）也建恢复记录——
+    /// 验收 #5 崩溃恢复不分云/本地；fix 前纯本地无记录，本地链处理期间崩溃无可恢复内容。
+    func test_pure_local_mode_creates_recovery_record() async throws {
+        let local = FakeLocalASR(providerId: "fake-local")
+        local.finalText = "本地识别全文"
+        let sut = makeSUT(streamingASRs: { nil }, localChain: { [local] })
+
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)
+        XCTAssertEqual(try recoverActive().count, 1)   // fix 前 RED：=0（纯本地不建记录）
+
+        sut.controller.enqueueAudio(pcmData([1, 2]))
+        await sut.controller.pttUp()
+        // 本地链出字 → polish 失败（makeSUT 默认 resultText nil）→ 直出 → 交付结算
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.injector.injected, ["本地识别全文"])
+        XCTAssertTrue(try recoverActive().isEmpty)   // 记录生命周期完整闭合（建→交付结算）
+    }
+
+    /// F4-round2 回归（codex re-review P1-4b）：流式失效转本地 fallback 出字后，
+    /// 全文写回流式残留记录——润色/预览窗口崩溃必须恢复本地链全文而非 partial/空。
+    func test_streaming_lost_local_fallback_writes_full_text_back() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = ""    // 空 final → streamingUnavailable（D17）
+        let local = FakeLocalASR(providerId: "fake-local")
+        local.finalText = "本地链全文"
+        let sut = makeSUT(streamingASRs: { asr }, localChain: { [local] }, polishResult: "润色后")
+
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+        sut.controller.enqueueAudio(pcmData([3, 4]))
+        await sut.controller.pttUp()
+
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let recs = try recoverActive()
+        XCTAssertEqual(recs.count, 1)
+        XCTAssertEqual(recs.first?.recoverableText, "本地链全文")   // fix 前 RED：空文本
+    }
+
+    /// F2-round2 回归（codex re-review 新 P2）：recoveryPreview confirm 的 inject 挂起
+    /// 期间重入且 inject 抛错——旧续体不得向新状态发 .blocked（污染新会话）。
+    func test_confirm_recovery_reentry_inject_error_does_not_report_blocked() async throws {
+        try seedRecord(sessionId: "rec-X", sceneType: "coding",
+                       at: Date(timeIntervalSince1970: 3_000_000), completed: "恢复丙")
+        let records = try recoverActive()
+        let injector = SuspendingInjector()
+        let sut = makeSUTWithInjector(injector)
+        sut.controller.presentRecoveredSessions(records)
+        XCTAssertEqual(sut.controller.phase, .recoveryPreview)
+
+        let confirmTask = Task { @MainActor in await sut.controller.confirmPreview() }
+        let suspending = await waitUntil { injector.isSuspending }
+        XCTAssertTrue(suspending)
+
+        await sut.controller.pttDown()   // 重入：结算队列 + 开新录音
+        injector.release(throwing: true) // 旧续体的 inject 以错误返回
+        await confirmTask.value
+
+        // fix 前 RED：catch 腿无守卫 → 向新状态发 .blocked
+        XCTAssertTrue(sut.statuses.all.allSatisfy { $0.state != .blocked })
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)   // 新录音不受污染（无云 ASR 落 batch）
     }
 }

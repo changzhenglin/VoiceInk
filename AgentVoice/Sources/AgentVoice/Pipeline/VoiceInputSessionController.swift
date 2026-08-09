@@ -237,6 +237,7 @@ public final class VoiceInputSessionController {
         // 云流式启动（D2：选中云 ASR 才流式；工厂每会话新建实例——Task 2 裁决）
         guard let streamingASR = ports.makeStreamingASR() else {
             _ = transition(.streamingUnavailable)
+            beginLocalRecord()   // F4-round2（codex re-review P1-4a）：纯本地模式也建恢复记录
             return
         }
         let store = StreamingSessionStore(engine: ports.storageEngine,
@@ -249,6 +250,7 @@ public final class VoiceInputSessionController {
         } catch {
             logger.warning("流式启动失败，本次转批处理: \(error.localizedDescription)")
             _ = transition(.streamingUnavailable)
+            beginLocalRecord()   // F4-round2：start 失败转本地同样建记录（流式记录未 begin，无重复）
             return
         }
         // I1 fix：晚到挂载守卫——detectScene/start 挂起窗口内 pttUp/cancelRecording 不失效 token，
@@ -388,6 +390,13 @@ public final class VoiceInputSessionController {
             case .text(let text, let providerId):
                 rawText = text
                 asrSource = providerId            // R5b-4：实际出字级别
+                // F4-round2（codex re-review P1-4b）：本地 fallback 全文写回记录——
+                // 流式残留记录（或 beginLocalRecord 纯本地记录）此前只有 partial/空文本，
+                // 润色/预览窗口崩溃必须恢复本地链全文。
+                if let sid = liveSessionId {
+                    try? StreamingSessionStore(engine: ports.storageEngine,
+                                               sessionId: sid).updateText(completed: text, pending: "")
+                }
             case .empty:
                 // ③ 空文本 = 用户没说话（needsContext 语义，单一源发出——F5/P1-5）
                 onStatus?(VoiceInputResult(state: .needsContext, traceId: traceId,
@@ -558,6 +567,9 @@ public final class VoiceInputSessionController {
             }
         } catch {
             // 注入失败 → 保持当前条（不 settle），单报 blocked
+            // F2-round2（codex re-review 新 P2）：挂起期间重入后 inject 抛错——旧续体
+            // 不得向新状态发 .blocked（污染新会话）；守卫与成功腿同款。
+            guard currentToken == token, phase == .recoveryPreview else { return }
             onStatus?(VoiceInputResult(state: .blocked, traceId: session.traceId,
                                        text: session.selectedText,
                                        reason: "文本注入失败: \(error.localizedDescription)",
@@ -662,6 +674,10 @@ public final class VoiceInputSessionController {
     /// 直出交付（polish 关/失败/无变化路径）
     private func deliver(text: String, traceId: String, outcome: PolishOutcome,
                          asrProvider: String, token: SessionToken?) async {
+        // F1-round2（codex re-review P1-1 缩窗）：发起粘贴前预检——已取消则根本不 inject。
+        // 诚实边界：paste 启动后的在途窗口（CursorPaster 剪贴板→prePasteDelay→⌘V，
+        // 与原链共享组件）物理不可撤回，known hole 声明（PR body），不改共享组件。
+        if let token, currentToken != token { return }
         do {
             try await ports.injector.inject(text)
             guard token == nil || currentToken == token else { return }   // 重入后不结算新上下文
@@ -717,6 +733,16 @@ public final class VoiceInputSessionController {
         guard let sessionId = liveSessionId else { return }
         liveSessionId = nil
         try? StreamingSessionStore(engine: ports.storageEngine, sessionId: sessionId).settle()
+    }
+
+    /// F4-round2（codex re-review P1-4a）：纯本地/start 失败转批处理模式也建恢复记录——
+    /// 验收 #5「松手后未交付文本可恢复」不分云/本地；fix 前纯本地模式无记录，本地链
+    /// 处理（Whisper 秒级）期间崩溃无可恢复内容。settle 由既有 settleLive 覆盖。
+    private func beginLocalRecord() {
+        let store = StreamingSessionStore(engine: ports.storageEngine,
+                                          sessionId: UUID().uuidString)
+        try? store.begin(sceneType: currentScene?.sceneType.rawValue ?? "")
+        liveSessionId = store.sessionId
     }
 
     /// 结算全部恢复队列记录（显式放弃语义：PTT 重入 / 全部丢弃）
