@@ -98,20 +98,35 @@ private final class Recorder<T>: @unchecked Sendable {
     func append(_ item: T) { lock.lock(); items.append(item); lock.unlock() }
 }
 
-/// 可控流式 ASR（feed 记录 / lost 触发 / partial 驱动）
+/// 可控流式 ASR（feed 记录 / lost 触发 / partial 驱动 / start 挂起门控）
 private final class FakeStreamingASR: StreamingASR, @unchecked Sendable {
     let providerId = "fake-streaming"
     var startShouldThrow = false
+    var startWaitForGate = false            // true = startSession 挂起等待 resumeStart()（I1 测试用）
     var finalText = ""
     var lost = false
     var onSessionLost: (@Sendable () -> Void)?
     private let (stream, continuation) = AsyncStream.makeStream(of: String.self)
+    private let startGate = AsyncStream.makeStream(of: Void.self)
     private var snapshot = SentenceSnapshot(completed: [], pending: "")
     private let lock = NSLock()
     private(set) var receivedFrames: [AudioFrame] = []
+    private var _startEntered = false
+    private var _endSessionCount = 0
+    var startEntered: Bool { lock.lock(); defer { lock.unlock() }; return _startEntered }
+    var endSessionCount: Int { lock.lock(); defer { lock.unlock() }; return _endSessionCount }
+
+    func resumeStart() { startGate.continuation.yield(()) }
 
     func startSession(traceId: String) async throws {
-        lock.lock(); let shouldThrow = startShouldThrow; lock.unlock()
+        lock.lock()
+        _startEntered = true
+        let shouldThrow = startShouldThrow
+        let wait = startWaitForGate
+        lock.unlock()
+        if wait {
+            for await _ in startGate.stream { break }   // 挂起直到 resumeStart()（yield 有缓冲，无竞态）
+        }
         if shouldThrow { throw PolishError.transport("fake start 失败") }
     }
     func feed(_ frame: AudioFrame) async throws {
@@ -124,7 +139,10 @@ private final class FakeStreamingASR: StreamingASR, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return finalText
     }
-    func endSession() async { continuation.finish() }
+    func endSession() async {
+        lock.lock(); _endSessionCount += 1; lock.unlock()
+        continuation.finish()
+    }
     func sentenceSnapshot() -> SentenceSnapshot {
         lock.lock(); defer { lock.unlock() }
         return snapshot
@@ -540,10 +558,10 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertNotEqual(tokenA, tokenB)
 
         // 会话 A 的迟到 partial 在会话 B 开始后到达 → 被 token 防护丢弃
-        sut.controller.handlePartial("A 的迟到 partial", token: tokenA!)
+        await sut.controller.handlePartial("A 的迟到 partial", token: tokenA!)
         XCTAssertFalse(sut.partials.all.contains("A 的迟到 partial"))
         // 会话 B 自己的 partial 正常放行
-        sut.controller.handlePartial("B 的 partial", token: tokenB!)
+        await sut.controller.handlePartial("B 的 partial", token: tokenB!)
         XCTAssertTrue(sut.partials.all.contains("B 的 partial"))
 
         await sut.controller.cancelRecording()
@@ -829,5 +847,124 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertEqual(sut.controller.phase, .recoveryPreview)
         XCTAssertEqual(lastPreview(sut)?.originalText, "有文本的一条")
         XCTAssertEqual(try recoverActive().map(\.sessionId), ["rec-Y"])
+    }
+
+    // ── 17. I1 fix：start 挂起窗口内快速松手 → 晚到会话被 cancel 不挂载 ──
+
+    func test_quick_pttUp_during_start_cancels_late_session() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "不该挂载的文本"
+        asr.startWaitForGate = true
+        let sut = makeSUT(streamingASRs: { asr })
+
+        let pttDownTask = Task { await sut.controller.pttDown() }
+        // 事件驱动等待 pttDown 挂起在 start 窗口内
+        let reached = await waitUntil { asr.startEntered }
+        XCTAssertTrue(reached)
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+
+        // 快速松手：start 未完成、会话未挂载；pttUp 照常推进（空 buffer → 本地链空 → blocked → idle）
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.statuses.last?.state, .blocked)
+
+        // 放行 start：晚到会话必须被 cancel（I1 守卫），不得挂载到已推进的 phase
+        asr.resumeStart()
+        await pttDownTask.value
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)               // cancel=settle 清掉 start() 内 begin 的 record，无幽灵草稿
+        XCTAssertGreaterThanOrEqual(asr.endSessionCount, 1)      // ASR 已关闭，无 socket 泄漏
+
+        // 后续新会话仍可正常挂载（无状态残留）
+        asr.startWaitForGate = false
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    // ── 18. I1 fix：start 挂起窗口内取消录音 → 晚到会话同样被 cancel ──
+
+    func test_quick_cancel_during_start_cancels_late_session() async throws {
+        let asr = FakeStreamingASR()
+        asr.startWaitForGate = true
+        let sut = makeSUT(streamingASRs: { asr })
+
+        let pttDownTask = Task { await sut.controller.pttDown() }
+        let reached = await waitUntil { asr.startEntered }
+        XCTAssertTrue(reached)
+
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)
+
+        asr.resumeStart()
+        await pttDownTask.value
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)
+        XCTAssertGreaterThanOrEqual(asr.endSessionCount, 1)
+    }
+
+    // ── 19. M1：discardUndo（live 源）窗口内 PTT = 确认丢弃开新录音 ──
+
+    func test_ptt_during_discard_undo_live_source_settles_and_starts_fresh() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "撤销窗内的草稿"
+        let sut = makeSUT(streamingASRs: { asr }, polishResult: "撤销窗内的草稿（润色）",
+                          discardUndoTimeout: 0.5)
+
+        await sut.controller.pttDown()
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let oldSessionId = try XCTUnwrap(try recoverActive().first?.sessionId)
+
+        sut.controller.discardPreview()
+        XCTAssertEqual(sut.controller.phase, .discardUndo)
+        XCTAssertEqual(try recoverActive().count, 1)   // 窗口内未 settle
+
+        // 窗口内 PTT = 确认丢弃并开新录音（D23）
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+        let after = try recoverActive()
+        XCTAssertEqual(after.count, 1)                                  // 新录音有自己的 record
+        XCTAssertNotEqual(after.first?.sessionId, oldSessionId)         // 旧草稿 record 已 settle
+        XCTAssertEqual(sut.injector.injected.count, 0)
+        XCTAssertNil(lastPreview(sut))
+
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    // ── 20. M1：discardUndo（recovery 源）窗口内 PTT = 全队列结算开新录音 ──
+
+    func test_ptt_during_discard_undo_recovery_source_settles_all() async throws {
+        try seedRecord(sessionId: "rec-A", sceneType: "coding",
+                       at: Date(timeIntervalSince1970: 1_000_000),
+                       completed: "恢复甲")
+        try seedRecord(sessionId: "rec-B", sceneType: "office_writing",
+                       at: Date(timeIntervalSince1970: 2_000_000),
+                       completed: "恢复乙")
+        let records = try recoverActive()
+
+        let asr = FakeStreamingASR()
+        asr.finalText = "新录音文本"
+        let sut = makeSUT(streamingASRs: { asr }, discardUndoTimeout: 0.5)
+        sut.controller.presentRecoveredSessions(records)
+        sut.controller.discardPreview()
+        XCTAssertEqual(sut.controller.phase, .discardUndo)
+        XCTAssertEqual(try recoverActive().count, 2)   // 窗口内未 settle（含当前丢弃条）
+
+        // 窗口内 PTT = 确认丢弃（整个恢复队列含当前条）开新录音
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+        let after = try recoverActive()
+        XCTAssertEqual(after.count, 1)                 // 仅剩新会话 record
+        XCTAssertEqual(sut.injector.injected.count, 0)
+        XCTAssertNil(lastPreview(sut))
+
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)
     }
 }

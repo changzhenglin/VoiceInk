@@ -232,7 +232,10 @@ public final class VoiceInputSessionController: @unchecked Sendable {
             _ = transition(.streamingUnavailable)
             return
         }
-        guard currentToken == token else {   // 启动期间被取消/重入
+        // I1 fix：晚到挂载守卫——detectScene/start 挂起窗口内 pttUp/cancelRecording 不失效 token，
+        // 仅 token 比对会让会话晚挂载到已推进的 phase（M3-1 违反 + record 永不 settle + ASR 泄漏）。
+        // 补 phase 检查；cancel=settle 恰清理 start() 内 begin 的记录。检查与挂载之间无 await，无二次窗口。
+        guard currentToken == token, phase == .recordingStreaming else {
             await session.cancel()
             return
         }
@@ -241,12 +244,20 @@ public final class VoiceInputSessionController: @unchecked Sendable {
         streamingProviderId = streamingASR.providerId
         session.beginFeeding()
         session.observePartials { [weak self] snap in
-            self?.handlePartial(snap.fullText, token: token)
+            guard let self else { return }
+            let text = snap.fullText
+            // I2 fix：observer Task 在任意线程，hop 到 MainActor 再进控制器（线程封闭）
+            Task { @MainActor [weak self] in
+                self?.handlePartial(text, token: token)
+            }
         }
     }
 
     /// partial 回调入口（P0-1 串台防护：token 不匹配 = 过期会话事件，丢弃）。
+    /// I2 fix：@MainActor 封闭——currentToken 读写统一 MainActor，消除 observer 线程
+    /// 无同步可见性失败放过 stale partial 的串台窗口。测试经 await 驱动。
     /// internal：供 observePartials 接线与包层测试直接驱动。
+    @MainActor
     func handlePartial(_ fullText: String, token: SessionToken) {
         guard currentToken == token else { return }
         onPartial?(fullText)
@@ -651,7 +662,10 @@ public final class VoiceInputSessionController: @unchecked Sendable {
     private func startUndoTimer() {
         cancelUndoTimer()
         let timeout = discardUndoTimeout
-        undoTask = Task { [weak self] in
+        // I2 fix：timer 体 MainActor 封闭（sleep 在 MainActor 挂起不阻塞）——
+        // undoTimerFired 与 undoDiscard/discardPreview 同在 MainActor 串行，
+        // 消除 check-then-act 竞态（undo 恢复预览的同时 timer settle 刚恢复的草稿）。
+        undoTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.undoTimerFired()
@@ -663,7 +677,9 @@ public final class VoiceInputSessionController: @unchecked Sendable {
         undoTask = nil
     }
 
-    /// 撤销窗口超时：settle 草稿 →（恢复来源为预览）idle /（恢复来源为恢复队列）呈下一条或 idle
+    /// 撤销窗口超时：settle 草稿 →（恢复来源为预览）idle /（恢复来源为恢复队列）呈下一条或 idle。
+    /// I2 fix：@MainActor——与 undoDiscard 串行化，无交错。
+    @MainActor
     private func undoTimerFired() {
         guard phase == .discardUndo else { return }
         undoTask = nil
