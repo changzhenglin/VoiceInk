@@ -171,8 +171,10 @@ final class AgentVoiceCoordinator: ObservableObject {
             Self.postNotification(title: "AgentVoice", body: errorMessage)
 
         case .needsContext:
-            // 用户没说话，静默回 idle
+            // 用户没说话，回 idle + 短提示（I2 fix review round 1：plan L138-139 矩阵 EMPTY 格——
+            // 「没有听到内容」短提示；同 blocked 分支既有 UNUserNotificationCenter 机制，不新增 UI 表面）
             statusAdapter.update(.idle)
+            Self.postNotification(title: "AgentVoice", body: "没有听到内容，可再试一次")
         }
     }
 

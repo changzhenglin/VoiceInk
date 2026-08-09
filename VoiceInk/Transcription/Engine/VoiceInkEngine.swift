@@ -215,7 +215,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activePipelineUseCase = activeRecordingUseCase
             activeRecordingUseCase = .newSession
             activeRecordingStartID = nil
-            partialTranscript = ""
+            // I1 fix（review round 1）：清空条件化——仅非 AgentVoice 正常停止路径清空（原链语义保持）；
+            // AgentVoice 正常停止保留 partial 供 processing 呈现 secondary（B2/UI 规范 §1 processing 第 2 条）；
+            // 取消路径保持清空。此处原为无条件清空，在分叉判定前执行，击穿 B2（Task 8 仅删了分支内第二处）。
+            if activeAgentVoiceSession == nil || shouldCancelRecording {
+                partialTranscript = ""
+            }
             recordingState = .transcribing
             await recorder.stopRecording()
 
