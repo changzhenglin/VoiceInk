@@ -121,9 +121,14 @@ public struct AttentionProjector: Sendable {
             return ProjectionResult(lamp: .none, subreason: "", dimmed: false, hoverNote: "")
         }
 
-        // 入口级 guard（spec §3 L96）：hook 未装/采集不健康 → ?灰，不假亮 ◌绿/✓绿
+        // 入口级 guard（spec §3 L96）：hook 未装/采集不健康 → ?灰，不假亮 ◌绿/✓绿。
+        // 遮罩位继承 privacy 分级（Task 5 review fix round 1）：privacy 的遮罩属性
+        // （标识遮罩 + 排除 VO/通知/计数，G2）不因入口级 guard 先生效而失效——
+        // 组合态 hook 未装/不健康 ∧ privacy≠ok（如新机器 hook 未装 + scan 发现
+        // 未审查会话，unknown=未审查语义见 FieldAllowlist）仍须输出遮罩态，
+        // 不泄漏存在性与项目身份。
         guard input.hookHealth == .healthy else {
-            return gray("采集不健康")
+            return gray("采集不健康", masked: input.privacyClass != .ok)
         }
 
         // G2：privacy unknown/blocked → ?灰 + 标识遮罩 + 排除 VO/通知/计数。

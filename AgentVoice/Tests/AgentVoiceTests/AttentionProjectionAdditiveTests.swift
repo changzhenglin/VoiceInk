@@ -49,6 +49,37 @@ final class AttentionProjectionAdditiveTests: XCTestCase {
         XCTAssertEqual(projector.project(input).lamp, .none)
     }
 
+    /// Task 5 review fix round 1：hookHealth 入口级 guard 继承 privacy 遮罩位。
+    /// 组合态 hook 未装/不健康 ∧ privacy≠ok（新机器 hook 未装 + scan 发现未审查
+    /// 会话——unknown=未审查，FieldAllowlist 语义）必须输出遮罩态，
+    /// privacy 的遮罩属性不因入口级 guard 先生效而失效。
+    func testHookHealthGuardInheritsPrivacyMask() {
+        for health in [HookHealth.notInstalled, .unhealthy] {
+            // privacy blocked → 遮罩位继承
+            var blocked = baseline(); blocked.hookHealth = health
+            blocked.privacyClass = .blocked
+            let rb = projector.project(blocked)
+            XCTAssertEqual(rb.lamp, .unknownGray)
+            XCTAssertTrue(rb.subreason.contains("采集不健康"), "入口级 guard 子原因不变")
+            XCTAssertTrue(rb.privacyMasked,
+                          "hook \(health) ∧ privacy blocked → 遮罩位继承（review fix）")
+
+            // privacy unknown（未审查）→ 遮罩位继承
+            var unknown = baseline(); unknown.hookHealth = health
+            unknown.privacyClass = .unknown
+            let ru = projector.project(unknown)
+            XCTAssertEqual(ru.lamp, .unknownGray)
+            XCTAssertTrue(ru.privacyMasked,
+                          "hook \(health) ∧ privacy unknown → 遮罩位继承（review fix）")
+
+            // privacy ok → 对照态不遮罩
+            var ok = baseline(); ok.hookHealth = health   // privacyClass 保持 .ok
+            let ro = projector.project(ok)
+            XCTAssertEqual(ro.lamp, .unknownGray)
+            XCTAssertFalse(ro.privacyMasked, "hook \(health) ∧ privacy ok → 对照态不遮罩")
+        }
+    }
+
     // MARK: - completed TTL 边界（fail-closed + G8→G9 桥接裁决钉死）
 
     func testCompletedWithoutCompletedAtFailsClosed() {
