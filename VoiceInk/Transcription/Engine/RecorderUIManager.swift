@@ -168,7 +168,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                 await engine.toggleRecord(modeId: modeId)
             case .starting, .transcribing, .enhancing:
                 await cancelRecording()
-            case .idle:
+            case .idle, .previewing:   // D8 fold：previewing 等同 idle 分支
                 if engine.assistantSession.canSendFollowUp {
                     SoundManager.shared.playStartSound()
                     await engine.toggleRecord(
@@ -239,7 +239,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             switch engine?.recordingState {
             case .starting, .recording, .transcribing, .enhancing:
                 await cancelRecording()
-            case .idle, .busy, nil:
+            case .idle, .busy, .previewing, nil:   // D8 fold：previewing 等同 idle 分支
                 await dismissRecorderPanel()
             }
         }

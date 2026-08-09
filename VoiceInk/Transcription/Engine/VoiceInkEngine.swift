@@ -723,7 +723,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             partialTranscript = ""
             recordingState = .idle
             shouldFinishSessionImmediately = false
-        case .idle, .busy:
+        case .idle, .busy, .previewing:   // D8 fold：previewing 对原链等同 idle（非 recording/transcribing）
             partialTranscript = ""
             shouldCancelRecording = false
             recordingState = .idle
