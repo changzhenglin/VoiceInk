@@ -72,4 +72,22 @@ public struct AttentionReducer: Sendable {
         s.connection = .connected
         if s.lifecycle == .discovered { /* 保持 discovered 直到首个业务事件转 managed */ }
     }
+
+    /// Task 8（Projector L206 点名：timed reducer 转移归 Task 8）：completed
+    /// presentation TTL timed 转移——`activityFact==.completed ∧ completedAt+TTL < at
+    /// → .idle`（G9 ◌绿 的事实基础；附录 A G8 后半「>5min timed reducer → idle→G9」）。
+    /// fail-closed：completedAt nil（TTL 无法验证）/ 未来时刻（age<0）→ 原样返回，
+    /// 不猜测转移（与 Projector G8 nil→?灰 同律）。非 completed 活动事实 → 原样返回。
+    /// 其他轴（lifecycle/freshness/connection/attention/evidenceRefs/watermark）零触碰。
+    /// TTL 常量引用 `AttentionProjector.completedTTL` 单一真源；严格 >（恰好 TTL 保留，
+    /// seen 标记不延长 TTL——§3 时效）。
+    public func timedTransition(snapshot: AttentionStateSnapshot,
+                                completedAt: Date?, at: Date) -> AttentionStateSnapshot {
+        guard snapshot.activityFact == .completed, let completedAt else { return snapshot }
+        let age = at.timeIntervalSince(completedAt)
+        guard age > AttentionProjector.completedTTL else { return snapshot }
+        var s = snapshot
+        s.activityFact = .idle
+        return s
+    }
 }

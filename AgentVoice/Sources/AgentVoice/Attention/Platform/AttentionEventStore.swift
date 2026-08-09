@@ -279,6 +279,56 @@ public final class AttentionEventStore: @unchecked Sendable {
     public func closeForTesting() { try? dbQueue.close() }
 }
 
+// MARK: - Task 8: completed unseen presentation TTL（spec §8.7 retention 分离）
+
+extension AttentionEventStore {
+    /// completed presentation TTL 查询面（裁决 A store 层；灯条 spec §8.7 逐字：
+    /// completed 5 分钟仅是 presentation TTL，不删除 unseen attention item 或完成事实）。
+    /// bounded 查询 attention_items 中 `kind=completed ∧ status=new（unseen）∧
+    /// createdAt+TTL < at`（严格 >：恰好 TTL 保留，Task 9 I2「恰好保留」边界同风格）
+    /// 的项，**返回供摘要入队，不删除不修改任何行**——事实零删除；重复返回的幂等
+    /// 由 `UnseenSummaryQueue` 按 attentionItemId dedupe 承担（免 schema 改动，surgical）。
+    /// seen 项（status=seen）不入摘要（正常退 idle 归投影侧 G8→G9）；
+    /// 非 completed kind 零触碰。TTL 常量引用 `AttentionProjector.completedTTL`
+    /// 单一真源。C17：读路径禁 try!，磁盘/损坏/关闭态降级空集（同 loadPersistedItems 模式）。
+    public func expireCompletedPresentation(at: Date) -> [AttentionItem] {
+        let cutoff = at.addingTimeInterval(-AttentionProjector.completedTTL)
+        do {
+            let rows = try dbQueue.read { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT * FROM attention_items
+                    WHERE kind = ? AND status = ? AND created_at < ?
+                    ORDER BY created_at
+                    """, arguments: [EventKind.completed.rawValue,
+                        AttentionItemStatus.new.rawValue, cutoff])
+            }
+            // 行解码与 loadPersistedItems 同构（全走可选下标：NULL/损坏行跳过，C17）
+            return rows.compactMap { row in
+                guard let id: String = row["attention_item_id"],
+                      let sessionKey: String = row["session_key"],
+                      let kindRaw: String = row["kind"],
+                      let kind = EventKind(rawValue: kindRaw),
+                      let statusRaw: String = row["status"],
+                      let status = AttentionItemStatus(rawValue: statusRaw),
+                      let createdAt: Date = row["created_at"],
+                      let updatedAt: Date = row["updated_at"],
+                      let policyVersion: Int = row["policy_version"],
+                      let evidenceJson: String = row["evidence_refs"] else { return nil }
+                var item = AttentionItem(attentionItemId: id, sessionKey: sessionKey,
+                                         kind: kind, createdAt: createdAt)
+                item.status = status
+                item.updatedAt = updatedAt
+                item.policyVersion = policyVersion
+                item.evidenceRefs = (try? JSONDecoder().decode(
+                    [String].self, from: Data(evidenceJson.utf8))) ?? []
+                return item
+            }
+        } catch {
+            return []   // C17：磁盘/损坏/关闭态降级空集，不猜测
+        }
+    }
+}
+
 // MARK: - Task 8: 保留策略 + 冷聚合（C16 fold）+ 容量守卫 + 有界查询（C9）
 
 extension AttentionEventStore {
