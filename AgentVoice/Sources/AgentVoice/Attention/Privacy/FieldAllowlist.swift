@@ -346,7 +346,7 @@ public enum FieldAllowlist {
             }
         }
 
-        // MARK: 跳过（结构校验 + 上限执行；字节不收集）
+        // MARK: 跳过（结构校验 + 上限执行；被跳过值与嵌套键零收集、零 materialize）
 
         /// 跳过任意值；depth = 该值若为容器时其自身的栈层数（根=1，根内容器=2 起，
         /// 与 FieldNameOnlyTokenizer.scanValue 同编号；上限 maxContainerStack=17 ⇔ 根内 ≤16 层）
@@ -361,12 +361,12 @@ public enum FieldAllowlist {
                 guard depth <= FieldAllowlist.maxContainerStack else { throw ScanError.depthExceeded }
                 try skipArray(depth: depth)
             case UInt8(ascii: "\""):
-                _ = try scanString(limit: nil)          // 跳过字符串无长度上限（body 上限兜底）
+                try skipString()                        // 文法校验即弃：不累积、不构造 String
             case UInt8(ascii: "t"): try expectLiteral("true")
             case UInt8(ascii: "f"): try expectLiteral("false")
             case UInt8(ascii: "n"): try expectLiteral("null")
             case UInt8(ascii: "-"), UInt8(ascii: "0")...UInt8(ascii: "9"):
-                _ = try scanNumber(limit: nil)
+                try skipNumber()                        // 文法校验即弃：不累积、不构造 String
             default:
                 throw ScanError.malformed
             }
@@ -379,7 +379,7 @@ public enum FieldAllowlist {
             while true {
                 skipWhitespace()
                 guard peek() == UInt8(ascii: "\"") else { throw ScanError.malformed }
-                _ = try scanString(limit: nil)          // 嵌套键不 materialize
+                try skipString()                        // 嵌套键不 materialize（文法校验即弃）
                 skipWhitespace()
                 try expect(UInt8(ascii: ":"))
                 try skipValue(depth: depth + 1)
@@ -406,6 +406,104 @@ public enum FieldAllowlist {
                 case UInt8(ascii: ","): pos += 1
                 case UInt8(ascii: "]"): pos += 1; return
                 default: throw ScanError.malformed
+                }
+            }
+        }
+
+        // MARK: 跳过路径文法校验（零累积、零 materialize——plan Step 4「不得构造对应 String/Data」）
+
+        /// RFC 8259 字符串文法校验（仅 skip 路径）：转义序列/代理对/控制字符/UTF-8 合法性
+        /// 逐字节验证即弃——全程不构造 String、不累积字节缓冲。
+        /// 文法非法（坏转义/孤立代理/未转义控制字符/非法 UTF-8）→ throw，整事件 unknown（fail-closed）。
+        mutating func skipString() throws {
+            try expect(UInt8(ascii: "\""))
+            while true {
+                guard let b = advance() else { throw ScanError.malformed }
+                if b == UInt8(ascii: "\"") { return }
+                if b == UInt8(ascii: "\\") {
+                    guard let e = advance() else { throw ScanError.malformed }
+                    switch e {
+                    case UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "/"),
+                         UInt8(ascii: "b"), UInt8(ascii: "f"), UInt8(ascii: "n"),
+                         UInt8(ascii: "r"), UInt8(ascii: "t"):
+                        continue
+                    case UInt8(ascii: "u"):
+                        try skipUnicodeEscape()
+                    default: throw ScanError.malformed
+                    }
+                } else if b < 0x20 {
+                    throw ScanError.malformed           // RFC 8259：控制字符必须转义
+                } else if b >= 0x80 {
+                    try validateUtf8Sequence(lead: b)   // RFC 8259 §8.1：JSON 文本须合法 UTF-8
+                }
+            }
+        }
+
+        /// \uXXXX 文法校验（仅 skip 路径）：只验 hex 与代理配对，不构造 Unicode.Scalar。
+        /// 语义与 scanUnicodeEscape 一致：高代理必须紧跟 \uDC00-\uDFFF 低代理；孤立低代理 → malformed。
+        mutating func skipUnicodeEscape() throws {
+            let unit = try scanHex4()
+            if (0xD800...0xDBFF).contains(UInt32(unit)) {
+                guard advance() == UInt8(ascii: "\\"), advance() == UInt8(ascii: "u") else {
+                    throw ScanError.malformed
+                }
+                let low = try scanHex4()
+                guard (0xDC00...0xDFFF).contains(UInt32(low)) else { throw ScanError.malformed }
+            } else if (0xDC00...0xDFFF).contains(UInt32(unit)) {
+                throw ScanError.malformed               // 孤立低代理
+            }
+        }
+
+        /// RFC 8259 数字文法校验（仅 skip 路径）：只校验不累积（与 FieldNameOnlyTokenizer.scanNumber 同形态）。
+        mutating func skipNumber() throws {
+            if peek() == UInt8(ascii: "-") { pos += 1 }
+            guard let b = advance() else { throw ScanError.malformed }
+            if b == UInt8(ascii: "0") {
+                // 整数部分为 0 后不得再有数字（禁前导零）
+            } else if b >= UInt8(ascii: "1") && b <= UInt8(ascii: "9") {
+                while let d = peek(), d >= UInt8(ascii: "0") && d <= UInt8(ascii: "9") { pos += 1 }
+            } else {
+                throw ScanError.malformed
+            }
+            if peek() == UInt8(ascii: ".") {
+                pos += 1
+                guard let d = advance(), d >= UInt8(ascii: "0"), d <= UInt8(ascii: "9") else {
+                    throw ScanError.malformed
+                }
+                while let f = peek(), f >= UInt8(ascii: "0") && f <= UInt8(ascii: "9") { pos += 1 }
+            }
+            if let e = peek(), e == UInt8(ascii: "e") || e == UInt8(ascii: "E") {
+                pos += 1
+                if let s = peek(), s == UInt8(ascii: "+") || s == UInt8(ascii: "-") { pos += 1 }
+                guard let d = advance(), d >= UInt8(ascii: "0"), d <= UInt8(ascii: "9") else {
+                    throw ScanError.malformed
+                }
+                while let f = peek(), f >= UInt8(ascii: "0") && f <= UInt8(ascii: "9") { pos += 1 }
+            }
+        }
+
+        /// 严格 UTF-8 结构校验（仅 skip 路径）：拒游离续字节/overlong（C0-C1、E0 80-9F、F0 80-8F）/
+        /// 代理码点（ED A0-BF）/超 U+10FFFF（F5+、F4 90+）；只消费字节，不构造 String。
+        mutating func validateUtf8Sequence(lead: UInt8) throws {
+            let count: Int
+            let firstLo: UInt8
+            let firstHi: UInt8
+            switch lead {
+            case 0xC2...0xDF: count = 1; firstLo = 0x80; firstHi = 0xBF
+            case 0xE0:        count = 2; firstLo = 0xA0; firstHi = 0xBF   // overlong 拒
+            case 0xE1...0xEC, 0xEE...0xEF: count = 2; firstLo = 0x80; firstHi = 0xBF
+            case 0xED:        count = 2; firstLo = 0x80; firstHi = 0x9F   // 代理码点拒
+            case 0xF0:        count = 3; firstLo = 0x90; firstHi = 0xBF   // overlong 拒
+            case 0xF1...0xF3: count = 3; firstLo = 0x80; firstHi = 0xBF
+            case 0xF4:        count = 3; firstLo = 0x80; firstHi = 0x8F   // >U+10FFFF 拒
+            default: throw ScanError.malformed          // 0x80-0xC1 游离/overlong；0xF5+ 超范围
+            }
+            for i in 0..<count {
+                guard let b = advance() else { throw ScanError.malformed }
+                if i == 0 {
+                    guard b >= firstLo, b <= firstHi else { throw ScanError.malformed }
+                } else {
+                    guard b >= 0x80, b <= 0xBF else { throw ScanError.malformed }
                 }
             }
         }

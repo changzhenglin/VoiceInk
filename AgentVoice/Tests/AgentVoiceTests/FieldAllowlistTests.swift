@@ -64,6 +64,49 @@ final class FieldAllowlistTests: XCTestCase {
         XCTAssertEqual(event.privacyClass, .blocked)
     }
 
+    // MARK: - skip 路径零 materialize：文法校验不弱化（review fix round 1）
+
+    func testSkipPathInvalidEscapeStillYieldsUnknown() throws {
+        // 不累积模式下：禁止字段值含非法 JSON 转义 → 整事件 unknown（fail-closed 不部分接受）
+        let event = try FieldAllowlist.sanitize(
+            source: .officialHook,
+            data: Data(#"{"session_id":"s-1","prompt":"bad \q escape"}"#.utf8))
+        XCTAssertEqual(event.privacyClass, .unknown)
+        XCTAssertEqual(event.allowedFieldNames, [], "超限/畸形不部分接受")
+        // 未知字段 + 孤立高代理转义（\uD800 后非 \uDC00-\uDFFF 低代理）→ 同样 unknown
+        let event2 = try FieldAllowlist.sanitize(
+            source: .officialHook,
+            data: Data(#"{"session_id":"s-1","mystery":"lone \ud800 surrogate"}"#.utf8))
+        XCTAssertEqual(event2.privacyClass, .unknown)
+        XCTAssertEqual(event2.allowedFieldNames, [])
+    }
+
+    func testSkipPathInvalidUtf8StillYieldsUnknown() throws {
+        // 不累积模式下：禁止字段值含非法 UTF-8 → 整事件 unknown（文法校验覆盖 RFC 8259 §8.1）
+        var stray = Data(#"{"session_id":"s-1","prompt":""#.utf8)
+        stray.append(0xFF)                              // 游离越界字节（非法 lead）
+        stray.append(Data(#""}"#.utf8))
+        let event = try FieldAllowlist.sanitize(source: .officialHook, data: stray)
+        XCTAssertEqual(event.privacyClass, .unknown)
+        XCTAssertEqual(event.allowedFieldNames, [])
+        // 截断多字节序列：3 字节 lead 0xE4 后直接闭引号（缺续字节）→ unknown
+        var trunc = Data(#"{"session_id":"s-1","prompt":""#.utf8)
+        trunc.append(contentsOf: [0xE4, 0x22, 0x7D])    // 0xE4 后续字节位置是闭引号
+        let event2 = try FieldAllowlist.sanitize(source: .officialHook, data: trunc)
+        XCTAssertEqual(event2.privacyClass, .unknown)
+    }
+
+    func testSkipPathValidMultibyteUtf8StillParsesClean() throws {
+        // 正向对照：合法多字节 UTF-8 禁止值不被误拒——事件 ok、禁止字段缺席、输出面零值
+        let event = try FieldAllowlist.sanitize(
+            source: .officialHook,
+            data: Data(#"{"session_id":"s-1","prompt":"中文人工值 fixture"}"#.utf8))
+        XCTAssertEqual(event.privacyClass, .ok)
+        XCTAssertNil(event.value(forField: "prompt"))
+        XCTAssertEqual(event.value(forField: "session_id"), "s-1")
+        XCTAssertFalse(event.containsValueSubstring("人工值"), "禁止值不得进入输出面")
+    }
+
     // MARK: - capability×sink 隔离（ephemeral/render 不自动升级）
 
     func testEphemeralAllowedFieldDoesNotGainPersistence() throws {
