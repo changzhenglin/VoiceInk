@@ -1,6 +1,7 @@
 import AgentVoice
 import AppIntents
 import AppKit
+import Combine
 import FluidAudio
 import OSLog
 import Sparkle
@@ -18,6 +19,8 @@ struct VoiceInkApp: App {
     @StateObject private var transcriptionModelManager: TranscriptionModelManager
     @StateObject private var recorderUIManager: RecorderUIManager
     @StateObject private var recordingShortcutManager: RecordingShortcutManager
+    /// V1 预览专用全局快捷键（Task 8 B5：⌥⌘↩ 输出 / ⌥⌘R 回退 / ⌥⌘⌫ 丢弃·撤销，预览态作用域）
+    @StateObject private var previewShortcutManager: PreviewShortcutManager
     @StateObject private var updaterViewModel: UpdaterViewModel
     @StateObject private var menuBarManager: MenuBarManager
     @StateObject private var agentVoiceStatusAdapter: AgentVoiceStatusAdapter
@@ -151,6 +154,10 @@ struct VoiceInkApp: App {
         let recordingShortcutManager = RecordingShortcutManager(engine: engine, recorderUIManager: recorderUIManager)
         _recordingShortcutManager = StateObject(wrappedValue: recordingShortcutManager)
 
+        // V1 Task 8 B5：预览专用快捷键管理器（预览态作用域监听；默认 ⌥⌘↩/⌥⌘R/⌥⌘⌫，Settings UI 归 Task 9）
+        let previewShortcutManager = PreviewShortcutManager(engine: engine)
+        _previewShortcutManager = StateObject(wrappedValue: previewShortcutManager)
+
         let menuBarManager = MenuBarManager()
         _menuBarManager = StateObject(wrappedValue: menuBarManager)
         menuBarManager.configure(modelContainer: resolvedContainer, engine: engine)
@@ -258,6 +265,21 @@ struct VoiceInkApp: App {
                 let coordinator = AgentVoiceCoordinator(
                     controller: controller, statusAdapter: agentVoiceStatusAdapter)
                 engine.agentVoiceCoordinator = coordinator
+
+                // V1（Task 8 Step 1）：预览状态与相位转发（UI 观察 engine）
+                engine.storePreviewCancellable(
+                    coordinator.$previewSession
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak engine] session in
+                            engine?.previewSessionForward = session
+                        })
+                // B1：相位转发——preview==nil 窗口（discardUndo 撤销条 / polishing 处理呈现）的信号源
+                engine.storePreviewCancellable(
+                    coordinator.$phase
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak engine] phase in
+                            engine?.agentVoicePhaseForward = phase
+                        })
             } catch {
                 let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AgentVoice")
                 logger.error("AgentVoice 初始化失败: \(error.localizedDescription)")

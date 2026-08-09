@@ -24,8 +24,16 @@ final class AgentVoiceCoordinator: ObservableObject {
     /// 预览状态转发给 UI（Task 8 消费）
     @Published var previewSession: PreviewSession?
 
+    /// 控制器相位转发给 UI（B1 裁决：preview==nil 窗口内 discardUndo/processing 呈现的唯一信号源；
+    /// 形态同 previewSession 的 assumeIsolated 同步桥，engine/UI 在 MainActor 读）
+    @Published var phase: AgentVoicePhase = .idle
+
     /// partial → engine 回调（Task 7 安装）
     var onPartialUpdate: (@MainActor (String) -> Void)?
+
+    /// B9：自上次相位变化以来控制器是否发过 onStatus——区分「带 onStatus 的结算」（confirm 成功/失败，
+    /// handleResult 已置 done/error，不得覆盖）与「不带 onStatus 的结算」（discard 系 settle，需复位 idle）
+    private var statusEmittedSincePhaseChange = false
 
     /// 暴露给测试断言状态映射（codex P1#10 fold 保持）
     var statusAdapterForTest: AgentVoiceStatusAdapter { statusAdapter }
@@ -42,6 +50,11 @@ final class AgentVoiceCoordinator: ObservableObject {
                 self?.previewSession = preview
             }
         }
+        controller.onPhaseChange = { [weak self] newPhase in
+            MainActor.assumeIsolated {
+                self?.handlePhaseChange(newPhase)
+            }
+        }
         controller.onPartial = { [weak self] full in
             MainActor.assumeIsolated {
                 self?.onPartialUpdate?(full)
@@ -54,6 +67,27 @@ final class AgentVoiceCoordinator: ObservableObject {
         }
     }
 
+    /// B1/B9：相位桥接 + 无 onStatus 结算路径的状态条复位（OOS-2 收口）。
+    ///
+    /// 控制器各 settle 路径 onStatus 发射事实（Task 8 核验）：
+    /// - confirm 成功/失败（含恢复逐条/错误重试）→ 发 onStatus（handleResult 置 done/error）→ 不覆盖
+    /// - discardPreview→discardUndo / undo 超时 settle / 全部丢弃 / recoverableError 相丢弃 → **不发** onStatus
+    /// 不发 onStatus 且相位回到 idle（或撤销超时呈下一条恢复）时，状态条滞留 .processing（OOS-2）→ 复位 .idle。
+    /// 判定用「上次相位变化以来是否发过 onStatus」区分两类结算，不误覆盖 confirm 成功后的 .done 短暂态。
+    private func handlePhaseChange(_ newPhase: AgentVoicePhase) {
+        let oldPhase = phase
+        phase = newPhase
+        defer { statusEmittedSincePhaseChange = false }
+
+        let settleTargets: Set<AgentVoicePhase> = [.idle, .recoveryPreview]
+        let settleSources: Set<AgentVoicePhase> = [.discardUndo, .recoveryPreview, .recoverableError]
+        guard settleTargets.contains(newPhase),
+            settleSources.contains(oldPhase),
+            !statusEmittedSincePhaseChange
+        else { return }
+        statusAdapter.update(.idle)
+    }
+
     // MARK: - engine 接口（Task 7 消费）
 
     func beginSession() async { await controller.pttDown() }
@@ -64,6 +98,12 @@ final class AgentVoiceCoordinator: ObservableObject {
     func confirmPreview() async { await controller.confirmPreview() }
     func discardPreview() { controller.discardPreview() }
     func togglePreviewRevert() { controller.togglePreviewRevert() }
+
+    // B6 透传（Task 6+7 携带项：plan Task 6 Interfaces 清单缺，Task 8 补齐）
+    /// discardUndo 窗口内撤销（D23：恢复原 phase 与草稿）
+    func undoDiscard() { controller.undoDiscard() }
+    /// 恢复队列全部丢弃（R1/D30：逐条 settle 回 idle；不提供全部输出）
+    func discardAllRecovered() { controller.discardAllRecovered() }
 
     func presentRecoveredSessions(_ records: [StreamingSessionRecord]) {
         controller.presentRecoveredSessions(records)
@@ -94,6 +134,7 @@ final class AgentVoiceCoordinator: ObservableObject {
     /// internal（非 private），暴露给 @testable 测试（A1 裁决：保留测试直调；
     /// plan sketch 标 private，为保既有测试直调放宽——必要支撑类偏差，报告声明）
     func handleResult(_ result: VoiceInputResult) {
+        statusEmittedSincePhaseChange = true   // B9：onStatus 到达标记（区分带/不带 onStatus 的结算路径）
         logger.info("AgentVoice 结果: state=\(result.state.rawValue) traceId=\(result.traceId) asr=\(result.asrProvider) polished=\(result.polished)")
 
         switch result.state {

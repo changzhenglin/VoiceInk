@@ -1,5 +1,7 @@
 import AVFoundation
+import AgentVoice
 import AppKit
+import Combine
 import Foundation
 import SwiftData
 import SwiftUI
@@ -127,6 +129,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activeAgentVoiceSession: AgentVoiceCoordinator?
     // V1 流式接线（Task 7）：音频 buffer 与流式会话由包层控制器持有，engine 不再自持
     var statusAdapter: AgentVoiceStatusAdapter?
+    /// V1 预览状态转发（Task 8：UI 经 engine 观察刷新；VoiceInk.swift 沉 coordinator.$previewSession 写入）
+    @Published var previewSessionForward: PreviewSession?
+    /// V1 控制器相位转发（Task 8 B1：preview==nil 窗口内 discardUndo/processing 呈现的信号源）
+    @Published var agentVoicePhaseForward: AgentVoicePhase = .idle {
+        didSet { handleAgentVoicePhaseChange(from: oldValue) }
+    }
+    /// V1 预览转发订阅容器（VoiceInk.swift composition root 注入 sink）
+    private(set) lazy var previewCancellables = Set<AnyCancellable>()
+
+    /// V1：预览转发订阅注册入口（private(set) 容器外部不可 inout，经方法注入；Task 8 偏差声明）
+    func storePreviewCancellable(_ cancellable: AnyCancellable) {
+        cancellable.store(in: &previewCancellables)
+    }
     /// outside voice #2 fold：不用 @AppStorage（NSObject 中不响应 SwiftUI 刷新）
     /// 每次 toggleRecord 时即时读 UserDefaults
     var agentVoiceEnabled: Bool {
@@ -212,7 +227,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 activeAgentVoiceSession = nil  // 清除会话快照
                 recorder.onAudioChunk = nil
                 coordinator.onPartialUpdate = nil
-                partialTranscript = ""
+                // B2：保留最后 partial 不清空——processing 呈现（phase==.polishing 窗口）作 secondary 上下文；
+                // 下次录音开始（下方 :start 分支）与取消路径仍清空。
                 Task { @MainActor in
                     // M2 fix（review round 1）：旧 run() 开头置 .processing，新流程经 endSession
                     // 直跳结果态——补 .processing 恢复既有四态 UI 语义（plan Task 6 Step 1 声明）
@@ -536,12 +552,60 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - AgentVoice 预览收尾
+    // MARK: - AgentVoice 预览操作（Task 8：UI 回调入口，经 coordinator 透传包层控制器）
 
-    /// V1：预览关闭后收尾（Task 8 的确认/丢弃按钮回调之后调用）
+    /// 确认预览（输出到光标）。分相语义由控制器守：
+    /// previewing=注入 selectedText；recoveryPreview=只结算当前条并呈下一条；recoverableError=重试注入。
+    func confirmPreview() async {
+        await agentVoiceCoordinator?.confirmPreview()
+        // 恢复逐条（R1）：confirm 当前条后队列呈下一条（previewSession 非 nil）→ 面板保持；
+        // 其余（注入完成/队列耗尽/无 coordinator）→ 收尾关闭面板
+        if agentVoiceCoordinator?.previewSession == nil {
+            await finishPreview()
+        }
+    }
+
+    /// 一键回退原文 / 恢复润色（spec §3.5 验收 #4；toggle 语义由控制器按 selectedText 判定）
+    func togglePreviewRevert() {
+        agentVoiceCoordinator?.togglePreviewRevert()
+    }
+
+    /// 丢弃预览/恢复条目。B2 裁决：控制器转 discardUndo 撤销窗口（preview==nil + phase 驱动原位撤销条），
+    /// 不在此收尾——撤销/超时前界面保持撤销条呈现。
+    func discardPreview() {
+        agentVoiceCoordinator?.discardPreview()
+    }
+
+    /// discardUndo 窗口内撤销（D23：控制器恢复原 phase 并 re-emit 草稿）
+    func undoDiscard() {
+        agentVoiceCoordinator?.undoDiscard()
+    }
+
+    /// 恢复队列全部丢弃（R1/D30：逐条 settle 回 idle；面板收尾经相位反应路径）
+    func discardAllRecovered() {
+        agentVoiceCoordinator?.discardAllRecovered()
+    }
+
+    /// V1：预览关闭后收尾（确认/全部丢弃/超时 settle 后）。幂等守卫：仅预览相关态可收尾，
+    /// 防相位反应与按钮回调双路径重复 dismiss。
     func finishPreview() async {
+        guard recordingState == .previewing || recordingState == .transcribing else { return }
         recordingState = .idle
         await recorderUIManager?.dismissRecorderPanel()
+    }
+
+    /// B9：相位转发反应——预览生命周期以「无结果且无错误」终结的 settle 路径收尾面板。
+    /// 控制器对应路径不发 onStatus（discard 撤销超时 settle / 全部丢弃 / recoverableError 相丢弃），
+    /// 状态条复位由 Coordinator handlePhaseChange 负责；此处只管面板收起。
+    /// confirm 成功路径带 onStatus 且 engine.confirmPreview 已主动收尾，此守卫（recordingState 已 idle）自然跳过。
+    private func handleAgentVoicePhaseChange(from oldPhase: AgentVoicePhase) {
+        guard agentVoicePhaseForward == .idle, previewSessionForward == nil else { return }
+        switch oldPhase {
+        case .previewing, .recoveryPreview, .recoverableError, .discardUndo:
+            Task { @MainActor in await self.finishPreview() }
+        default:
+            return
+        }
     }
 
     private func requestRecordPermission(response: @escaping (Bool) -> Void) {
@@ -788,6 +852,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
             shouldCancelRecording = false
             recordingState = .idle
             shouldFinishSessionImmediately = true
+            // V1（Task 8）：预览态取消（双击 Esc / 面板取消）= 显式丢弃（D16 结算边界）——
+            // 控制器进 discardUndo 窗口（超时 settle）。不接线则控制器永久滞留 .previewing，
+            // 陈旧预览会与下次录音串台（面板闪现旧预览）。discardPreview 分相守卫，非预览相 no-op。
+            if previewSessionForward != nil {
+                agentVoiceCoordinator?.discardPreview()
+            }
         }
 
         if shouldFinishSessionImmediately {

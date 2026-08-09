@@ -273,6 +273,8 @@ enum ShortcutMigration {
             return ["mode_\(id.uuidString)", "powerMode_\(id.uuidString)"]
         case .recorderPanelEscape, .recorderPanelMode:
             return []
+        case .previewConfirm, .previewToggleRevert, .previewDiscard:
+            return []   // V1 新增动作无 legacy 键名（Task 8）
         }
     }
 

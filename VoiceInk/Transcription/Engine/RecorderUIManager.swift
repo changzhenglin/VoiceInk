@@ -169,7 +169,12 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             case .starting, .transcribing, .enhancing:
                 await cancelRecording()
             case .idle, .previewing:   // D8 fold：previewing 等同 idle 分支
-                if engine.assistantSession.canSendFollowUp {
+                if engine.isPreviewLifecycleActive {
+                    // V1（Task 8，D5/D11/D23）：预览/撤销窗口中 PTT = 显式放弃当前结果并开始新录音——
+                    // 控制器重入转移（previewing/discardUndo + pttDown）负责 settle；面板保持进入录音态。
+                    SoundManager.shared.playStartSound()
+                    await engine.toggleRecord(modeId: modeId)
+                } else if engine.assistantSession.canSendFollowUp {
                     SoundManager.shared.playStartSound()
                     await engine.toggleRecord(
                         modeId: modeId,

@@ -16,9 +16,21 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case active
         case liveText
         case assistant
+        /// V1 Task 8（B7）：预览默认形态——2-3 行摘要 +「展开预览」
+        case previewCompact
+        /// V1 Task 8（B7）：预览展开形态——同一 nonactivating panel 扩为 Mini 宽高，正文滚动
+        case previewExpanded
     }
 
+    /// 预览态本地展开状态（展开后仍同一 panel，不创建新窗口、不抢焦点——UI 规范 §3）
+    @State private var isPreviewExpanded = false
+
     private var displayState: DisplayState {
+        // V1 预览优先分支（Task 8）：previewPanelMode 非 nil = 预览/撤销条/处理呈现
+        if stateProvider.previewPanelMode != nil {
+            return isPreviewExpanded ? .previewExpanded : .previewCompact
+        }
+
         if assistantSession.isVisible {
             return .assistant
         }
@@ -60,6 +72,12 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let activeHeightBonus: CGFloat = 6
     private let transcriptPanelHeight: CGFloat = 57
     private let assistantPanelHeight: CGFloat = 320
+    /// V1（Task 8 B7）：预览展开宽度 = Mini 预览宽度（UI 规范 §3「展开后扩为 Mini 宽高」）
+    private let previewExpandedWidth: CGFloat = 300
+    /// 预览紧凑形态内容高度（header + 2-3 行摘要 +「展开预览」入口）
+    private let previewCompactContentHeight: CGFloat = 108
+    /// 预览展开形态内容高度（header + 正文 ≤120 滚动 + 固定操作区；不用「降到 80pt」压缩操作区）
+    private let previewExpandedContentHeight: CGFloat = 224
 
     private var mainRowHeight: CGFloat { notchHeight + activeHeightBonus }
 
@@ -71,6 +89,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case .active: return notchWidth + recordingSideExpansion * 2
         case .liveText: return notchWidth + transcriptSideExpansion * 2
         case .assistant: return notchWidth + assistantSideExpansion * 2
+        case .previewCompact: return notchWidth + transcriptSideExpansion * 2
+        case .previewExpanded: return max(previewExpandedWidth, notchWidth)
         }
     }
 
@@ -80,6 +100,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case .active: return mainRowHeight
         case .liveText: return mainRowHeight + transcriptPanelHeight
         case .assistant: return mainRowHeight + assistantPanelHeight
+        case .previewCompact: return mainRowHeight + previewCompactContentHeight
+        case .previewExpanded: return mainRowHeight + previewExpandedContentHeight
         }
     }
 
@@ -89,13 +111,20 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             return transcriptSideExpansion
         case .assistant:
             return assistantSideExpansion
+        case .previewCompact:
+            return transcriptSideExpansion
+        case .previewExpanded:
+            return (max(previewExpandedWidth, notchWidth) - notchWidth) / 2
         case .active, .collapsed:
             return recordingSideExpansion
         }
     }
 
     private var sideEdgePadding: CGFloat {
-        displayState == .liveText || displayState == .assistant ? 20 : 16
+        switch displayState {
+        case .liveText, .assistant, .previewCompact, .previewExpanded: return 20
+        case .active, .collapsed: return 16
+        }
     }
 
     private var shouldShowCloseButton: Bool {
@@ -130,6 +159,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var pill: some View {
         VStack(spacing: 0) {
             mainRow
+            previewPanel
             liveTextPanel
             assistantPanel
         }
@@ -137,10 +167,15 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         .background(Color.black)
         .clipShape(
             NotchShape(
-                topCornerRadius: displayState == .liveText ? 12 : 8,
-                bottomCornerRadius: displayState == .liveText || displayState == .assistant ? 22 : 16
+                topCornerRadius: displayState == .liveText || isPreviewDisplayState ? 12 : 8,
+                bottomCornerRadius:
+                    displayState == .liveText || displayState == .assistant || isPreviewDisplayState ? 22 : 16
             )
         )
+    }
+
+    private var isPreviewDisplayState: Bool {
+        displayState == .previewCompact || displayState == .previewExpanded
     }
 
     // MARK: - Main Row
@@ -188,6 +223,40 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             )
         }
         .frame(height: mainRowHeight)
+    }
+
+    // MARK: - Preview Panel（V1 Task 8：默认紧凑摘要，展开后同一 panel 扩为 Mini 宽高）
+
+    @ViewBuilder
+    private var previewPanel: some View {
+        VStack(spacing: 0) {
+            if let previewMode = stateProvider.previewPanelMode {
+                Divider().background(Color.white.opacity(0.15))
+                PreviewPanelContent(
+                    mode: previewMode,
+                    contextText: stateProvider.partialTranscript,
+                    isNotchCompact: displayState == .previewCompact,
+                    onExpand: { isPreviewExpanded = true },
+                    onConfirm: { Task { await stateProvider.confirmPreview() } },
+                    onToggleRevert: { stateProvider.togglePreviewRevert() },
+                    onDiscard: { stateProvider.discardPreview() },
+                    onUndo: { stateProvider.undoDiscard() },
+                    onDiscardAll: { stateProvider.discardAllRecovered() })
+                .padding(.horizontal, 8)
+            }
+        }
+        .frame(height: isPreviewDisplayState ? previewContentHeight : 0)
+        .clipped()
+        // 预览消失后复位展开状态（下次预览默认回紧凑摘要形态）
+        .onChange(of: stateProvider.previewPanelMode) {
+            if stateProvider.previewPanelMode == nil {
+                isPreviewExpanded = false
+            }
+        }
+    }
+
+    private var previewContentHeight: CGFloat {
+        displayState == .previewExpanded ? previewExpandedContentHeight : previewCompactContentHeight
     }
 
     // MARK: - Live Text Panel
