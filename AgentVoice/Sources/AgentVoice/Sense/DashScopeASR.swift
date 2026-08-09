@@ -2,7 +2,7 @@ import Foundation
 
 /// 阿里云 DashScope Paraformer-realtime-v2 ASR（云端辅助感知，非 L3 推理）
 /// WebSocket 流式接口：wss://dashscope.aliyuncs.com/api-ws/v1/inference
-public final class DashScopeASR: ASRProvider, @unchecked Sendable {
+public final class DashScopeASR: StreamingASR, @unchecked Sendable {
     public let providerId = "dashscope-paraformer"
 
     private let apiKey: String
@@ -19,6 +19,34 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
     private var currentTraceId: String = ""
     /// 保护并发访问
     private let lock = NSLock()
+    private var _sessionLost = false
+    /// 流式会话丢失回调（startSession 前由调用方安装）
+    public var onSessionLost: (@Sendable () -> Void)?
+
+    /// 会话是否已丢失（task-failed / ws 断开）
+    public var isSessionLost: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _sessionLost
+    }
+
+    /// 当前句子累积快照（UI 实时出字 + 增量持久化消费）
+    public func sentenceSnapshot() -> SentenceSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        return SentenceSnapshot(completed: completedSentences, pending: pendingSentence)
+    }
+
+    /// 组装至今全文（等价 sentenceSnapshot().fullText）
+    public func currentFullText() -> String {
+        sentenceSnapshot().fullText
+    }
+
+    private func markSessionLost() {
+        lock.lock()
+        _sessionLost = true
+        let callback = onSessionLost
+        lock.unlock()
+        callback?()
+    }
 
     public init(apiKey: String, model: String = "paraformer-realtime-v2") {
         self.apiKey = apiKey
@@ -176,6 +204,7 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
             lock.lock()
             sessionActive = false
             lock.unlock()
+            markSessionLost()
         }
     }
 
@@ -185,7 +214,7 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
     /// - end_time 为 null：中间结果（同一句子的 partial，后续覆盖前序）
     /// - end_time > 0：句子定稿（追加到完成列表）
     /// - task-finished：全部完成，拼接所有句子
-    private func parseASRResponse(_ json: String) {
+    func parseASRResponse(_ json: String) {
         guard let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let header = obj["header"] as? [String: Any] else { return }
@@ -197,6 +226,7 @@ public final class DashScopeASR: ASRProvider, @unchecked Sendable {
             lock.lock()
             sessionActive = false
             lock.unlock()
+            markSessionLost()
             return
         }
 

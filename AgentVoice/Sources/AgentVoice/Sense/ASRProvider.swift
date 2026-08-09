@@ -16,3 +16,11 @@ public protocol ASRProvider: Sendable {
     /// 结束会话，释放资源
     func endSession() async
 }
+
+/// 支持流式观测的 ASR（V1 实时出字：partial 快照 + 会话丢失信号）
+public protocol StreamingASR: ASRProvider {
+    /// 流式会话丢失回调（ws 断开/服务端 task-failed）；由接收循环触发，消费者自行 hop 线程
+    var onSessionLost: (@Sendable () -> Void)? { get set }
+    /// 当前句子累积快照（线程安全）
+    func sentenceSnapshot() -> SentenceSnapshot
+}
