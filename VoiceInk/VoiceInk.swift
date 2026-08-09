@@ -245,7 +245,7 @@ struct VoiceInkApp: App {
                     router: router,
                     knowledge: knowledgeStore,
                     polish: polishAdapter,
-                    shouldPolishGate: gateFactory(""))   // pipeline gate：全局开关+50 字规则；场景感知 gate 保留于 ports.polishGateFactory
+                    shouldPolishGate: { router.shouldPolish(text: $0) })   // C9-7 ②：纯 50 字规则（L2208 退化形）；全局/场景开关归控制器 polishGateFactory 消费
 
                 // 本地三级链素材：Apple Speech（macOS 26+）→ Whisper（spec §3.5.3）
                 let whisperASR = WhisperASR(transcriber: whisperTranscriber)

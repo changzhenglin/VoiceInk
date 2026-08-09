@@ -290,6 +290,7 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         polishResult: String? = nil,
         polishWaitForGate: Bool = false,
         gate: @escaping @Sendable (String) -> Bool = { _ in true },
+        polishGateFactory: @escaping @Sendable (String) -> @Sendable (String) -> Bool = { _ in { _ in true } },
         scene: SceneContext = SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting),
         discardUndoTimeout: TimeInterval = 0.05
     ) -> SUT {
@@ -309,7 +310,7 @@ final class VoiceInputSessionControllerTests: XCTestCase {
             pipeline: pipeline,
             injector: injector,
             storageEngine: engine,
-            polishGateFactory: { _ in { _ in true } })
+            polishGateFactory: polishGateFactory)
         let controller = VoiceInputSessionController(ports: ports,
                                                      discardUndoTimeout: discardUndoTimeout)
         let phases = Recorder<AgentVoicePhase>()
@@ -966,5 +967,79 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         await sut.controller.cancelRecording()
         XCTAssertEqual(sut.controller.phase, .idle)
         XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    // ── 21. V1 润色开关控制器消费（Task 9 C9-7：polishGateFactory 润色前判断，spec §3.3）──
+
+    /// 场景感知 gate 工厂（同组合根形态：调 SceneRouter 四参单一源；开关参数化）
+    private func switchGateFactory(globalEnabled: Bool, disabledScenes: Set<String>)
+        -> @Sendable (String) -> @Sendable (String) -> Bool {
+        let policy = try! ConfigStore().loadDefault().payload
+        let router = SceneRouter(policy: policy)
+        return { sceneType in
+            { text in
+                router.shouldPolish(text: text, globalEnabled: globalEnabled,
+                                    disabledScenes: disabledScenes, sceneType: sceneType)
+            }
+        }
+    }
+
+    func test_polish_gate_global_off_skips_polish_direct_inject() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = String(repeating: "长", count: 80)   // ≥50 字：隔离开关变量（长度规则本会准入）
+        let sut = makeSUT(streamingASRs: { asr },
+                          polishResult: "不应出现的润色结果",
+                          polishGateFactory: switchGateFactory(globalEnabled: false, disabledScenes: []))
+
+        await sut.controller.pttDown()
+        await sut.controller.pttUp()
+
+        XCTAssertFalse(sut.polishProvider.entered)   // 润色 provider 未被调用
+        XCTAssertEqual(sut.injector.injected, [String(repeating: "长", count: 80)])   // 原文直出
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.statuses.last?.state, .done)
+        XCTAssertEqual(sut.statuses.last?.polished, false)
+        XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    func test_polish_gate_scene_disabled_skips_polish_direct_inject() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = String(repeating: "码", count: 80)
+        let sut = makeSUT(streamingASRs: { asr },
+                          polishResult: "不应出现的润色结果",
+                          polishGateFactory: switchGateFactory(globalEnabled: true, disabledScenes: ["coding"]),
+                          scene: SceneContext(bundleId: "com.microsoft.VSCode", sceneType: .coding))
+
+        await sut.controller.pttDown()
+        await sut.controller.pttUp()
+
+        XCTAssertFalse(sut.polishProvider.entered)   // 场景禁用 → 润色未调用
+        XCTAssertEqual(sut.injector.injected, [String(repeating: "码", count: 80)])   // 原文直出
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.statuses.last?.state, .done)
+        XCTAssertEqual(sut.statuses.last?.polished, false)
+        XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    func test_polish_gate_all_on_polish_proceeds() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = String(repeating: "文", count: 80)
+        let sut = makeSUT(streamingASRs: { asr },
+                          polishResult: "润色后的长文本结果",
+                          polishGateFactory: switchGateFactory(globalEnabled: true, disabledScenes: []))
+
+        await sut.controller.pttDown()
+        await sut.controller.pttUp()
+
+        XCTAssertTrue(sut.polishProvider.entered)    // 全开 → 润色正常进行
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        XCTAssertEqual(lastPreview(sut)?.originalText, String(repeating: "文", count: 80))
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "润色后的长文本结果")
+
+        await sut.controller.confirmPreview()
+        XCTAssertEqual(sut.injector.injected, ["润色后的长文本结果"])
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.statuses.last?.polished, true)
+        XCTAssertEqual(sut.statuses.last?.polishProvider, "fake-polish")
     }
 }

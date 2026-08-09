@@ -104,8 +104,8 @@ public struct SessionControllerPorts {
     public var injector: any TextInjectPort
     /// 持久化引擎
     public var storageEngine: StorageEngine
-    /// 润色 gate 工厂（Task 9 组合开关；本 task 控制器未消费——gate 已经 pipeline init 注入，
-    /// 此口保留供 Coordinator 按场景重建 pipeline）
+    /// 润色 gate 工厂（Task 9 C9-7：控制器 pttUp 润色决策前按会话 sceneType 消费——
+    /// 全局/场景开关准入（plan L2208「移入控制器润色前判断」形态）；pipeline 侧 gate 为纯长度规则）
     public var polishGateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool
 
     public init(makeStreamingASR: @escaping @Sendable () -> (any StreamingASR)?,
@@ -352,8 +352,15 @@ public final class VoiceInputSessionController: @unchecked Sendable {
 
         guard let text = rawText else { return }   // 防御：两条上游路径均保证非空
 
-        // ④ 润色决策（Task 4 polish()：知识库+润色+降级，不注入）
-        let outcome = await ports.pipeline.polish(rawText: text, scene: scene, traceId: traceId)
+        // ④ 润色决策（Task 9 C9-7：场景 gate 前置——polishGateFactory 按当前会话 sceneType 消费
+        // 全局/场景开关（plan L2208「移入控制器润色前判断」形态）；gate 关 → 跳过润色直出原文，
+        // 降级铁律形态，outcome 与 VoicePipeline gate 关结果同形）
+        let outcome: PolishOutcome
+        if ports.polishGateFactory(scene.sceneType.rawValue)(text) {
+            outcome = await ports.pipeline.polish(rawText: text, scene: scene, traceId: traceId)
+        } else {
+            outcome = PolishOutcome(finalText: text, polished: false, polishProviderId: nil, concern: nil)
+        }
         guard currentToken == token else { return }   // 润色中 PTT 重入 → 丢弃在途结果（D11）
 
         // ⑤ 预览/直出
