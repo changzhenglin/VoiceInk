@@ -251,7 +251,13 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             switch engine?.recordingState {
             case .starting, .recording, .transcribing, .enhancing:
                 await cancelRecording()
-            case .idle, .busy, .previewing, nil:   // D8 fold：previewing 等同 idle 分支
+            case .previewing:
+                // I1 fix（final review）：取消族（menu-bar/Intent dismiss）预览态 = 显式取消 →
+                // 经 engine.cancelRecording 的 .previewing 分支 cancelSession settle 后面板收起
+                // （cancelRecording() = engine.cancelRecording + dismissRecorderPanel 既有形态）。
+                // 只关面板不结算会让控制器滞留预览相，不可见预览的快捷键可触发不可见注入。
+                await cancelRecording()
+            case .idle, .busy, nil:   // D8 fold：previewing 等同 idle 分支（I1 后 previewing 已独立）
                 await dismissRecorderPanel()
             }
         }

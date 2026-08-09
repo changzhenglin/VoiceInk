@@ -857,12 +857,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
             shouldCancelRecording = false
             recordingState = .idle
             shouldFinishSessionImmediately = true
-            // V1（Task 8）：预览态取消（双击 Esc / 面板取消）= 显式丢弃（D16 结算边界）——
-            // 控制器进 discardUndo 窗口（超时 settle）。不接线则控制器永久滞留 .previewing，
-            // 陈旧预览会与下次录音串台（面板闪现旧预览）。discardPreview 分相守卫，非预览相 no-op。
-            if previewSessionForward != nil {
-                agentVoiceCoordinator?.discardPreview()
-            }
+            // I1 fix（final review）：预览态取消（双击 Esc / 面板取消）= 取消族 → cancelSession
+            // 直接 settle（不进 discardUndo 撤销窗口）。显式取消 ≠ 丢弃：discardPreview 会保留
+            // 3s 撤销窗，但取消族路径面板已 dismiss，不可见撤销窗的快捷键（⌥⌘⌫ undo →
+            // ⌥⌘↩ confirm）可注入用户已看不见的预览（truthfulness 违背）。cancelSession settle
+            // 后 phase=idle → PreviewShortcutManager 作用域自然失效，无快捷键注入路径。
+            // 控制器分相守卫：idle/polishing no-op，预览族四相直接 settle（D16 结算边界）。
+            // UI 预览面板「丢弃」按钮路径保持 discardPreview（可见丢弃 + 撤销窗是正常 UX）。
+            await agentVoiceCoordinator?.cancelSession()
         }
 
         if shouldFinishSessionImmediately {

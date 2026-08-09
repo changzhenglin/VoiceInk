@@ -164,8 +164,13 @@ final class PreviewShortcutManager: ObservableObject {
             NotificationCenter.default.removeObserver(shortcutChangeObserver)
         }
         cancellables.removeAll()
-        MainActor.assumeIsolated {
-            previewShortcutMonitor.stop()
+        // Minor-1 fix（final review）：deinit nonisolated，末引用可能在任意线程释放——
+        // MainActor.assumeIsolated 会在非主线程 trap。ShortcutMonitor.stop() 触主 run loop
+        // （CFRunLoopRemoveSource(CFRunLoopGetMain())）且 monitor 非线程安全，必须主线程执行，
+        // 故 Task @MainActor hop（捕获 monitor 延寿至 hop 执行；幂等 stop，重复调用无副作用）。
+        let monitor = previewShortcutMonitor
+        Task { @MainActor in
+            monitor.stop()
         }
     }
 }
