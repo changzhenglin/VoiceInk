@@ -13,11 +13,11 @@ final class NotificationSoundRouterTests: XCTestCase {
 
     private func decide(muted: Bool = false,
                         floatAllowed: Bool = true,
-                        systemCanPresentFloat: Bool = true,
                         interventionQueued: Bool = false,
                         isCompleted: Bool = false,
                         explicitOff: Bool = false,
-                        preset: ReminderPreset = .strong) -> SoundCompensationDecision {
+                        preset: ReminderPreset = .strong,
+                        systemCanPresentFloat: Bool = true) -> SoundCompensationDecision {
         router.decideSound(preset: preset, muted: muted, floatAllowed: floatAllowed,
                            systemCanPresentFloat: systemCanPresentFloat,
                            interventionQueued: interventionQueued,

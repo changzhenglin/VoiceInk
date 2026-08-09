@@ -128,12 +128,15 @@ final class AttentionHTTPServer {
         guard let json = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
               let hook = json["hook_event_name"] as? String,
               let payloadObj = json["payload"],
-              let payloadData = try? JSONSerialization.data(withJSONObject: payloadObj),
-              let payloadJson = String(data: payloadData, encoding: .utf8) else {
+              let payloadData = try? JSONSerialization.data(withJSONObject: payloadObj) else {
             return respond(conn, status: "400", body: #"{"status":"bad_request"}"#)
         }
-        let result = router.ingest(hookEventName: hook, payloadJson: payloadJson,
-                                   observedAt: Date())
+        // Task 8A carryover 消费 #1/#2：生产接线经 V1 前置最小隐私门（spec §8.8）——
+        // 原始 hook payload 先过 FieldAllowlist.sanitize，仅 privacyClass==.ok 以允许字段
+        // 再编码进入既有 ingest 链；blocked/unknown/超限在门处即拒（.rejected(.privacyGate)
+        // → 422）。transcript/prompt/tool input-output 真实内容不入库（red-line privacy）。
+        let result = router.ingestPrivacyGated(hookEventName: hook, payloadData: payloadData,
+                                               observedAt: Date())
         switch result {
         case .accepted: respond(conn, status: "200", body: #"{"status":"accepted"}"#)
         case .duplicate: respond(conn, status: "200", body: #"{"status":"duplicate"}"#)

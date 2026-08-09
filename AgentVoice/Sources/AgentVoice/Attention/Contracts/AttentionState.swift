@@ -1,7 +1,13 @@
 import Foundation
 
 /// C-STATE 五轴 tuple（Phase 1 spec §5.2；A-only 裁剪）
-public enum Lifecycle: String, Codable, Sendable { case discovered, managed, closed }
+public enum Lifecycle: String, Codable, Sendable {
+    case discovered, managed, closed
+    /// v4 Task 8A 词表补齐（灯条 spec §3 L104 冻结决策：僵尸 PID/TTY 双证据 → archived，
+    /// 面板保留历史行、释放槽位）。additive 扩容——既有 discovered/managed/closed 语义不变，
+    /// §4 槽位释放条件为 closed/archived（LampSlotAllocator 消费）。
+    case archived
+}
 public enum ActivityFact: String, Codable, Sendable {
     case unknown, waitingUser = "waiting_user", waitingPermission = "waiting_permission"
     case failed, completed

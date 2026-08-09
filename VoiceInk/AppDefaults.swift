@@ -12,6 +12,16 @@ enum RecorderDisplaySettingsKeys {
     static let showLiveTranscript = "ShowLiveTranscript"
 }
 
+/// 注意力 v4 灯条呈现键（Task 8A）。
+enum AttentionPresentationKeys {
+    /// P1 versioned feature gate：v4 灯条渲染层 behind flag（plan P1 feature gate 原文）。
+    /// off（默认）→ 呈现层全静默；store 采集继续（§2 Off 语义同律）。
+    static let lampBarP1Enabled = "AttentionLampBarP1Enabled"
+    /// 呈现策略 drain 重入语义——**临时，待控制器裁决**（Task 8 carryover 呈现策略项）。
+    /// true=drain 周期重入重复呈现；false=一次性呈现。默认 false（保守：不重复打扰）。
+    static let presentationDrainRepeat = "AttentionPresentationDrainRepeat"
+}
+
 enum AppDefaults {
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -69,6 +79,10 @@ enum AppDefaults {
             "agentVoiceEnabled": false,
             "agentVoiceHubPort": 9876,
             "agentVoiceASRMode": "auto",
+
+            // AgentVoice Attention v4 灯条（Task 8A；P1 behind versioned flag，默认静默）
+            AttentionPresentationKeys.lampBarP1Enabled: false,
+            AttentionPresentationKeys.presentationDrainRepeat: false,
 
         ])
 

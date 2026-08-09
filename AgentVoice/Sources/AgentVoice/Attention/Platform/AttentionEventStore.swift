@@ -674,6 +674,9 @@ extension AttentionEventStore {
 
     /// 当前投影 upsert（投影持久化 seam；同 session_key 覆盖旧投影，
     /// 冷启动只读本表）。写失败降级不 crash（C17 同式；fail-closed 裁决归接线层）。
+    /// Task 8A carryover 澄清（免与 channel_receipts 混淆）：本表 current_projections
+    /// 存「灯态投影快照」，与 Task 7 的 channel_receipts（渠道回执 at-most-once 记录层）
+    /// 是两套独立持久面——前者派生态可覆盖重建，后者副作用去重权威不可重写。
     public func persistProjection(_ record: ProjectionRecord) {
         do {
             try dbQueue.write { db in
@@ -694,7 +697,9 @@ extension AttentionEventStore {
                         record.watermarkObservedAt, record.updatedAt])
             }
         } catch {
-            // C17：写失败降级不 crash
+            // C17：写失败降级不 crash。
+            // Task 8A carryover #8：空 catch 补日志——纯包无 logging seam，接线层
+            // （app 侧 os.Logger）消费本降级信号时应记日志；此处保持无副作用不 crash。
         }
     }
 

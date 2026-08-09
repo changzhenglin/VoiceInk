@@ -180,6 +180,10 @@ struct VoiceInkApp: App {
             try? attentionStore.enable()
         }
 
+        // ── Task 8A：v4 灯条生产表面（behind versioned flag；flag off 全静默，store 采集继续）──
+        AttentionLampBarController.shared.store = attentionStore
+        AttentionLampBarController.shared.start()
+
         appDelegate.menuBarManager = menuBarManager
 
         // ── AgentVoice 集成组装 ──

@@ -40,6 +40,13 @@ final class AttentionStore: ObservableObject {
     private let maxVisible = 6
     private var timer: Timer?
 
+    // MARK: - Task 8A：v4 灯条生产表面（behind versioned flag，裁决 A/B）
+    /// 稳定 session_key→slot 空间记忆（§4；裁决 5 持久落点=UserDefaults additive，
+    /// 不做 schema 迁移——interventionKey schema 迁移明确不消费）。
+    private var lampSlotMap = SlotMap()
+    private var lampSlotMapLoaded = false
+    private static let lampSlotMapKey = "attentionLampSlotMap.v1"
+
     init() {}
 
     /// C2：全局唯一 token——UserDefaults 持久化，一处生成，注入 installer 与 server
@@ -185,6 +192,51 @@ final class AttentionStore: ObservableObject {
         case .failed:
             navFeedback = "导航失败，请手动切换窗口"
         }
+    }
+
+    // MARK: - Task 8A：v4 灯条生产表面投影（behind versioned flag；裁决 A app 接线）
+
+    /// 灯条槽位摘要（呈现层消费面）：router 快照经 Task 5 projector 穷举投影 +
+    /// LampSlotAllocator 稳定分槽（§4）。flag off 时调用方不呈现（store 采集继续）。
+    /// fail-closed guard 轴：hookHealth 按 versionDrift 注入；privacy/identity 由
+    /// ingestPrivacyGated 门在入库时已 fail-closed（见 AttentionLampBarProjection 头注）。
+    func lampBarSlots() -> [LampSlotSummary] {
+        guard let router else { return [] }
+        restoreLampSlotMapIfNeeded()
+        let snaps = router.currentSnapshots()
+        var lastMap: [String: Date] = [:]
+        for s in snaps where s.activityFact == .completed {
+            if let t = router.lastEventAt(for: s.sessionKey) { lastMap[s.sessionKey] = t }
+        }
+        let hookHealth: HookHealth = versionDrift ? .unhealthy : .healthy
+        let projection = AttentionLampBarProjection()
+        let slots = projection.slots(from: snaps, hookHealth: hookHealth,
+                                     lastEventAt: { lastMap[$0] }, now: Date(),
+                                     slotMap: &lampSlotMap)
+        persistLampSlotMap()
+        return slots
+    }
+
+    /// 空间记忆恢复（§4 重启不重置；clean-start——stale 发现⑤：M1 无 slot 映射，
+    /// 首次运行为空 map 全新建，无 legacy 漂移）。
+    private func restoreLampSlotMapIfNeeded() {
+        guard !lampSlotMapLoaded else { return }
+        lampSlotMapLoaded = true
+        if let data = UserDefaults.standard.data(forKey: Self.lampSlotMapKey),
+           let map = try? JSONDecoder().decode(SlotMap.self, from: data) {
+            lampSlotMap = map
+        }
+    }
+
+    private func persistLampSlotMap() {
+        if let data = try? JSONEncoder().encode(lampSlotMap) {
+            UserDefaults.standard.set(data, forKey: Self.lampSlotMapKey)
+        }
+    }
+
+    /// Task 8A：灯条短标识（§7 单源=cwd basename label；缺失退化 sessionKey 前缀归调用方）。
+    func shortLabel(forLampBar sessionKey: String) -> String? {
+        router?.cwdLabel(for: sessionKey)
     }
 
     // MARK: - Task 16：详情面板只读接口（复用既有包层 API，不新增包层查询 API）

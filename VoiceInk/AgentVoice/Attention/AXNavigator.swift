@@ -46,6 +46,55 @@ final class AXNavigator {
     }
 }
 
+// MARK: - Task 8A：supported-host 矩阵 + 跳转失败降级（additive，不改既有 navigate 语义）
+
+extension AXNavigator {
+    /// 精确跳转支持档位（spec §7 跳转契约：发 supported-host 矩阵，如实标能力）。
+    enum JumpSupport: Equatable {
+        case supported      // 可 AX 精准定位窗口
+        case degraded       // cwd/title 基 + 歧义降级
+        case unsupported    // 无 AX 窗口面可定位
+    }
+
+    /// supported-host 矩阵（§7）：哪些终端/复用器支持精确跳转。
+    /// M1 AXNavigator 现状=cwd/title 基 + 歧义降级，矩阵如实标 degraded；
+    /// 未列入 bundleId → unsupported（不猜）。
+    func supportedHostMatrix() -> [(bundleIdentifier: String, support: JumpSupport)] {
+        [
+            ("com.apple.Terminal", .degraded),
+            ("com.googlecode.iterm2", .degraded),
+            ("co.zeit.hyper", .degraded),
+            ("com.github.wez.wezterm", .degraded),
+            ("net.kovidgoyal.kitty", .degraded),
+        ]
+    }
+
+    /// 跳转失败降级反馈（§7 跳转契约：AX 失败 ≠ 状态未知——灯态不变 + ⨯ 导航错误
+    /// 标记 + toast + 复制定位信息）。纯值面，渲染归灯条/浮窗视图。
+    struct JumpDegradation: Equatable {
+        let lampUnchanged: Bool        // 恒 true：跳转失败不改灯态（继承契约）
+        let errorMarker: String        // 灯上小 ⨯ 导航错误标记
+        let toast: String              // 提示文案
+        let copyableLocation: String?  // 可复制定位信息（cwd）
+    }
+
+    /// 由 NavResult 推导降级反馈（focused → nil 无降级）。
+    func degradation(for result: NavResult, cwd: String?) -> JumpDegradation? {
+        switch result {
+        case .focused:
+            return nil
+        case .fallbackAppActivated(let appName):
+            return JumpDegradation(lampUnchanged: true, errorMarker: "⨯",
+                                   toast: "已切到 \(appName)，请自行找窗口",
+                                   copyableLocation: cwd)
+        case .failed:
+            return JumpDegradation(lampUnchanged: true, errorMarker: "⨯",
+                                   toast: "无法定位窗口，定位信息已可复制",
+                                   copyableLocation: cwd)
+        }
+    }
+}
+
 private extension AXUIElement {
     func children() -> [AXUIElement]? {
         var value: CFTypeRef?
