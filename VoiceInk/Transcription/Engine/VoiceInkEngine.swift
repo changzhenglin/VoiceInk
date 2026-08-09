@@ -253,6 +253,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     // F5-round2：会话已被替换/取消（startID 变化/清空）→ 不回写共享状态
                     // （recordingState/面板），避免旧任务把新录音状态改回 idle。
                     guard self.activeRecordingStartID == sessionStartID else { return }
+                    // round-3（codex r2 P1-5）：未替换时清除指向已删文件的陈旧引用
+                    if self.recordedFile == sessionWavURL {
+                        self.recordedFile = nil
+                    }
                     if coordinator.previewSession != nil {
                         // V1 预览：面板不 dismiss，进入预览态（Task 8 渲染）
                         recordingState = .previewing
@@ -271,18 +275,26 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 let sessionWavURL = recordedFile
                 let sessionStartID = activeRecordingStartID
                 await coordinator.cancelSession()   // 控制器 cancel：settle（用户显式放弃，D16 结算边界）
-                let replaced = activeRecordingStartID != sessionStartID
-                activeAgentVoiceSession = nil
-                recorder.onAudioChunk = nil
-                partialTranscript = ""
-                // F5（codex 跨厂商 P1-5）：显式取消——音频随结算删除（同交付路径语义）。
-                // 会话已被新录音替换 → 不触碰共享属性（新会话 WAV 归其自身生命周期）。
-                if !replaced {
+                // round-3（codex r2 P1-5）：会话已被新录音替换——只删本会话自己的 WAV
+                // （快照 URL 是本会话文件，删除安全=各归其主），随后终止旧续体：零触碰
+                // 全部共享状态（activeAgentVoiceSession/onAudioChunk/partialTranscript/
+                // recordedFile 均已属新会话）且 early return 不落下方 recordedFile 分支
+                // （fix round-2 反向错误：replaced 时跳过删除致旧 WAV 泄漏 + 无条件清空
+                // 破坏新会话状态 + 落下方分支把新 WAV 交旧清理逻辑）。
+                if activeRecordingStartID != sessionStartID {
                     if let url = sessionWavURL {
                         try? FileManager.default.removeItem(at: url)
                     }
-                    recordedFile = nil
+                    return
                 }
+                activeAgentVoiceSession = nil
+                recorder.onAudioChunk = nil
+                partialTranscript = ""
+                // F5（codex 跨厂商 P1-5）：显式取消——音频随结算删除（同交付路径语义）
+                if let url = sessionWavURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                recordedFile = nil
             }
 
             if let recordedFile {
