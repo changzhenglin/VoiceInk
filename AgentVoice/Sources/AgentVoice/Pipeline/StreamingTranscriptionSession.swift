@@ -153,6 +153,11 @@ public final class StreamingTranscriptionSession: @unchecked Sendable {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             // Task 12 监控接线：.text 分支记时长；空 final（.streamingUnavailable）记 lost
             if !trimmed.isEmpty {
+                // F4（codex 跨厂商 P1-4）：final 全文写回记录——松手后到交付的崩溃窗口
+                // （润色/预览，秒~十秒级）内，恢复文本必须是 final 全文而非最后一次
+                // partial（plan 验收 #5「松手后未交付文本可恢复」）。observerTask 已
+                // cancel（本函数开头），无并发写冲突。
+                try? store?.updateText(completed: trimmed, pending: "")
                 AgentVoiceMetrics.shared.recordSessionDuration(Date().timeIntervalSince(startTime))
             } else {
                 AgentVoiceMetrics.shared.increment("streaming.session_lost")

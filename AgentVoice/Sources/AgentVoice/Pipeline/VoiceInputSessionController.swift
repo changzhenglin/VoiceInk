@@ -70,6 +70,7 @@ public enum VoiceInputTransition {
         // 取消
         case (.recordingStreaming, .cancel):       return .idle
         case (.recordingBatch, .cancel):           return .idle
+        case (.polishing, .cancel):                return .idle   // F1 补丁（codex 跨厂商 P1-1）：处理中显式取消
         // I1（final review）：取消族预览相 = 显式取消，直接 settle 回 idle（不进撤销窗口）——
         // 显式取消 ≠ 丢弃：取消族路径（Esc/menu-bar dismiss）settle 后 phase=idle，
         // PreviewShortcutManager 作用域自然失效，不可见撤销窗快捷键无法触发不可见注入。
@@ -342,8 +343,17 @@ public final class VoiceInputSessionController {
             }
             clearPreview()
             _ = transition(.cancel)
-        case .idle, .polishing:
+        case .idle:
             return
+        case .polishing:
+            // F1（codex 跨厂商 P1-1）：处理中 = pttUp 续体在途——结算 + 失效 token，
+            // 续体各重入 guard（currentToken 比对）全部失败：polish 返回后不弹预览、
+            // 不直出注入（fix 前 .polishing no-op，取消后文本仍会被注入——truthfulness 违背）。
+            // 显式取消 = settle（D16 结算边界）。
+            settleLive()
+            clearPreview()
+            currentToken = SessionToken()
+            _ = transition(.cancel)
         }
     }
 
@@ -472,15 +482,21 @@ public final class VoiceInputSessionController {
         switch phase {
         case .previewing:
             guard let session = preview, let outcome = pendingOutcome else { return }
+            let token = currentToken   // F2：挂起前捕获（codex 跨厂商 P1-2）
             clearPreview()
             do {
                 try await ports.injector.inject(session.selectedText)
+                // F2（codex 跨厂商 P1-2）：inject 挂起期间重入（pttDown settle 旧会话+开新会话 /
+                // discard 改相）后，续体不得结算/上报——无守卫时 settleLive 会读到新会话的
+                // liveSessionId 误删新记录。token+相双条件守卫（deliver 同款模式）。
+                guard currentToken == token, phase == .previewing else { return }
                 settleLive()   // D16：交付成功 = 结算时点
                 reportDelivery(state: outcome.concern != nil ? .doneWithConcerns : .done,
                                traceId: session.traceId, text: session.selectedText,
                                reason: outcome.concern, outcome: outcome)
                 _ = transition(.confirmed)
             } catch {
+                guard currentToken == token, phase == .previewing else { return }
                 enterRecoverableError(text: session.selectedText, traceId: session.traceId,
                                       outcome: outcome,
                                       reason: "文本注入失败: \(error.localizedDescription)",
@@ -491,8 +507,10 @@ public final class VoiceInputSessionController {
             await confirmRecoveryCurrent()
         case .recoverableError:
             guard let session = preview, let outcome = pendingOutcome else { return }
+            let token = currentToken   // F2：挂起前捕获
             do {
                 try await ports.injector.inject(session.selectedText)
+                guard currentToken == token, phase == .recoverableError else { return }
                 clearPreview()
                 settleLive()
                 reportDelivery(state: outcome.concern != nil ? .doneWithConcerns : .done,
@@ -500,6 +518,7 @@ public final class VoiceInputSessionController {
                                reason: outcome.concern, outcome: outcome)
                 _ = transition(.confirmed)
             } catch {
+                guard currentToken == token, phase == .recoverableError else { return }
                 // 重试仍失败：留在 recoverableError，单次补报 blocked（F5：只在本处发出）
                 onStatus?(VoiceInputResult(state: .blocked, traceId: session.traceId,
                                            text: session.selectedText,
@@ -517,8 +536,13 @@ public final class VoiceInputSessionController {
     private func confirmRecoveryCurrent() async {
         guard phase == .recoveryPreview, let record = recoveryQueue.first,
               let session = preview else { return }
+        let token = currentToken   // F2：挂起前捕获（codex 跨厂商 P1-2 崩溃腿）
         do {
             try await ports.injector.inject(session.selectedText)
+            // F2（codex 跨厂商 P1-2）：inject 挂起期间 PTT 重入会 settleAllRecoveryQueue
+            // 清空队列——无守卫时续体 removeFirst() 空数组 fatalError（测试已复现）；
+            // 新队列已建立时则会误删新条目。token+相+非空三条件守卫。
+            guard currentToken == token, phase == .recoveryPreview, !recoveryQueue.isEmpty else { return }
             try? StreamingSessionStore(engine: ports.storageEngine,
                                        sessionId: record.sessionId).settle()
             recoveryQueue.removeFirst()

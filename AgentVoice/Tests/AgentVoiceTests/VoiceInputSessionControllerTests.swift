@@ -1084,4 +1084,146 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertEqual(bridgedPhases.all, [.recordingStreaming, .polishing, .idle])
         XCTAssertTrue(try recoverActive().isEmpty)
     }
+
+    // MARK: - codex 跨厂商补审 P1 fix 回归（2026-08-10，F1/F2）
+
+    /// 挂起型注入 fake：inject 挂起直到 release()——钉住 confirm 的 await 窗口（codex P1-2）。
+    /// 生产 AX 注入真挂起，FakeInjector 从不挂起恰绕过该窗口（codex P2-7）。
+    private final class SuspendingInjector: TextInjectPort, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _injected: [String] = []
+        private var _continuation: CheckedContinuation<Void, Error>?
+        var injected: [String] { lock.lock(); defer { lock.unlock() }; return _injected }
+        var isSuspending: Bool { lock.lock(); defer { lock.unlock() }; return _continuation != nil }
+
+        func inject(_ text: String) async throws {
+            lock.lock(); _injected.append(text); lock.unlock()
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                lock.lock(); _continuation = cont; lock.unlock()
+            }
+        }
+        func release() {
+            lock.lock(); let c = _continuation; _continuation = nil; lock.unlock()
+            c?.resume()
+        }
+    }
+
+    /// 注入器外置的 makeSUT 变体（codex P1-2 回归用）。不拓宽既有 makeSUT 的 FakeInjector
+    /// 类型，避免触碰 20 轮已收敛测试的断言形态。
+    private func makeSUTWithInjector(
+        _ injector: any TextInjectPort,
+        streamingASRs: @escaping @Sendable () -> (any StreamingASR)? = { nil },
+        polishResult: String? = nil
+    ) -> (controller: VoiceInputSessionController, phases: Recorder<AgentVoicePhase>,
+          previews: Recorder<PreviewSession?>, statuses: Recorder<VoiceInputResult>) {
+        let polishProvider = FakePolishProvider()
+        polishProvider.resultText = polishResult
+        let policy = try! ConfigStore().loadDefault().payload
+        let pipeline = VoicePipeline(router: SceneRouter(policy: policy),
+                                     knowledge: ThrowingKnowledge(),
+                                     polish: polishProvider,
+                                     shouldPolishGate: { _ in true })
+        let ports = SessionControllerPorts(
+            makeStreamingASR: streamingASRs,
+            localASRChain: { [] },
+            detectScene: { SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting) },
+            pipeline: pipeline,
+            injector: injector,
+            storageEngine: engine,
+            polishGateFactory: { _ in { _ in true } })
+        let controller = VoiceInputSessionController(ports: ports)
+        let phases = Recorder<AgentVoicePhase>()
+        let previews = Recorder<PreviewSession?>()
+        let statuses = Recorder<VoiceInputResult>()
+        controller.onPhaseChange = { phases.append($0) }
+        controller.onPreviewChanged = { previews.append($0) }
+        controller.onStatus = { statuses.append($0) }
+        return (controller, phases, previews, statuses)
+    }
+
+    /// F2 回归（codex P1-2 崩溃腿）：recoveryPreview confirm 的 inject 挂起期间 PTT 重入
+    /// → pttDown 清空恢复队列 → 旧续体 removeFirst() 空数组 fatalError。
+    /// fix 前 RED = 测试进程崩溃（signal 5，同 C1 SIGTRAP 回归先例形态）。
+    func test_confirm_recovery_reentry_during_inject_no_crash() async throws {
+        try seedRecord(sessionId: "rec-A", sceneType: "coding",
+                       at: Date(timeIntervalSince1970: 1_000_000), completed: "恢复甲")
+        try seedRecord(sessionId: "rec-B", sceneType: "office_writing",
+                       at: Date(timeIntervalSince1970: 2_000_000), completed: "恢复乙")
+        let records = try recoverActive()
+        XCTAssertEqual(records.count, 2)
+
+        let injector = SuspendingInjector()
+        let sut = makeSUTWithInjector(injector)
+        sut.controller.presentRecoveredSessions(records)
+        XCTAssertEqual(sut.controller.phase, .recoveryPreview)
+
+        let confirmTask = Task { @MainActor in await sut.controller.confirmPreview() }
+        let suspending = await waitUntil { injector.isSuspending }
+        XCTAssertTrue(suspending)
+
+        // 挂起窗口内重入：recoveryPreview 分支 settle 全队列 + 开新录音。
+        // makeSUTWithInjector 无流式 ASR（{ nil }）→ 落 recordingBatch（降级语义）。
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)
+
+        injector.release()
+        await confirmTask.value   // fix 前：removeFirst() 空数组 fatalError
+
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)   // 新录音不受旧续体影响
+        XCTAssertEqual(injector.injected.count, 1)                   // inject 已发出（重入前），但后续队列操作被守卫拦
+        XCTAssertTrue(try recoverActive().isEmpty)                   // 旧记录由 pttDown settleAll 全结算
+    }
+
+    /// F2 回归（codex P1-2 误删腿）：previewing confirm 的 inject 挂起期间 PTT 重入
+    /// → 新会话 begin 新记录 → 旧续体 settleLive() 读到新 liveSessionId 误删新记录。
+    /// fix 前 RED = 新记录被误 settle（recoverActive 空），断言确定性失败。
+    func test_confirm_preview_reentry_during_inject_does_not_settle_new_session() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "你好世界"
+        let injector = SuspendingInjector()
+        let sut = makeSUTWithInjector(injector, streamingASRs: { asr }, polishResult: "你好，世界。")
+
+        await sut.controller.pttDown()
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+
+        let confirmTask = Task { @MainActor in await sut.controller.confirmPreview() }
+        let suspending = await waitUntil { injector.isSuspending }
+        XCTAssertTrue(suspending)
+
+        // 挂起窗口内重入：previewing 分支 settleLive 旧记录 + 新会话 begin 新记录
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+        XCTAssertEqual(try recoverActive().count, 1)   // 新记录在盘（旧的已被 pttDown settle）
+
+        injector.release()
+        await confirmTask.value
+
+        // 旧续体的 settleLive 必须被守卫拦截，不得触碰新会话记录
+        XCTAssertEqual(try recoverActive().count, 1)   // fix 前 RED：=0（新记录被误删）
+    }
+
+    /// F1 回归（codex P1-1）：polishing 相取消必须结算并失效在途 pttUp 续体——
+    /// fix 前 .polishing 分支 return no-op，polish 完成后预览弹出/直接注入（truthfulness 违背）。
+    func test_cancel_during_polishing_settles_and_stops_continuation() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "你好世界"
+        let sut = makeSUT(streamingASRs: { asr }, polishResult: "你好，世界。", polishWaitForGate: true)
+
+        await sut.controller.pttDown()
+        sut.controller.enqueueAudio(pcmData([1234, -5678]))
+        let pttUpTask = Task { @MainActor in await sut.controller.pttUp() }
+        let polishing = await waitUntil { sut.controller.phase == .polishing && sut.polishProvider.entered }
+        XCTAssertTrue(polishing)
+
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)   // fix 前 RED：.polishing no-op → 仍 polishing
+
+        // 放行 polish——旧续体必须被 token 失效拦截：不弹预览、不注入
+        sut.polishProvider.resume()
+        await pttUpTask.value
+        XCTAssertNil(lastPreview(sut))
+        XCTAssertEqual(sut.injector.injected.count, 0)
+        XCTAssertTrue(try recoverActive().isEmpty)   // 取消时已结算
+    }
 }

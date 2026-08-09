@@ -87,4 +87,35 @@ final class DashScopeASRTests: XCTestCase {
             """)
         XCTAssertEqual(asr.currentFullText(), "甲。")
     }
+
+    /// F3 回归（codex P1-3）：partial 事件到达后，partials 流消费者读到的快照必须
+    /// 已包含该 partial 文本（生产实现 yield 先于快照更新，observer 可读到旧快照；
+    /// fix = yield 移到快照更新之后）。诚实声明：parseASRResponse 为同步体无中间
+    /// seam，yield/更新的先后无法在测试中确定性钉住（跨线程调度竞态）——顺序保障
+    /// 依赖 fix 本身与 scoped re-review，本测试防功能回归（快照内容与流送达不丢失）。
+    func test_partial_snapshot_contains_text_and_stream_delivers() async throws {
+        let asr = DashScopeASR(apiKey: "test-key")
+        var received: [String] = []
+        let consumer = Task {
+            for await text in asr.partials() {
+                received.append(text)
+                if received.count >= 2 { break }
+            }
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)   // 等消费者挂到 for await
+
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"你好","end_time":null}}}}
+            """)
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"你好世界","end_time":null}}}}
+            """)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(received, ["你好", "你好世界"])
+        XCTAssertEqual(asr.sentenceSnapshot().pending, "你好世界")
+        consumer.cancel()
+    }
 }

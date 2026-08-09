@@ -188,4 +188,40 @@ final class StreamingTranscriptionSessionTests: XCTestCase {
             asr: asr, store: nil, sceneType: "coding", sessionId: "t7")
         XCTAssertFalse(session.token.rawValue.isEmpty)
     }
+
+    /// F4 回归（codex P1-4）：finish() 流式成功后必须把 final 全文写回记录——
+    /// 松手后润色/预览窗口（秒~十秒级）进程崩溃时，恢复文本必须是 final 全文而非
+    /// 最后一次 partial（plan 验收 #5「松手后未交付文本可恢复」）。
+    /// fix 前 RED = 记录文本停留在 partial，断言确定性失败。
+    func test_finish_writes_final_text_back_to_record() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "完整全文"
+        let store = StreamingSessionStore(engine: engine, sessionId: "s-final")
+        let session = StreamingTranscriptionSession(
+            asr: asr, store: store, sceneType: "coding", sessionId: "s-final")
+        try await session.start(traceId: "t-final")
+        session.beginFeeding()
+        session.observePartials { _ in }
+
+        asr.emitPartial("部分", finalized: false)
+        // 等 partial 落盘（observerTask 异步）
+        var partialLanded = false
+        for _ in 0..<200 {
+            let recs = try StreamingSessionStore.recoverActive(engine: engine)
+            if recs.first?.recoverableText == "部分" { partialLanded = true; break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(partialLanded)
+
+        let outcome = await session.finish()
+        guard case .text(let text) = outcome else {
+            return XCTFail("finish 应返回 .text")
+        }
+        XCTAssertEqual(text, "完整全文")
+
+        // fix 前 RED：记录仍是 "部分"（finish 不写回）
+        let records = try StreamingSessionStore.recoverActive(engine: engine)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.recoverableText, "完整全文")
+    }
 }

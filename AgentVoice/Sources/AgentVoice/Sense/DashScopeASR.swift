@@ -236,8 +236,6 @@ public final class DashScopeASR: StreamingASR, @unchecked Sendable {
               let text = sentence["text"] as? String,
               !text.isEmpty else { return }
 
-        partialContinuation.yield(text)
-
         lock.lock()
         let endTime = sentence["end_time"] as? NSNumber
         if endTime != nil && endTime!.doubleValue > 0 {
@@ -255,5 +253,10 @@ public final class DashScopeASR: StreamingASR, @unchecked Sendable {
             finalResult = all.joined()
         }
         lock.unlock()
+
+        // F3（codex 跨厂商 P1-3）：先更新快照，后 yield——observer 被唤醒读
+        // sentenceSnapshot() 时必含本条 partial（fix 前 yield 先于更新，observer
+        // 可读到旧快照；末帧+lost 场景 UI 与持久化丢字）。
+        partialContinuation.yield(text)
     }
 }
