@@ -232,6 +232,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 activeAgentVoiceSession = nil  // 清除会话快照
                 recorder.onAudioChunk = nil
                 coordinator.onPartialUpdate = nil
+                // F5-round2（codex re-review 新 P1）：会话级快照——await 窗口内用户取消+
+                // 开新录音会用新 URL 覆盖共享 recordedFile（:312-314），旧任务恢复后若读
+                // 共享属性会误删新会话 WAV、遗留旧 WAV。快照本会话自己的 URL 与 startID。
+                let sessionWavURL = recordedFile
+                let sessionStartID = activeRecordingStartID
                 // B2：保留最后 partial 不清空——processing 呈现（phase==.polishing 窗口）作 secondary 上下文；
                 // 下次录音开始（下方 :start 分支）与取消路径仍清空。
                 Task { @MainActor in
@@ -241,11 +246,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     await coordinator.endSession()   // 控制器 pttUp：drain→fallback→polish→预览/直出
                     // F5（codex 跨厂商 P1-5）：AgentVoice 分支 WAV 无消费者（不走原链
                     // runPipeline/历史引用；本地 fallback 用内存 buffer）——交付结算后删除，
-                    // 不静默留存（Settings 隐私文案同步披露）。
-                    if let url = self.recordedFile {
+                    // 不静默留存（Settings 隐私文案同步披露）。删快照 URL，不读共享属性。
+                    if let url = sessionWavURL {
                         try? FileManager.default.removeItem(at: url)
-                        self.recordedFile = nil
                     }
+                    // F5-round2：会话已被替换/取消（startID 变化/清空）→ 不回写共享状态
+                    // （recordingState/面板），避免旧任务把新录音状态改回 idle。
+                    guard self.activeRecordingStartID == sessionStartID else { return }
                     if coordinator.previewSession != nil {
                         // V1 预览：面板不 dismiss，进入预览态（Task 8 渲染）
                         recordingState = .previewing
@@ -259,13 +266,21 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // AgentVoice 会话清理（取消时或 coordinator 不存在）
             if let coordinator = activeAgentVoiceSession {
                 coordinator.onPartialUpdate = nil
+                // F5-round2（codex re-review 新 P1）：快照本会话 URL 与 startID——
+                // cancelSession await 窗口内新录音可覆盖共享 recordedFile。
+                let sessionWavURL = recordedFile
+                let sessionStartID = activeRecordingStartID
                 await coordinator.cancelSession()   // 控制器 cancel：settle（用户显式放弃，D16 结算边界）
+                let replaced = activeRecordingStartID != sessionStartID
                 activeAgentVoiceSession = nil
                 recorder.onAudioChunk = nil
                 partialTranscript = ""
-                // F5（codex 跨厂商 P1-5）：显式取消——音频随结算删除（同交付路径语义）
-                if let url = recordedFile {
-                    try? FileManager.default.removeItem(at: url)
+                // F5（codex 跨厂商 P1-5）：显式取消——音频随结算删除（同交付路径语义）。
+                // 会话已被新录音替换 → 不触碰共享属性（新会话 WAV 归其自身生命周期）。
+                if !replaced {
+                    if let url = sessionWavURL {
+                        try? FileManager.default.removeItem(at: url)
+                    }
                     recordedFile = nil
                 }
             }
