@@ -366,6 +366,20 @@ extension AttentionEventStore {
     }
 }
 
+// MARK: - Task 4: privacy 门 seam——EventLog 只接收 SanitizedEvent
+
+extension AttentionEventStore {
+    /// privacy 门落点（spec §8.8 V1 前置门 ①②③）：EventLog 持久化面只接收
+    /// `FieldAllowlist.sanitize` 产出且 `privacyClass == .ok` 的 `SanitizedEvent`；
+    /// blocked/unknown → 拒绝（.error），read-only 不落盘，不部分接受。
+    /// 类型级 seam：store 不存在其他接收原始 payload 字节的持久化入口。
+    public func appendSanitized(_ sanitized: SanitizedEvent,
+                                event: NormalizedAgentEvent) -> AppendResult {
+        guard sanitized.privacyClass == .ok else { return .error }
+        return append(event)
+    }
+}
+
 // MARK: - Task 2: generation 权威与事务内 CAS（P0-3 防倒灌）
 
 extension AttentionEventStore {

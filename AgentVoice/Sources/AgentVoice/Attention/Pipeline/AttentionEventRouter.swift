@@ -157,6 +157,26 @@ public final class AttentionEventRouter: @unchecked Sendable {
         return .accepted(snapshot: snapshot)
     }
 
+    // MARK: - Task 4: privacy 门入口（入库前流式 sanitize；扩展不重写——既有 ingest 语义不回退）
+
+    /// privacy 门入口（spec §8.8 V1 前置门）：原始 hook 字节先过
+    /// `FieldAllowlist.sanitize`——只有 `privacyClass == .ok` 的 SanitizedEvent
+    /// 以允许字段再编码进入既有 ingest 链（禁止/未知字段值从未 materialize）；
+    /// blocked/unknown/sanitize 失败 → `.rejected(.privacyGate)`，read-only 不入库。
+    /// 注：锁由内部 ingest 持有（NSLock 非重入，本方法不自行加锁）。
+    public func ingestPrivacyGated(hookEventName: String, payloadData: Data,
+                                   observedAt: Date) -> IngestResult {
+        guard let sanitized = try? FieldAllowlist.sanitize(source: .officialHook,
+                                                           data: payloadData),
+              sanitized.privacyClass == .ok,
+              let json = String(data: sanitized.reencodedAllowedFields(),
+                                encoding: .utf8) else {
+            return .rejected(.privacyGate)
+        }
+        return ingest(hookEventName: hookEventName, payloadJson: json,
+                      observedAt: observedAt)
+    }
+
     private static func kindRank(_ k: EventKind) -> Int {
         switch k {
         case .waitingPermission: return 3
