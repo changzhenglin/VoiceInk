@@ -236,7 +236,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 // 开新录音会用新 URL 覆盖共享 recordedFile（:312-314），旧任务恢复后若读
                 // 共享属性会误删新会话 WAV、遗留旧 WAV。快照本会话自己的 URL 与 startID。
                 let sessionWavURL = recordedFile
-                let sessionStartID = activeRecordingStartID
                 // B2：保留最后 partial 不清空——processing 呈现（phase==.polishing 窗口）作 secondary 上下文；
                 // 下次录音开始（下方 :start 分支）与取消路径仍清空。
                 Task { @MainActor in
@@ -250,13 +249,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     if let url = sessionWavURL {
                         try? FileManager.default.removeItem(at: url)
                     }
-                    // F5-round2：会话已被替换/取消（startID 变化/清空）→ 不回写共享状态
-                    // （recordingState/面板），避免旧任务把新录音状态改回 idle。
-                    guard self.activeRecordingStartID == sessionStartID else { return }
-                    // round-3（codex r2 P1-5）：未替换时清除指向已删文件的陈旧引用
-                    if self.recordedFile == sessionWavURL {
-                        self.recordedFile = nil
-                    }
+                    // round-4（codex r3 P1-5 ABA）：会话身份 = WAV URL 快照（每录音唯一
+                    // UUID 文件名，URL 永不回流，ABA 免疫）——fix round-2/3 的 startID
+                    // 守卫失效：停止入口先清 startID 为 nil（:217）后才快照，守卫实比
+                    // nil 哨兵；B 也已松手的连续重录场景 nil==nil 误判未替换。
+                    // recordedFile 仍指本会话文件 = 未替换；被覆盖/清空 = 已替换。
+                    guard self.recordedFile == sessionWavURL else { return }
+                    self.recordedFile = nil
                     if coordinator.previewSession != nil {
                         // V1 预览：面板不 dismiss，进入预览态（Task 8 渲染）
                         recordingState = .previewing
@@ -270,30 +269,22 @@ class VoiceInkEngine: NSObject, ObservableObject {
             // AgentVoice 会话清理（取消时或 coordinator 不存在）
             if let coordinator = activeAgentVoiceSession {
                 coordinator.onPartialUpdate = nil
-                // F5-round2（codex re-review 新 P1）：快照本会话 URL 与 startID——
-                // cancelSession await 窗口内新录音可覆盖共享 recordedFile。
+                // round-4（codex r3 P1-5 ABA）：会话身份 = WAV URL 快照（每录音唯一 UUID
+                // 文件名，URL 永不回流）——startID 在停止入口已清 nil（:217），不可作身份。
                 let sessionWavURL = recordedFile
-                let sessionStartID = activeRecordingStartID
                 await coordinator.cancelSession()   // 控制器 cancel：settle（用户显式放弃，D16 结算边界）
-                // round-3（codex r2 P1-5）：会话已被新录音替换——只删本会话自己的 WAV
-                // （快照 URL 是本会话文件，删除安全=各归其主），随后终止旧续体：零触碰
-                // 全部共享状态（activeAgentVoiceSession/onAudioChunk/partialTranscript/
-                // recordedFile 均已属新会话）且 early return 不落下方 recordedFile 分支
-                // （fix round-2 反向错误：replaced 时跳过删除致旧 WAV 泄漏 + 无条件清空
-                // 破坏新会话状态 + 落下方分支把新 WAV 交旧清理逻辑）。
-                if activeRecordingStartID != sessionStartID {
-                    if let url = sessionWavURL {
-                        try? FileManager.default.removeItem(at: url)
-                    }
+                // 本会话 WAV 随结算删除（各归其主：快照 URL 是本会话文件，删除安全）
+                if let url = sessionWavURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                // replaced 判定（ABA 安全）：recordedFile 被新会话覆盖或被其停止流清空
+                // → 已替换，旧续体终止（零触碰共享状态与下方 recordedFile 分支）
+                if recordedFile != sessionWavURL {
                     return
                 }
                 activeAgentVoiceSession = nil
                 recorder.onAudioChunk = nil
                 partialTranscript = ""
-                // F5（codex 跨厂商 P1-5）：显式取消——音频随结算删除（同交付路径语义）
-                if let url = sessionWavURL {
-                    try? FileManager.default.removeItem(at: url)
-                }
                 recordedFile = nil
             }
 
