@@ -70,6 +70,16 @@ public final class AttentionEventStore: @unchecked Sendable {
                 t.column("count", .integer).notNull()
                 t.primaryKey(["date", "session_key", "kind"])
             }
+            // Task 2（P0-3 防倒灌）：generation 权威表——
+            // connection_generation：reconnect 单调抬升（store 内 max() 守卫不得回退）；
+            // scan_generation：最近一次成功 commit 的 scan token。
+            // commit CAS 为同一写事务内单条 UPDATE ... WHERE（见
+            // compareAndSwapScanGeneration），禁止 check-then-insert 作唯一防线。
+            try db.create(table: "connection_generations", ifNotExists: true) { t in
+                t.column("session_key", .text).primaryKey()
+                t.column("connection_generation", .integer).notNull()
+                t.column("scan_generation", .integer).notNull().defaults(to: 0)
+            }
         }
     }
 
@@ -352,6 +362,95 @@ extension AttentionEventStore {
             }
         } catch {
             return []
+        }
+    }
+}
+
+// MARK: - Task 2: generation 权威与事务内 CAS（P0-3 防倒灌）
+
+extension AttentionEventStore {
+    /// generation 权威行快照（internal：GenerationCoordinator 与测试可见）
+    struct GenerationStateRow: Equatable {
+        let connectionGeneration: Int
+        let scanGeneration: Int
+    }
+
+    /// 读取会话 generation 权威行；无行/读失败 → nil（fail-closed 由调用方裁决）
+    func generationState(sessionKey: String) -> GenerationStateRow? {
+        do {
+            return try dbQueue.read { db in
+                guard let row = try Row.fetchOne(db, sql: """
+                    SELECT connection_generation, scan_generation
+                    FROM connection_generations WHERE session_key = ?
+                    """, arguments: [sessionKey]) else { return nil }
+                // 全走可选下标：NULL/损坏行 → nil，不触发 Row 非可选下标 fatal（C17 同式）
+                guard let conn: Int = row["connection_generation"],
+                      let scan: Int = row["scan_generation"] else { return nil }
+                return GenerationStateRow(connectionGeneration: conn, scanGeneration: scan)
+            }
+        } catch {
+            return nil   // C17：读路径禁 try!，失败降级 nil
+        }
+    }
+
+    /// 行 bootstrap：无行则落基线 (1, 0)。仅初始化，不是 CAS 防线
+    ///（CAS 防线是 compareAndSwapScanGeneration 的事务内 WHERE 条件）
+    func ensureGenerationBaseline(sessionKey: String) {
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT OR IGNORE INTO connection_generations
+                    (session_key, connection_generation, scan_generation)
+                    VALUES (?, ?, 0)
+                    """, arguments: [sessionKey, 1])
+            }
+        } catch {
+            // C17：写失败降级不 crash；后续 CAS 按 fail-closed 拒绝
+        }
+    }
+
+    /// reconnect 持久化：单调抬升 connection_generation。
+    /// store 内 max() 守卫——持久化值不得回退（即便调用方传更小值）。
+    /// 返回事务内回读的实际持久化值；写失败 → nil（fail-closed 由调用方兜底）。
+    func upsertConnectionGeneration(sessionKey: String, generation: Int) -> Int? {
+        do {
+            return try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO connection_generations
+                    (session_key, connection_generation, scan_generation)
+                    VALUES (?, ?, 0)
+                    ON CONFLICT(session_key) DO UPDATE SET
+                        connection_generation = max(connection_generation, excluded.connection_generation)
+                    """, arguments: [sessionKey, generation])
+                return try Int.fetchOne(db, sql: """
+                    SELECT connection_generation FROM connection_generations
+                    WHERE session_key = ?
+                    """, arguments: [sessionKey])
+            }
+        } catch {
+            return nil   // C17：写失败降级不 crash
+        }
+    }
+
+    /// commit CAS：同一写事务内单条 `UPDATE ... WHERE` 原子判定——
+    /// session_key 命中 且 connection_generation == expected 且 scan_generation < token
+    /// 三者同时成立才把 scan_generation 置为 token；changesCount != 1 → 整批拒绝。
+    /// 不以 check-then-insert / 先读后写作唯一防线；存储异常 → false（fail-closed）。
+    func compareAndSwapScanGeneration(sessionKey: String, token: Int,
+                                      expectedConnectionGeneration: Int) -> Bool {
+        do {
+            return try dbQueue.write { db in
+                try db.execute(sql: """
+                    UPDATE connection_generations
+                    SET scan_generation = ?
+                    WHERE session_key = ?
+                      AND connection_generation = ?
+                      AND scan_generation < ?
+                    """, arguments: [token, sessionKey, expectedConnectionGeneration, token])
+                return db.changesCount == 1
+            }
+        } catch {
+            return false   // 存储异常按 CAS 失败处理（fail-closed）
         }
     }
 }

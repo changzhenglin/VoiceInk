@@ -108,6 +108,98 @@ final class SessionIdentityTests: XCTestCase {
         let verdict = SessionIdentity.evaluate(evidence: .worktreeRecreatedWithoutAuthority)
         XCTAssertEqual(verdict.kind, .unverifiable)
     }
+
+    // MARK: - fail-closed 强化（implementer 增补；骨架断言语义不减）
+
+    func testNewerGenerationRejectedFailClosed() {
+        let identity = makeIdentity(generation: 5)
+        XCTAssertFalse(identity.acceptsEvent(connectionGeneration: 6),
+                       "「较新」generation 也不得隐式抬升身份——generation 只能经协调器 reconnect 抬升（fail-closed）")
+    }
+
+    func testSessionKeyComposition() {
+        XCTAssertEqual(makeIdentity().sessionKey,
+                       "claude_code|11111111-1111-1111-1111-111111111111",
+                       "sessionKey = adapter_type|native_session_id（与 GenerationCoordinator/SessionMutex 共享键格式）")
+    }
+
+    func testIncrementingGenerationKeepsLineageAndRepoContext() {
+        let repo = RepoWorktreeIdentity(authoritativeId: "repo-uuid")
+        let wt = RepoWorktreeIdentity(authoritativeId: "wt-uuid")
+        var identity = makeIdentity(generation: 3)
+        identity.repoIdentity = repo
+        identity.worktreeIdentity = wt
+        identity.subagentId = "sub-1"
+        let next = identity.incrementingGeneration()
+        XCTAssertEqual(next.repoIdentity, repo, "reconnect 不丢 repo 权威绑定")
+        XCTAssertEqual(next.worktreeIdentity, wt, "reconnect 不丢 worktree 权威绑定")
+        XCTAssertEqual(next.subagentId, "sub-1", "reconnect 不清 lineage")
+        XCTAssertEqual(next.connectionGeneration, 4)
+    }
+
+    func testResolvingSubagentKeepsSessionPrimaryKey() {
+        var identity = makeIdentity(generation: 2)
+        identity.parentSessionId = "parent"
+        identity.subagentId = "sub"
+        let resolved = identity.resolvingSubagent()
+        XCTAssertNil(resolved.parentSessionId, "subagent 完成清 lineage（含 parent 链）")
+        XCTAssertEqual(resolved.adapterType, identity.adapterType, "session 主键不变")
+        XCTAssertEqual(resolved.nativeSessionId, identity.nativeSessionId)
+    }
+
+    func testNativeSessionClaimVerdict() {
+        let ok = SessionIdentity.evaluate(evidence: .nativeSessionClaim(
+            adapterType: "claude_code", nativeSessionId: "abc-123"))
+        XCTAssertEqual(ok.kind, .ok)
+        XCTAssertFalse(ok.impliesActivityFact, "会话成立也不蕴含活动事实（P0-4 一致）")
+        let zero = SessionIdentity.evaluate(evidence: .nativeSessionClaim(
+            adapterType: "claude_code",
+            nativeSessionId: "00000000-0000-0000-0000-000000000000"))
+        XCTAssertEqual(zero.kind, .unverifiable, "zero-UUID 不得建立身份（ADJ-1 轴 fail-closed）")
+        let blank = SessionIdentity.evaluate(evidence: .nativeSessionClaim(
+            adapterType: "claude_code", nativeSessionId: "   "))
+        XCTAssertEqual(blank.kind, .unverifiable, "空白 session_id fail-closed")
+    }
+
+    func testCrossAdapterConflictVerdict() {
+        let conflict = SessionIdentity.evaluate(evidence: .crossAdapterConflict(
+            nativeSessionId: "sid-x", existingAdapterType: "claude_code",
+            claimedAdapterType: "generic_terminal"))
+        XCTAssertEqual(conflict.kind, .conflict, "跨 adapter 同 session_id 声明 = conflict（ADJ-2 轴投影）")
+        XCTAssertFalse(conflict.impliesActivityFact)
+    }
+
+    // MARK: - repo/worktree 边界强化
+
+    func testSameAuthoritativeIdMerges() {
+        XCTAssertEqual(RepoWorktreeIdentity(authoritativeId: "repo-A-uuid"),
+                       RepoWorktreeIdentity(authoritativeId: "repo-A-uuid"),
+                       "身份合并只经权威 ID")
+    }
+
+    func testEmptyAuthoritativeIdRejected() {
+        XCTAssertNil(RepoWorktreeIdentity(authoritativeId: ""), "空权威 ID fail-closed")
+        XCTAssertNil(RepoWorktreeIdentity(authoritativeId: "   "), "纯空白权威 ID fail-closed")
+    }
+
+    func testFromPathOnlyNeverEstablishesIdentityForAnyVariant() {
+        // symlink/大小写/规范化/worktree 内部路径变体：一律不产生身份（不猜测不合并）
+        XCTAssertNil(RepoWorktreeIdentity.fromPathOnly("/Users/x/projects/AgentOS/.git/worktrees/wt1"))
+        XCTAssertNil(RepoWorktreeIdentity.fromPathOnly("/users/x/PROJECTS/agentos"))
+        XCTAssertNil(RepoWorktreeIdentity.fromPathOnly("/private/Users/x/projects/AgentOS"))
+    }
+
+    func testInodeBindingCanonical() {
+        let a = RepoWorktreeIdentity(device: 16777220, inode: 1234567, vcsMetadataRef: "sha256:abc")
+        let b = RepoWorktreeIdentity(device: 16777220, inode: 1234567, vcsMetadataRef: "sha256:abc")
+        XCTAssertEqual(a, b, "同 inode+VCS 证明 = 同一 canonical binding")
+        let c = RepoWorktreeIdentity(device: 16777220, inode: 7654321, vcsMetadataRef: "sha256:abc")
+        XCTAssertNotEqual(a, c, "不同 inode = 不同文件系统对象")
+        XCTAssertNil(RepoWorktreeIdentity(device: 16777220, inode: 0, vcsMetadataRef: "sha256:abc"),
+                     "inode 0 非法")
+        XCTAssertNil(RepoWorktreeIdentity(device: 16777220, inode: 1234567, vcsMetadataRef: ""),
+                     "缺 VCS 证明不得构成 canonical binding（fail-closed）")
+    }
 }
 
 final class GenerationCoordinatorTests: XCTestCase {
@@ -119,7 +211,9 @@ final class GenerationCoordinatorTests: XCTestCase {
         let key = "claude_code|sid-1"
         let staleToken = await coordinator.beginScan(sessionKey: key)
         let reconnectGen = await coordinator.reconnect(sessionKey: key)
-        XCTAssertGreaterThan(reconnectGen, await coordinator.currentGenerationBaseline(sessionKey: key) - 1)
+        // XCTest autoclosure 不支持 await——提出断言外（机械调整，语义不变）
+        let baseline = await coordinator.currentGenerationBaseline(sessionKey: key)
+        XCTAssertGreaterThan(reconnectGen, baseline - 1)
         // 旧 scan 尝试 commit：整批 CAS 拒绝
         let committed = await coordinator.commit(sessionKey: key, token: staleToken)
         XCTAssertFalse(committed, "旧 scan token 在 reconnect 后必须被 CAS 拒绝")
@@ -165,5 +259,105 @@ final class GenerationCoordinatorTests: XCTestCase {
             XCTAssertGreaterThan(g, last, "每次重连必须严格递增")
             last = g
         }
+    }
+
+    // MARK: - implementer 增补：token 生命周期与 store 权威
+
+    func testCommitWithoutScanFails() async {
+        let coordinator = GenerationCoordinator()
+        let committed = await coordinator.commit(sessionKey: "claude_code|sid-x", token: 42)
+        XCTAssertFalse(committed, "无在途 token 的 commit 必须 fail-closed")
+    }
+
+    func testCommittedTokenIsSingleUse() async {
+        let coordinator = GenerationCoordinator()
+        let key = "claude_code|sid-single"
+        let token = await coordinator.beginScan(sessionKey: key)
+        var committed = await coordinator.commit(sessionKey: key, token: token)
+        XCTAssertTrue(committed)
+        committed = await coordinator.commit(sessionKey: key, token: token)
+        XCTAssertFalse(committed, "已提交 token 不得重放")
+        let next = await coordinator.beginScan(sessionKey: key)
+        committed = await coordinator.commit(sessionKey: key, token: next)
+        XCTAssertTrue(committed, "新 scan 周期分配新 token 后可提交")
+    }
+
+    func testStoreBackedGenerationAuthority() async throws {
+        let store = try AttentionEventStore()   // 内存库
+        let coordinator = GenerationCoordinator(store: store)
+        let key = "claude_code|sid-store"
+        let g1 = await coordinator.reconnect(sessionKey: key)
+        XCTAssertEqual(g1, 2)
+        XCTAssertEqual(store.generationState(sessionKey: key)?.connectionGeneration, g1,
+                       "generation 权威必须持久化到 SQLite")
+
+        // 旧 scan 被 reconnect 失效：拒绝批次在 store 不产生部分写
+        let stale = await coordinator.beginScan(sessionKey: key)
+        let g2 = await coordinator.reconnect(sessionKey: key)
+        let committedStale = await coordinator.commit(sessionKey: key, token: stale)
+        XCTAssertFalse(committedStale)
+        let state = store.generationState(sessionKey: key)
+        XCTAssertEqual(state?.connectionGeneration, g2, "拒绝批次不得改变 generation")
+        XCTAssertEqual(state?.scanGeneration, 0, "拒绝批次不得留下 scan_generation 痕迹")
+    }
+
+    func testStoreBackedConcurrentScansLatestWins() async throws {
+        let store = try AttentionEventStore()
+        let coordinator = GenerationCoordinator(store: store)
+        let key = "claude_code|sid-store-2"
+        let t1 = await coordinator.beginScan(sessionKey: key)
+        let t2 = await coordinator.beginScan(sessionKey: key)
+        let c1 = await coordinator.commit(sessionKey: key, token: t1)
+        let c2 = await coordinator.commit(sessionKey: key, token: t2)
+        XCTAssertFalse(c1)
+        XCTAssertTrue(c2)
+        XCTAssertEqual(store.generationState(sessionKey: key)?.scanGeneration, t2,
+                       "store CAS 只接受最新 token")
+    }
+
+    func testGenerationMonotonicAcrossCoordinatorRestart() async throws {
+        // SQLite 权威：新 coordinator 实例从 store 恢复 generation，不回退（P0-3 跨重启）
+        let store = try AttentionEventStore()
+        let key = "claude_code|sid-restart"
+        let first = GenerationCoordinator(store: store)
+        _ = await first.reconnect(sessionKey: key)
+        let g2 = await first.reconnect(sessionKey: key)
+        let second = GenerationCoordinator(store: store)
+        let recovered = await second.currentGeneration(sessionKey: key)
+        XCTAssertEqual(recovered, g2, "新实例必须从 store 恢复权威 generation")
+        let g3 = await second.reconnect(sessionKey: key)
+        XCTAssertGreaterThan(g3, g2, "跨实例 reconnect 仍严格单调")
+    }
+}
+
+// MARK: - store CAS 集成面（AttentionEventStore 事务内原子 CAS，禁止 check-then-insert 作唯一防线）
+
+final class GenerationStoreCASTests: XCTestCase {
+
+    func testCompareAndSwapIsAtomicWithinTransaction() throws {
+        let store = try AttentionEventStore()
+        store.ensureGenerationBaseline(sessionKey: "k")
+        // 错误的 expected connection_generation → CAS 失败且行不变
+        XCTAssertFalse(store.compareAndSwapScanGeneration(
+            sessionKey: "k", token: 5, expectedConnectionGeneration: 99))
+        XCTAssertEqual(store.generationState(sessionKey: "k")?.scanGeneration, 0)
+        // 正确 expected → CAS 成功
+        XCTAssertTrue(store.compareAndSwapScanGeneration(
+            sessionKey: "k", token: 5, expectedConnectionGeneration: 1))
+        XCTAssertEqual(store.generationState(sessionKey: "k")?.scanGeneration, 5)
+        // 旧 token 重放（scan_generation < token 条件失败）→ 拒绝且不回退
+        XCTAssertFalse(store.compareAndSwapScanGeneration(
+            sessionKey: "k", token: 3, expectedConnectionGeneration: 1))
+        XCTAssertEqual(store.generationState(sessionKey: "k")?.scanGeneration, 5,
+                       "旧 token 不得回退 scan_generation")
+    }
+
+    func testUpsertConnectionGenerationMonotonicGuard() throws {
+        let store = try AttentionEventStore()
+        XCTAssertEqual(store.upsertConnectionGeneration(sessionKey: "k", generation: 3), 3)
+        // 回退尝试：store 单调守卫拒绝（max() 保留较大值）
+        XCTAssertEqual(store.upsertConnectionGeneration(sessionKey: "k", generation: 1), 3,
+                       "store 内 generation 不得回退")
+        XCTAssertEqual(store.upsertConnectionGeneration(sessionKey: "k", generation: 4), 4)
     }
 }

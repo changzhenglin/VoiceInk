@@ -10,6 +10,11 @@ public final class AttentionEventRouter: @unchecked Sendable {
     }
 
     public let store: AttentionEventStore
+    /// Task 2 seam：generation 协调器（单一写者 actor，P0-3 防倒灌 CAS 权威；
+    /// 与 store 同库持久化 generation 真值）。本任务只引入 seam，
+    /// ingest 链路的 identity verdict / coordinator token 接线归后续任务
+    ///（Task 3 四层闭环键 / Task 5 reducer 总函数），不改既有归约语义。
+    public let generationCoordinator: GenerationCoordinator
     private let adapter = ClaudeCodeAdapter()
     private let mutex = SessionMutex()
     private let reducer = AttentionReducer()
@@ -22,7 +27,10 @@ public final class AttentionEventRouter: @unchecked Sendable {
     private let lock = NSLock()
     public private(set) var claudeVersion = "2.1.220"
 
-    public init(store: AttentionEventStore) { self.store = store }
+    public init(store: AttentionEventStore) {
+        self.store = store
+        self.generationCoordinator = GenerationCoordinator(store: store)
+    }
 
     /// F6+C5：app 重启后重建——快照从事件重放；items 以持久化版为准（用户操作不丢）
     public func replayFromStore() {
