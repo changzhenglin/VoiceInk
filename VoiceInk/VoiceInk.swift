@@ -217,18 +217,46 @@ struct VoiceInkApp: App {
                 let whisperTranscriber = VoiceInkWhisperTranscriber(
                     whisperModelManager: whisperModelManager)
                 let hubPort = UserDefaults.standard.integer(forKey: "agentVoiceHubPort")
+                let polishAdapter = HubPolishAdapter(hubPort: hubPort > 0 ? hubPort : 9876)
 
-                let coordinator = AgentVoiceCoordinator(
-                    sceneDetector: sceneDetector,
+                // 润色 gate（Task 9 组合全局/场景开关；本 task 先用默认 50 字规则）
+                let gateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool = { _ in
+                    { $0.count >= 50 }
+                }
+
+                let pipeline = VoicePipeline(
                     router: router,
-                    knowledgeStore: knowledgeStore,
-                    whisperTranscriber: whisperTranscriber,
-                    statusAdapter: agentVoiceStatusAdapter,
-                    hubPort: hubPort > 0 ? hubPort : 9876,
-                    dashScopeAPIKeyProvider: {
-                        APIKeyManager.shared.getAPIKey(forProvider: "dashscope")
-                    })
+                    knowledge: knowledgeStore,
+                    polish: polishAdapter,
+                    shouldPolishGate: gateFactory(""))   // 过渡：Task 9 改为按场景动态工厂注入
 
+                // 本地三级链素材：Apple Speech（macOS 26+）→ Whisper（spec §3.5.3）
+                let whisperASR = WhisperASR(transcriber: whisperTranscriber)
+                let appleSpeechASR = AppleSpeechASR(locale: "zh-CN")
+
+                // 流式 ASR 工厂（A2 fold：asrMode 三模式语义保留——local → nil 直走本地链；
+                // cloud/auto key 门控，无 key → nil 由控制器 fallback 三级链接本地）
+                let streamingASRFactory = AgentVoiceCoordinator.streamingASRFactory(
+                    modeProvider: { UserDefaults.standard.string(forKey: "agentVoiceASRMode") },
+                    keyProvider: { APIKeyManager.shared.getAPIKey(forProvider: "dashscope") })
+
+                let ports = SessionControllerPorts(
+                    makeStreamingASR: streamingASRFactory,
+                    localASRChain: {
+                        var chain: [any ASRProvider] = []
+                        if #available(macOS 26, *) { chain.append(appleSpeechASR) }
+                        chain.append(whisperASR)
+                        return chain
+                    },
+                    detectScene: { await sceneDetector.detect() },
+                    pipeline: pipeline,
+                    injector: VoiceInkInjector(),
+                    storageEngine: storageEngine,
+                    polishGateFactory: gateFactory)
+
+                let controller = VoiceInputSessionController(ports: ports)
+                let coordinator = AgentVoiceCoordinator(
+                    controller: controller, statusAdapter: agentVoiceStatusAdapter)
                 engine.agentVoiceCoordinator = coordinator
             } catch {
                 let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AgentVoice")

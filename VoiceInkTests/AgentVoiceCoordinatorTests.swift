@@ -2,96 +2,136 @@ import XCTest
 @testable import VoiceInk
 import AgentVoice
 
+// A1/A2 裁决改造（Task 6）：
+// - 7 个 selectASR 用例 → 改测 streamingASRFactory 静态工厂（asrMode 三模式语义保留；
+//   旧 route hint 随 D′ ports 形态消失，行为变化一条备案报告，Task 13 验收核验）
+// - 4 个 handleResult 状态映射用例保留适配（新 init(controller:statusAdapter:) + 最小 ports 构造）
+// - 1 个 isRunning 防重入用例删除（防重入已由 SessionToken+转移表承接，
+//   Task 5b 包层 9 转移表用例覆盖——冻结事实）
+
 final class AgentVoiceCoordinatorTests: XCTestCase {
 
-    // MARK: - ASR 选择：无 API Key → fallback whisper
+    // MARK: - 测试桩
 
-    @MainActor
-    func test_selectASR_noAPIKey_fallbackWhisper() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil,
-            routeASRProvider: "dashscope"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "dashscope")
-        XCTAssertEqual(asr.providerId, "whisper-local")
+    private struct StubPolishProvider: PolishProvider {
+        let providerId = "stub-polish"
+        func polish(_ raw: String, scene: SceneContext,
+                    knowledge: KnowledgeContext, traceId: String) -> AsyncThrowingStream<String, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
     }
 
-    // MARK: - ASR 选择：有 API Key + route dashscope → dashscope
-
-    @MainActor
-    func test_selectASR_withAPIKey_routeDashscope() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: "sk-test",
-            routeASRProvider: "dashscope"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "dashscope")
-        XCTAssertEqual(asr.providerId, "dashscope-paraformer")
+    private struct StubInjector: TextInjectPort {
+        func inject(_ text: String) async throws {}
     }
 
-    // MARK: - ASR 选择：route whisper → whisper（无论有无 Key）
-
+    /// A1：构造薄壳 coordinator（控制器仅作 handleResult 测试的依赖注入，本组用例不触发编排）
     @MainActor
-    func test_selectASR_routeWhisper() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: "sk-test",
-            routeASRProvider: "whisper"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "whisper")
-        XCTAssertEqual(asr.providerId, "whisper-local")
+    private func makeCoordinator() -> AgentVoiceCoordinator {
+        let policy = loadPolicyForTest()
+        let engine = (try? StorageEngine(path: nil))!
+        let pipeline = VoicePipeline(
+            router: SceneRouter(policy: policy),
+            knowledge: KnowledgeStore(engine: engine),
+            polish: StubPolishProvider(),
+            shouldPolishGate: { _ in false })
+        let ports = SessionControllerPorts(
+            makeStreamingASR: { nil },
+            localASRChain: { [] },
+            detectScene: { SceneContext(bundleId: "", sceneType: .officeWriting) },
+            pipeline: pipeline,
+            injector: StubInjector(),
+            storageEngine: engine,
+            polishGateFactory: { _ in { _ in false } })
+        let controller = VoiceInputSessionController(ports: ports)
+        return AgentVoiceCoordinator(controller: controller, statusAdapter: AgentVoiceStatusAdapter())
     }
 
-    // MARK: - ASR 模式选择器（Settings Picker：auto / local / cloud）
-
-    /// local 模式：即使有 key + route 说云端，也强制本地（用户主动选本地）
-    @MainActor
-    func test_selectASR_modeLocal_forcesLocal_evenWithKey() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: "sk-test",
-            routeASRProvider: "dashscope"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "dashscope", asrMode: "local")
-        XCTAssertNotEqual(asr.providerId, "dashscope-paraformer", "local 模式不得走云端")
+    /// policy 加载（lineage = VoiceInk.swift composition root 同款两级 fallback）：
+    /// Xcode test host 中 Bundle.module 的 .copy("Resources") 路径多一层 Resources/，
+    /// ConfigStore.loadDefault() 失败时从宿主 app bundle 的 AgentVoice bundle 手动加载。
+    private func loadPolicyForTest() -> VoiceInputPolicy.Payload {
+        if let loaded = try? ConfigStore().loadDefault() {
+            return loaded.payload
+        }
+        guard let bundleURL = Bundle.main.resourceURL?
+            .appendingPathComponent("AgentVoice_AgentVoice.bundle"),
+            let avBundle = Bundle(url: bundleURL),
+            let jsonURL = avBundle.url(
+                forResource: "default-voice-input-policy",
+                withExtension: "json",
+                subdirectory: "Resources"),
+            let data = try? Data(contentsOf: jsonURL),
+            let decoded = try? JSONDecoder().decode(VoiceInputPolicy.self, from: data)
+        else {
+            fatalError("default-voice-input-policy.json 在 test host 中未找到")
+        }
+        return decoded.payload
     }
 
-    /// cloud 模式：有 key → 云端 DashScope（即使 route 说 whisper）
+    // MARK: - A2 流式 ASR 工厂：asrMode 三模式语义
+
+    /// local 模式：即使有 key 也返回 nil（跳过流式，直走控制器本地三级链）
     @MainActor
-    func test_selectASR_modeCloud_withKey_usesCloud() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: "sk-test",
-            routeASRProvider: "whisper"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "whisper", asrMode: "cloud")
-        XCTAssertEqual(asr.providerId, "dashscope-paraformer")
+    func test_streamingASRFactory_modeLocal_returnsNil_evenWithKey() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { "local" }, keyProvider: { "sk-test" })
+        XCTAssertNil(factory())
     }
 
-    /// cloud 模式：无 key → fallback 本地（保证始终有 ASR，不卡死）
+    /// cloud 模式：有 key → 云端 DashScope
     @MainActor
-    func test_selectASR_modeCloud_noKey_fallbackLocal() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil,
-            routeASRProvider: "dashscope"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "dashscope", asrMode: "cloud")
-        XCTAssertNotEqual(asr.providerId, "dashscope-paraformer", "无 key 时 cloud 模式应 fallback 本地")
+    func test_streamingASRFactory_modeCloud_withKey_returnsDashScope() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { "cloud" }, keyProvider: { "sk-test" })
+        XCTAssertEqual(factory()?.providerId, "dashscope-paraformer")
     }
 
-    /// auto 模式（默认）：行为等同原逻辑——有 key + route dashscope → 云端
+    /// cloud 模式：无 key → nil（控制器 fallback 三级链接本地，保证始终有 ASR）
     @MainActor
-    func test_selectASR_modeAuto_preservesOriginalBehavior() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: "sk-test",
-            routeASRProvider: "dashscope"
-        )
-        let asr = coordinator.selectASR(routeASRProvider: "dashscope", asrMode: "auto")
-        XCTAssertEqual(asr.providerId, "dashscope-paraformer")
+    func test_streamingASRFactory_modeCloud_noKey_returnsNil() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { "cloud" }, keyProvider: { nil })
+        XCTAssertNil(factory())
     }
 
-    // MARK: - D5 + codex P1#10: handleResult 状态映射（完整断言）
+    /// auto 模式：有 key → 云端 DashScope（流式优先，设计意图）
+    @MainActor
+    func test_streamingASRFactory_modeAuto_withKey_returnsDashScope() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { "auto" }, keyProvider: { "sk-test" })
+        XCTAssertEqual(factory()?.providerId, "dashscope-paraformer")
+    }
+
+    /// auto 模式：无 key → nil（fallback 三级链接本地）
+    @MainActor
+    func test_streamingASRFactory_modeAuto_noKey_returnsNil() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { "auto" }, keyProvider: { nil })
+        XCTAssertNil(factory())
+    }
+
+    /// 模式未设置（nil）→ 默认 auto：有 key → DashScope（AppDefaults 注册默认 "auto"）
+    @MainActor
+    func test_streamingASRFactory_modeNil_defaultsToAuto() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { nil }, keyProvider: { "sk-test" })
+        XCTAssertEqual(factory()?.providerId, "dashscope-paraformer")
+    }
+
+    /// 空 key 视同无 key → nil
+    @MainActor
+    func test_streamingASRFactory_emptyKey_returnsNil() {
+        let factory = AgentVoiceCoordinator.streamingASRFactory(
+            modeProvider: { "cloud" }, keyProvider: { "" })
+        XCTAssertNil(factory())
+    }
+
+    // MARK: - A1 保留：handleResult 状态映射（既有四态 UI 语义）
 
     @MainActor
     func test_handleResult_done_updatesStatusDone() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil, routeASRProvider: "whisper")
+        let coordinator = makeCoordinator()
         let result = VoiceInputResult(
             state: .done, traceId: "t1", text: "hello",
             asrProvider: "whisper-local", polished: false)
@@ -101,8 +141,7 @@ final class AgentVoiceCoordinatorTests: XCTestCase {
 
     @MainActor
     func test_handleResult_doneWithConcerns_updatesStatusDone() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil, routeASRProvider: "whisper")
+        let coordinator = makeCoordinator()
         let result = VoiceInputResult(
             state: .doneWithConcerns, traceId: "t1", text: "原文直出",
             reason: "润色失败", asrProvider: "whisper-local", polished: false)
@@ -112,8 +151,7 @@ final class AgentVoiceCoordinatorTests: XCTestCase {
 
     @MainActor
     func test_handleResult_blocked_updatesStatusError() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil, routeASRProvider: "whisper")
+        let coordinator = makeCoordinator()
         let result = VoiceInputResult(
             state: .blocked, traceId: "t1",
             reason: "注入失败", asrProvider: "whisper-local")
@@ -123,25 +161,11 @@ final class AgentVoiceCoordinatorTests: XCTestCase {
 
     @MainActor
     func test_handleResult_needsContext_updatesStatusIdle() {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil, routeASRProvider: "whisper")
+        let coordinator = makeCoordinator()
         let result = VoiceInputResult(
             state: .needsContext, traceId: "t1",
             reason: "空文本", asrProvider: "whisper-local")
         coordinator.handleResult(result)
         XCTAssertEqual(coordinator.statusAdapterForTest.status, .idle)
-    }
-
-    // MARK: - codex P1#10: isRunning 防重入
-
-    @MainActor
-    func test_run_isRunning_guardsReentry() async {
-        let coordinator = AgentVoiceCoordinator.makeForTest(
-            dashScopeAPIKey: nil, routeASRProvider: "whisper")
-        // 模拟正在运行
-        coordinator.isRunning = true
-        await coordinator.run(audioBuffer: [Data([0, 1, 2, 3])])
-        // isRunning 仍为 true（run 被 guard 跳过，未执行 defer 重置）
-        XCTAssertTrue(coordinator.isRunning)
     }
 }

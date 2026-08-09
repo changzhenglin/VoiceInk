@@ -125,7 +125,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     var agentVoiceCoordinator: AgentVoiceCoordinator?
     /// codex P1#8 fold：录音开始时快照的 coordinator（防中途开关切换导致分叉不一致）
     private var activeAgentVoiceSession: AgentVoiceCoordinator?
-    private var agentVoiceAudioBuffer: [Data] = []
+    // V1 流式接线（Task 7）：音频 buffer 与流式会话由包层控制器持有，engine 不再自持
     var statusAdapter: AgentVoiceStatusAdapter?
     /// outside voice #2 fold：不用 @AppStorage（NSObject 中不响应 SwiftUI 刷新）
     /// 每次 toggleRecord 时即时读 UserDefaults
@@ -206,25 +206,32 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             // AgentVoice 分叉
             // codex P1#8 fold：使用录音开始时快照的 coordinator（非实时读取）
-            // review I-3 known hole：pending MainActor Task 理论上可能未 drain，
-            // 尾部 10-30ms 静音丢失概率极低（Phase 1 改同步 buffer 或 Task.yield）
+            // review I-3 known hole 延续：CoreAudio 线程帧经 Task hop MainActor，松手瞬间
+            // pending Task 未 drain 时尾帧可能晚于 pttUp 入控制器 buffer（概率极低，Phase 1 改同步转发）
             if let coordinator = activeAgentVoiceSession, !shouldCancelRecording {
                 activeAgentVoiceSession = nil  // 清除会话快照
-                let buffer = agentVoiceAudioBuffer
-                agentVoiceAudioBuffer = []
                 recorder.onAudioChunk = nil
+                coordinator.onPartialUpdate = nil
+                partialTranscript = ""
                 Task { @MainActor in
-                    await coordinator.run(audioBuffer: buffer)
-                    recordingState = .idle
-                    await recorderUIManager?.dismissRecorderPanel()
+                    await coordinator.endSession()   // 控制器 pttUp：drain→fallback→polish→预览/直出
+                    if coordinator.previewSession != nil {
+                        // V1 预览：面板不 dismiss，进入预览态（Task 8 渲染）
+                        recordingState = .previewing
+                    } else {
+                        recordingState = .idle
+                        await recorderUIManager?.dismissRecorderPanel()
+                    }
                 }
                 return  // 不走原链
             }
             // AgentVoice 会话清理（取消时或 coordinator 不存在）
-            if activeAgentVoiceSession != nil {
+            if let coordinator = activeAgentVoiceSession {
+                coordinator.onPartialUpdate = nil
+                await coordinator.cancelSession()   // 控制器 cancel：settle（用户显式放弃，D16 结算边界）
                 activeAgentVoiceSession = nil
-                agentVoiceAudioBuffer = []
                 recorder.onAudioChunk = nil
+                partialTranscript = ""
             }
 
             if let recordedFile {
@@ -274,7 +281,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     Task { @MainActor [self] in
                         // codex P1#7 fold：AgentVoice 不依赖 VoiceInk 原链模型配置，
                         // 必须在 passesRecordingPreflight() 之前分叉（否则无 VoiceInk 模型时无法录音）
-                        if self.agentVoiceEnabled, self.agentVoiceCoordinator != nil {
+                        if self.agentVoiceEnabled, let coordinator = self.agentVoiceCoordinator {
                             // AgentVoice 录音路径（跳过原链 preflight + model resolution）
                             let startID = UUID()
                             self.activeRecordingStartID = startID
@@ -284,16 +291,28 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             self.recordingState = .starting
 
                             // codex P1#8 fold：录音开始时快照 coordinator（防中途开关切换）
-                            self.activeAgentVoiceSession = self.agentVoiceCoordinator
-                            self.agentVoiceAudioBuffer = []
+                            self.activeAgentVoiceSession = coordinator
+
+                            // partial → fork LiveTranscriptView UI 通道（D1 复用）；
+                            // startID 校验 = 第二道闸（P0-1 控制器 token 匹配为第一道）
+                            coordinator.onPartialUpdate = { [weak self] full in
+                                guard let self,
+                                      self.activeRecordingStartID == startID,
+                                      self.recordingState == .recording
+                                else { return }
+                                self.partialTranscript = full
+                            }
+
+                            await coordinator.beginSession()   // 控制器 pttDown：选路+流式启动+token
 
                             // codex P1#6 fold：onAudioChunk 必须在 startRecording 之前安装
                             // （CoreAudio 启动后立即产帧，装晚了丢头部音频）
                             // outside voice #5 fold：onAudioChunk 从 CoreAudio 线程调用，
-                            // 必须 hop 到 MainActor 再改 buffer（防数据竞争）
+                            // 必须 hop 到 MainActor 再入控制器（防数据竞争）
+                            // A6 fold：每帧经 feedAudio→enqueueAudio 直喂，engine 侧不缓冲/批处理/丢帧
                             self.recorder.onAudioChunk = { [weak self] data in
                                 Task { @MainActor in
-                                    self?.agentVoiceAudioBuffer.append(data)
+                                    self?.agentVoiceCoordinator?.feedAudio(data)
                                 }
                             }
                             self.statusAdapter?.update(.listening)
@@ -308,8 +327,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 self.recordingState = .idle
                                 self.activeRecordingStartID = nil
                                 self.activeAgentVoiceSession = nil
-                                self.agentVoiceAudioBuffer = []
                                 self.recorder.onAudioChunk = nil
+                                coordinator.onPartialUpdate = nil
+                                // beginSession 可能已启动流式会话：结算防控制器滞留 recording* 相
+                                await coordinator.cancelSession()
                             }
                         } else {
                         // 原链（既有 preflight + transcriptionConfiguration + startRecording，不动）
@@ -482,6 +503,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - AgentVoice 预览收尾
+
+    /// V1：预览关闭后收尾（Task 8 的确认/丢弃按钮回调之后调用）
+    func finishPreview() async {
+        recordingState = .idle
+        await recorderUIManager?.dismissRecorderPanel()
     }
 
     private func requestRecordPermission(response: @escaping (Bool) -> Void) {
@@ -747,8 +776,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activePipelineUseCase = .newSession
         clearActiveRecordingContext()
         // review I-1 fold：全量 reset 也清理 AgentVoice 会话状态
+        // （A4 fold：不引入 cancelSession——reset 为启动期清理语义，控制器会话生命周期非其职责）
         activeAgentVoiceSession = nil
-        agentVoiceAudioBuffer = []
         recorder.onAudioChunk = nil
         await recorder.stopRecording()
         recordedFile = nil
@@ -779,8 +808,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         recordingState = .idle
         // review I-1 fold：cancel 时清理 AgentVoice 会话状态，
         // 防残留 activeAgentVoiceSession 劫持后续非 AgentVoice 录音
+        // V1 流式接线：直接 cancel 入口（快捷键/Esc/通知）不经 toggleRecord 停止分支，
+        // 须在此结算控制器会话（用户显式放弃，D16 结算边界）——否则控制器滞留 recording* 相，
+        // 转移表无 recording*+pttDown 边，后续 PTT 全部被拒（接线完备性必要支撑，报告声明）
+        if let coordinator = activeAgentVoiceSession {
+            coordinator.onPartialUpdate = nil
+            await coordinator.cancelSession()
+        }
         activeAgentVoiceSession = nil
-        agentVoiceAudioBuffer = []
         recorder.onAudioChunk = nil
         await cleanupResources()
     }
