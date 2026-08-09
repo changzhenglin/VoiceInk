@@ -29,6 +29,11 @@ public enum AttentionPartitioner {
             return .needsAction
         case .failed, .completed:
             return .suggestReview
+        case .working:
+            // v4 扩容（spec §6 I5）：working 是绿灯事实（G9 ◌绿），非信任崩塌、非待处理；
+            // 三区模型无「正常进行」分区，与 completed 同归建议查看档——
+            // 分区面正式扩容归投影层 Task 5（此处为编译全函数所需的最小归属）
+            return .suggestReview
         case .unknown:
             return .needsCheck   // 完备性兜底（上方已拦截，不可达）
         }

@@ -19,11 +19,20 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertEqual(e.kind, .waitingUser)
     }
 
-    func testPreToolUsePermissionMapsToWaitingPermission() throws {
+    func testPreToolUseI5SemanticsToolInFlightNotWaitingPermission() throws {
+        // I5（spec §6 L142）：permission_requested 产出分支删除——
+        // 携带 permission_requested 的普通 PreToolUse 也只产 tool_in_flight lease 起点，
+        // waiting_permission enum 保留但无 CC 产出路径
         let e = try adapter.parse(hookEventName: "PreToolUse",
             payload: ["session_id": sid, "permission_requested": true],
             observedAt: now, claudeVersion: "2.1.220")
-        XCTAssertEqual(e.kind, .waitingPermission)
+        XCTAssertEqual(e.kind, .toolInFlight)
+        XCTAssertNotEqual(e.kind, .waitingPermission)
+        // I6：AskUserQuestion 显式打标 → waiting_user（subreason=等选择）
+        let q = try adapter.parse(hookEventName: "PreToolUse",
+            payload: ["session_id": sid, "tool_name": "AskUserQuestion"],
+            observedAt: now, claudeVersion: "2.1.220")
+        XCTAssertEqual(q.kind, .waitingUser)
     }
 
     func testStopFailureMapsToFailed() throws {

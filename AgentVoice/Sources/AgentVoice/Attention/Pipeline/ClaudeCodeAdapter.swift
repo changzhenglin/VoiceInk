@@ -28,10 +28,16 @@ public struct ClaudeCodeAdapter: Sendable {
         case "Notification":  kind = .waitingUser        // 保守归类（B-OBS-3），不硬猜子类型
         case "StopFailure":   kind = .failed             // 可恢复，非终态逆转
         case "PreToolUse":
-            guard payload["permission_requested"] as? Bool == true else {
-                throw AdapterError.unrecognizedEvent("PreToolUse without permission_requested")
+            // I5（spec §6 L142）：删除 permission_requested 产出分支——CC 面
+            // waiting_permission 无产出路径（enum 保留；权限现实入口经
+            // Notification→waiting_user·等权限，spec §6 Task 0 第4点）。
+            // I6（spec §6 L143）：AskUserQuestion 显式打标 → waiting_user（subreason=等选择）；
+            // 普通 PreToolUse = tool_in_flight lease 起点（只建 lease 不产 permission）。
+            if payload["tool_name"] as? String == "AskUserQuestion" {
+                kind = .waitingUser
+            } else {
+                kind = .toolInFlight
             }
-            kind = .waitingPermission
         case "SessionStart":  kind = .connectionFact     // C10：显式连接事实
         case "SessionEnd":    kind = .sessionEnd         // C10/C1：唯一触发 lifecycle=closed
         default: throw AdapterError.unrecognizedEvent(hookEventName)
@@ -95,9 +101,32 @@ extension ClaudeCodeAdapter {
         case "Stop": return .stop
         case "Notification": return .notification
         case "StopFailure": return .stopFailure
-        case "PreToolUse":
-            return payload["permission_requested"] as? Bool == true ? .preToolUse : nil
+        case "PreToolUse": return .preToolUse   // I5：消费不再以 permission_requested 为条件
         case "SessionStart": return .sessionStart
+        case "SessionEnd": return .sessionEnd
+        default: return nil
+        }
+    }
+
+    /// I5/I6 settings matcher 层分类 seam（测试面）：只消费字段名清单 + 打标值提示，
+    /// 不读 prompt/tool input/output 等内容字段（privacy §8.8）。语义与 parse 的
+    /// 消费面同构（投递脚本显式打标 → 本 seam 消费打标，spec §6 L143）。
+    /// 未识别事件名 → nil（fail-closed，不猜测）。
+    public func classifyForTesting(hookEventName: String,
+                                   payloadFieldNames: [String],
+                                   valueHints: [String: Any]) -> EventKind? {
+        switch hookEventName {
+        case "PreToolUse":
+            // I6：AskUserQuestion 打标 → waiting_user（subreason=等选择，intervention_key 归 policy）
+            if let toolName = valueHints["tool_name"] as? String, toolName == "AskUserQuestion" {
+                return .waitingUser
+            }
+            // I5：普通 PreToolUse → tool_in_flight lease；permission_requested 不再消费
+            return .toolInFlight
+        case "Stop": return .completed
+        case "StopFailure": return .failed
+        case "Notification": return .waitingUser   // 泛型保守归类（四子类归约见 NotificationSubtype.reducedKind）
+        case "SessionStart": return .connectionFact
         case "SessionEnd": return .sessionEnd
         default: return nil
         }

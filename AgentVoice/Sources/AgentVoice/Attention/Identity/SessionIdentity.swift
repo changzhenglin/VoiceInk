@@ -53,6 +53,13 @@ public struct SessionIdentity: Equatable, Sendable {
     /// 与本键粒度不同——不得把 sessionKey 传给 SessionMutex.release(sessionId:)。
     public var sessionKey: String { "\(adapterType)|\(nativeSessionId)" }
 
+    /// I2（spec §6 L144）：测试隔离键。deliver env `VOICECODING_TEST=1` 时 testMode=true，
+    /// session_key 前缀 `test:`——测试残留 items 1h 自清的判据（计数不撒谎）；
+    /// testMode=false 恒返回生产 sessionKey（形状零变化，生产会话不受影响）。
+    public func sessionKey(testMode: Bool) -> String {
+        testMode ? "test:\(sessionKey)" : sessionKey
+    }
+
     /// P0-3 防倒灌：仅接受与当前 generation 相等的事件。
     /// 旧 generation → 拒绝；「较新」generation 同样拒绝——generation 只能经
     /// GenerationCoordinator 的 reconnect 抬升，事件不得隐式抬升身份（fail-closed）。

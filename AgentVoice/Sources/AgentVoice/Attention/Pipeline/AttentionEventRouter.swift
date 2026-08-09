@@ -192,6 +192,7 @@ public final class AttentionEventRouter: @unchecked Sendable {
         case .waitingPermission: return .waitingPermission
         case .failed: return .failed
         case .completed: return .completed
+        case .working: return .connectionFact   // v4 I5：working 无专属注意力 kind，低优先证据档（rank -1）
         case .unknown: return .connectionFact
         }
     }

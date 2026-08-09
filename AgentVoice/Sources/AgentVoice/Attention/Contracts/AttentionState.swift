@@ -5,7 +5,11 @@ public enum Lifecycle: String, Codable, Sendable { case discovered, managed, clo
 public enum ActivityFact: String, Codable, Sendable {
     case unknown, waitingUser = "waiting_user", waitingPermission = "waiting_permission"
     case failed, completed
-    // A-only 硬边界：working/idle/waiting_external/legitimate_wait 不在枚举内——不可生成
+    /// v4 扩容（灯条 spec §6 I5 状态词汇）：相关 UserPromptSubmit 回复信号 /
+    /// 选择题 Post 解除产 working（●黄/▲红 → ◌绿 的事实基础，附录 A G9）。
+    /// A-only 边界相应放宽：working 仅由真实 hook 活动证据产生——
+    /// P0-4 不变（PID/TTY liveness 仍不得制造 working）。
+    case working
 }
 public enum FreshnessState: String, Codable, Sendable { case fresh, aging, stale }
 public enum ConnectionState: String, Codable, Sendable { case connected, degraded, disconnected }
@@ -36,8 +40,10 @@ public struct AttentionStateSnapshot: Codable, Sendable, Equatable {
 }
 
 /// C-POLICY attention_item 生命周期（Phase 1 spec §6）
+/// v4 扩容（灯条 spec §6 L170）：superseded = sessionEnd/新题 取代未决项——
+/// 面板保留历史，区别于 resolved（事实消失/业务结果明确，§8.6）
 public enum AttentionItemStatus: String, Codable, Sendable {
-    case new, seen, acting, resolved, snoozed, ignored
+    case new, seen, acting, resolved, snoozed, ignored, superseded
 }
 public struct AttentionItem: Codable, Sendable, Equatable {
     public let attentionItemId: String      // 一个事实变化最多一个稳定 ID
@@ -48,11 +54,17 @@ public struct AttentionItem: Codable, Sendable, Equatable {
     public var updatedAt: Date
     public var evidenceRefs: [String]
     public var policyVersion: Int
+    /// I6 介入关联键（tool_use_id/question_id；spec §6 转移矩阵：选择题/失败介入
+    /// 专用关联键，与普通事件的 delivery_id/session_key 互不冒充）。
+    /// nil = 缺关键关联字段 → 只读，禁止按 session+时间猜题（spec §6 Task 0 三档纪律）。
+    /// 内存态字段：跨重启持久化归后续 schema 迁移任务（known hole，见 Task 9 report）。
+    public var interventionKey: String?
 
     public init(attentionItemId: String, sessionKey: String, kind: EventKind, createdAt: Date) {
         self.attentionItemId = attentionItemId; self.sessionKey = sessionKey
         self.kind = kind; self.status = .new
         self.createdAt = createdAt; self.updatedAt = createdAt
         self.evidenceRefs = []; self.policyVersion = SchemaVersions.policy
+        self.interventionKey = nil
     }
 }

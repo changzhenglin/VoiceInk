@@ -380,6 +380,79 @@ extension AttentionEventStore {
     }
 }
 
+// MARK: - Task 9 I2: 测试隔离 seam（test: 前缀 session 1h 自清；spec §6 L144）
+
+extension AttentionEventStore {
+    /// I2 test seam 错误（append 失败不静默）
+    public enum TestSeamError: Error, Equatable {
+        case appendFailed(sessionKey: String)
+    }
+
+    /// `test:` 前缀判定（I2）：session_key（adapter_type|native_session_id 重构键）
+    /// 以 `test:` 起首即测试会话。生产 adapterType（claude_code/generic_terminal…）
+    /// 不含该前缀——生产会话零误判（负向保证）。
+    static let testSessionPrefix = "test:"
+
+    /// 测试辅助：内存库工厂（I2 隔离测试用；等价 path=nil 构造）
+    public static func forTesting() throws -> AttentionEventStore {
+        try AttentionEventStore(path: nil)
+    }
+
+    /// 测试辅助：按 session 键注入最小事件行（kind=connection_fact，合成 event_id）。
+    /// sessionKey 按首个 `|` 拆为 adapter_type / native_session_id（test: 前缀归
+    /// adapter_type 段，重构键 = adapter_type||'|'||native_session_id 保持一致）。
+    /// append 失败 → throw（不静默）。
+    public func ingestForTesting(sessionKey: String, observedAt: Date) throws {
+        let parts = sessionKey.split(separator: "|", maxSplits: 1,
+                                     omittingEmptySubsequences: false)
+        let event = NormalizedAgentEvent(
+            eventId: "itest-\(sessionKey)-\(observedAt.timeIntervalSince1970)",
+            adapterType: String(parts[0]),
+            nativeSessionId: parts.count > 1 ? String(parts[1]) : "",
+            sourceSequence: nil, occurredAt: nil, observedAt: observedAt,
+            kind: .connectionFact, payloadVersion: SchemaVersions.eventSchema,
+            sanitizedPayloadRef: nil, sourceLevel: "synthetic_fixture",
+            sourceClaudeVersion: nil)
+        guard append(event) != .error else {
+            throw TestSeamError.appendFailed(sessionKey: sessionKey)
+        }
+    }
+
+    /// 测试辅助：session 键是否仍有事件行（重构键精确匹配）
+    public func hasSessionForTesting(_ sessionKey: String) -> Bool {
+        do {
+            let count = try dbQueue.read { db in
+                try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM attention_events
+                    WHERE adapter_type || '|' || native_session_id = ?
+                    """, arguments: [sessionKey]) ?? 0
+            }
+            return count > 0
+        } catch {
+            return false   // C17：读路径禁 try!，失败降级 false
+        }
+    }
+
+    /// I2：test: 前缀事件中 observed_at 早于 cutoff 的行自清（items 1h 自清的存储面）。
+    /// 只触 `test:` 前缀会话——生产会话（即使更旧）零误删零污染。
+    /// 返回删除行数；写失败降级 0（C17 同式）。
+    func purgeTestPrefixedEvents(before cutoff: Date) -> Int {
+        do {
+            return try dbQueue.write { db in
+                // glob 大小写敏感（LIKE 对 ASCII 默认不敏感）——前缀判定精确
+                try db.execute(sql: """
+                    DELETE FROM attention_events
+                    WHERE (adapter_type || '|' || native_session_id) GLOB 'test:*'
+                      AND observed_at < ?
+                    """, arguments: [cutoff])
+                return db.changesCount
+            }
+        } catch {
+            return 0   // C17：写失败降级不 crash
+        }
+    }
+}
+
 // MARK: - Task 2: generation 权威与事务内 CAS（P0-3 防倒灌）
 
 extension AttentionEventStore {

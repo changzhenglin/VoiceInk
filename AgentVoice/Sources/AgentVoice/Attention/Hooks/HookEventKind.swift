@@ -113,4 +113,19 @@ public enum NotificationSubtype: String, CaseIterable, Codable, Sendable {
         case .agentCompleted: return .notificationAgentCompleted
         }
     }
+
+    /// I6 归约映射（spec §6 转移矩阵 L164-167 逐行）：
+    /// - permission_prompt → waiting_user（subreason=等权限；CC 面 waiting_permission
+    ///   无产出路径——I5 删除 permission_requested 分支，spec 附录 A G7）；
+    /// - idle_prompt → connection_fact（不产 waiting/terminal；仅 liveness/idle 事实，不改灯态）；
+    /// - agent_needs_input → waiting_user（subreason=等输入）；
+    /// - agent_completed → completed（与 Stop 同语义，不弹浮窗）。
+    public var reducedKind: EventKind {
+        switch self {
+        case .permissionPrompt: return .waitingUser
+        case .idlePrompt: return .connectionFact
+        case .agentNeedsInput: return .waitingUser
+        case .agentCompleted: return .completed
+        }
+    }
 }

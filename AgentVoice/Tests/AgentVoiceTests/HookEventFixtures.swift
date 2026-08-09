@@ -52,7 +52,7 @@ enum HookEventFixtures {
         case .preToolUse:
             var p = base("PreToolUse")
             p["tool_name"] = "Bash"                                   // 官方 GA 面字段
-            p["permission_requested"] = true                          // M1 合同字段（adapter 消费条件）
+            p["permission_requested"] = true                          // M1 遗留形状字段：I5（Task 9）删除 permission_requested 产出分支后 adapter 不再消费，fixture 保留形状连续性
             return p
         case .sessionStart:
             var p = base("SessionStart")

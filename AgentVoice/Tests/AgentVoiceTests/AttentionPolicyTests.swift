@@ -13,6 +13,13 @@ final class AttentionPolicyTests: XCTestCase {
             sourceLevel: "experimental_fragile", sourceClaudeVersion: "2.1.220")
     }
 
+    func testToolInFlightNeverCreatesAttentionItem() {
+        // I5（spec §6 L160）：tool_in_flight 是 lease overlay，不是注意力事实——
+        // policy 不建 item（面板/通知只喂白名单可靠来源，§8.6）
+        let r = policy.process(event: ev(.toolInFlight, id: "e1"), items: [])
+        XCTAssertEqual(r, .none)
+    }
+
     func testOneFactChangeCreatesAtMostOneItem() {
         let r1 = policy.process(event: ev(.waitingUser, id: "e1"), items: [])
         guard case .created(let item) = r1 else { return XCTFail() }
