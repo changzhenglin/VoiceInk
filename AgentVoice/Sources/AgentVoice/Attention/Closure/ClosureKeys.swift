@@ -223,8 +223,7 @@ public final class ClosureKeyStore: @unchecked Sendable {
                 INSERT INTO closure_receipts
                 (channel, attention_item_id, presentation_generation, recorded_at)
                 SELECT ?, ?, ?, ?
-                WHERE ? >= (SELECT COALESCE(MAX(generation), \(Self.baselineGeneration))
-                            FROM closure_current_generation)
+                WHERE \(Self.generationGateClause)
                 ON CONFLICT(channel, attention_item_id, presentation_generation) DO NOTHING
                 """, arguments: [id.channel, id.attentionItemId, id.presentationGeneration,
                                  Date(), id.presentationGeneration])
@@ -247,8 +246,7 @@ public final class ClosureKeyStore: @unchecked Sendable {
                 INSERT INTO closure_user_actions
                 (user_action_id, connection_generation, recorded_at)
                 SELECT ?, ?, ?
-                WHERE ? >= (SELECT COALESCE(MAX(generation), \(Self.baselineGeneration))
-                            FROM closure_current_generation)
+                WHERE \(Self.generationGateClause)
                 ON CONFLICT(user_action_id) DO NOTHING
                 """, arguments: [id.rawValue, connectionGeneration, Date(), connectionGeneration])
             return db.changesCount == 1
@@ -268,8 +266,7 @@ public final class ClosureKeyStore: @unchecked Sendable {
                 INSERT INTO closure_agent_commands
                 (agent_command_id, connection_generation, recorded_at)
                 SELECT ?, ?, ?
-                WHERE ? >= (SELECT COALESCE(MAX(generation), \(Self.baselineGeneration))
-                            FROM closure_current_generation)
+                WHERE \(Self.generationGateClause)
                 ON CONFLICT(agent_command_id) DO NOTHING
                 """, arguments: [id.rawValue, connectionGeneration, Date(), connectionGeneration])
             return db.changesCount == 1
@@ -302,6 +299,17 @@ public final class ClosureKeyStore: @unchecked Sendable {
     }
 
     // MARK: - 内部
+
+    /// 全局 generation 门 SQL 片段（receipt/user_action/agent_command 三写路径共用；
+    /// carryover M-1 收敛——原三处内联子查询的唯一来源，语义零变更）。
+    /// `?` 绑定调用方待写 generation；权威基线同语句内读 closure_current_generation
+    /// （无权威行 → baselineGeneration），门判定与幂等冲突在 SQLite 单语句内原子完成。
+    /// per-session 扩展点：per-session 门控属 Task 8A 接线（SessionIdentity.sessionKey ×
+    /// per-session 权威表），届时扩展本片段即可，三消费点不变；本任务不发明该语义。
+    private static var generationGateClause: String {
+        "? >= (SELECT COALESCE(MAX(generation), \(baselineGeneration)) " +
+        "FROM closure_current_generation)"
+    }
 
     /// 键合法性：空/纯空白键为非法事实（fail-closed 走 error 路径，不同于幂等 false）
     private static func isValidKey(_ raw: String) -> Bool {
