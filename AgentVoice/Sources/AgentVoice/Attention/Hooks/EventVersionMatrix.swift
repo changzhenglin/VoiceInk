@@ -41,7 +41,7 @@ public struct EventMatrixRow: Codable, Equatable, Sendable {
     /// 归约状态（EventKind rawValue；未消费为 "not_consumed"）
     public var reducedState: String
     public var semanticLoss: String?
-    /// 依据分级（固定实测 / GA 面 / 调研 / 探针）——「不臆造」纪律的落点
+    /// 依据分级（固定实测 / GA 面 / 调研 / 探针 / 官方文档复核）——「不臆造」纪律的落点
     public var sourceNote: String
 
     public init(event: HookEventKind, official: EventVersionSupport, runtimeVersion: String,
@@ -134,9 +134,11 @@ public enum EventVersionMatrix {
         }
         let fixedM1 = "固定依据：生产 settings.json 注册 + M1 shadow runs 观测（本仓 evidence/voice-coding/m1/shadow-runs export 有该事件实测行；版本孔：source_claude_version 为默认固定值 \(m1BaselineVersion)，非运行时捕获，known hole）+ sealed A/B 同版本引用（sealed 证据在 AgentOS 仓）"
         let preToolUseBaselineNote = "基线档位裁决（I-1 修复）：本仓 shadow runs export 无 PreToolUse 观察行（M1 A-only 设计：非 permission_requested 的 PreToolUse 不入 store）→ 同版本 sealed 观察行不满足 observed 纪律，降 unverified，基线不填；wire 存在性由 verdict.md 2326 条 by_design 计数支撑（by_design 定义见 shadow-protocol.md）；版本孔同在（source_claude_version 默认固定）"
-        let gaNote = "固定依据：官方 hooks GA 面（本轮官方文档网络受限未复核，如与探针冲突以探针为准）"
-        let surveyNote = "来源：spec §8.10 调研；官方文档本轮不可达（网络受限），未官方复核；以 Step 7 探针实测为准"
-        let subtypeNote = surveyNote + "；Step 7 探针（2.1.226）实测 wire 字段名为 notification_type（纠正调研推测的 subtype）；四值值域未实测（field-name-only 只确认字段名）"
+        let gaNote = "固定依据：官方 hooks GA 面；官方文档已复核（引证 official-docs-2026-08-09：官方有对应独立事件节与输入 schema），原措辞「本轮官方文档网络受限未复核」因官方文档可达而失效；官方文档复核只确认 official 列，observed 列仍只有真探针实测可填（如与探针冲突以探针实测为准）"
+        let surveyNote = "来源：spec §8.10 调研；官方文档已复核（引证 official-docs-2026-08-09：官方有对应独立事件节与输入 schema），official 列由 unverified 升级为 documentedNow；observed 列不受官方文档复核影响，仍只有真探针受控实测可填（部分事件有 incidental field-name-only 观察，见 field-review.json，不构成 observed 依据；ADJ-4）"
+        let subtypeNote = surveyNote + "；Step 7 探针（2.1.226）实测 wire 字段名为 notification_type（纠正调研推测的 subtype），该命名获官方文档证实（Notification 节记载 notification_type 指示触发的类型）；四 matcher 值官方文档记载为 permission_prompt/idle_prompt/agent_needs_input/agent_completed（agent_needs_input/agent_completed 要求 v2.1.198+），值域为 official 列依据（官方文档），非实测值域（受控探针 field-name-only）；官方 Notification 共 8 型，v4 仅白名单四子类=spec §8.10 选择"
+        let httpHookHandlerNote = "来源：spec §8.10 调研；官方文档已复核（引证 official-docs-2026-08-09：官方有 HTTP hooks 节，type: \"http\" 将事件 JSON 输入作为 HTTP POST 请求体发送到 URL，经响应体以同 JSON 输出格式回传决定），official 列由 unverified 升级为 documentedNow；机制面（非独立 wire 事件名）；observed 列不受官方文档复核影响，仍只有真探针受控实测可填"
+        let asyncCommandHookNote = "来源：spec §8.10 调研；官方文档已复核（引证 official-docs-2026-08-09：官方有 async hooks 节，\"async\": true 使命令钩后台运行不阻塞 Claude，仅 type: \"command\" 钩可用），official 列由 unverified 升级为 documentedNow；机制面（非独立 wire 事件名）；observed 列不受官方文档复核影响，仍只有真探针受控实测可填"
 
         return [
             // MARK: M1 生产消费面
@@ -176,54 +178,54 @@ public enum EventVersionMatrix {
                            sourceNote: gaNote),
 
             // MARK: §8.10 v4 补齐事件面——Notification 四子类
-            EventMatrixRow(event: .notificationPermissionPrompt, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .notificationPermissionPrompt, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.notificationPermissionPrompt),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "M1 以泛型 Notification 消费替代；subtype 是否进 waiting 白名单归 V2 能力门",
                            sourceNote: subtypeNote),
-            EventMatrixRow(event: .notificationIdlePrompt, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .notificationIdlePrompt, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.notificationIdlePrompt),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "同上：泛型 Notification 替代消费",
                            sourceNote: subtypeNote),
-            EventMatrixRow(event: .notificationAgentNeedsInput, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .notificationAgentNeedsInput, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.notificationAgentNeedsInput),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "同上：泛型 Notification 替代消费",
                            sourceNote: subtypeNote),
-            EventMatrixRow(event: .notificationAgentCompleted, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .notificationAgentCompleted, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.notificationAgentCompleted),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "同上：泛型 Notification 替代消费",
                            sourceNote: subtypeNote),
 
             // MARK: §8.10 v4 补齐事件面——其余事件
-            EventMatrixRow(event: .permissionRequest, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .permissionRequest, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.permissionRequest),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；V2 权限浮窗须过 spec §6 独立 PoC + 能力矩阵",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .postToolUseFailure, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .postToolUseFailure, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.postToolUseFailure),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；失败分级暂不自动（spec §11），留失败样本与权威字段证据",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .postToolBatch, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .postToolBatch, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.postToolBatch),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；重复触发无自动 dedupe，消费端必须 event_id 幂等（§8.10）",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .taskCreated, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .taskCreated, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.taskCreated),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；subagent/task 投影归后续门",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .taskCompleted, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .taskCompleted, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.taskCompleted),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；subagent/task 投影归后续门",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .subagentStart, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .subagentStart, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.subagentStart),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；subagent 投影归后续门",
@@ -232,53 +234,53 @@ public enum EventVersionMatrix {
                            observed: obs(.subagentStop), adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；subagent 投影归后续门",
                            sourceNote: gaNote),
-            EventMatrixRow(event: .teammateIdle, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .teammateIdle, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.teammateIdle),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；agent team 表面归后续门",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .worktreeCreate, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .worktreeCreate, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.worktreeCreate),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .worktreeRemove, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .worktreeRemove, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.worktreeRemove),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .configChange, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .configChange, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.configChange),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .cwdChanged, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .cwdChanged, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.cwdChanged),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费；cwd 变化现有链路经 hook payload cwd 字段间接覆盖（C20 label+hash）",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .directoryAdded, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .directoryAdded, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.directoryAdded),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费",
                            sourceNote: surveyNote),
-            EventMatrixRow(event: .fileChanged, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .fileChanged, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.fileChanged),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "未消费",
                            sourceNote: surveyNote),
 
             // MARK: 机制面（投递通道变体）
-            EventMatrixRow(event: .httpHookHandler, official: .unverified(version: runtimeVersion),
+            EventMatrixRow(event: .httpHookHandler, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.httpHookHandler),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "机制面：HTTP hook handler，形状同所承载事件、传输层不同；重复触发无自动 dedupe，消费端 event_id 幂等（§8.10）",
-                           sourceNote: surveyNote + "；机制面（非独立 wire 事件名）"),
-            EventMatrixRow(event: .asyncCommandHook, official: .unverified(version: runtimeVersion),
+                           sourceNote: httpHookHandlerNote),
+            EventMatrixRow(event: .asyncCommandHook, official: .documentedNow,
                            runtimeVersion: runtimeVersion, observed: obs(.asyncCommandHook),
                            adapterConsumed: false, reducedState: "not_consumed",
                            semanticLoss: "机制面：async command hook，形状同所承载事件；重复触发无自动 dedupe，消费端 event_id 幂等（§8.10）",
-                           sourceNote: surveyNote + "；机制面（非独立 wire 事件名）"),
+                           sourceNote: asyncCommandHookNote),
         ]
     }
 

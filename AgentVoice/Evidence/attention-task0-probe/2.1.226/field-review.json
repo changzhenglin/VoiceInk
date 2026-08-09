@@ -1,11 +1,19 @@
 {
   "artifact": "field-review",
-  "task": "Task 4 Step 1 —— 待审字段清单（由 Task 0 真探针证据驱动）",
+  "task": "Task 4 Step 1 —— 待审字段清单（由 Task 0 真探针证据驱动）；Task 4A 官方文档证据对账增补登记（official-docs-2026-08-09，零新增授权）",
   "generated_at": "2026-08-09",
   "runtime_version_observed": "2.1.226",
   "evidence_basis": {
     "field_lists": "AgentVoice/Evidence/attention-task0-probe/2.1.226/field-lists.json",
-    "manifest": "AgentVoice/Evidence/attention-task0-probe/2.1.226/manifest.json"
+    "manifest": "AgentVoice/Evidence/attention-task0-probe/2.1.226/manifest.json",
+    "official_docs": {
+      "path": "AgentVoice/Evidence/attention-task0-probe/official-docs/claude-code-hooks-reference-2026-08-09.md",
+      "sha256": "d2fd4b4abba4a0ff89fa377d46acaf3428cfb74ee64057dfa72c39d1031db22c",
+      "source_url": "https://docs.claude.com/en/docs/claude-code/hooks",
+      "fetched_at": "2026-08-09",
+      "fetch_channel": "系统代理 17890",
+      "extraction_tool": "defuddle"
+    }
   },
   "review_policy": {
     "observed_discipline": "未受控验证（unverified / incidental / spec-derived）→ 保持 read-only/unreviewed 档；question text/options/answers、StopFailure error、permission tool/parameter summary 不得预先假定可用",
@@ -100,13 +108,13 @@
       "notes": "值域 startup/resume 类状态标识"
     },
     {
-      "field": "error", "structure": "string（StopFailure 推测形）",
+      "field": "error", "structure": "string（StopFailure；官方文档证实字段存在，值形状未受控验证）",
       "observed_in": [],
-      "directness": "unverified（StopFailure 2.1.226 未触发，manifest 记录 unverified）",
+      "directness": "unverified（StopFailure 2.1.226 未触发，manifest 记录 unverified；官方文档证实字段存在，引证 official-docs-2026-08-09）",
       "version_applicability": "无观察版本",
       "review_status": "reviewed-granted-redaction-only（不得预先假定可用）",
       "grants": ["attentionIngest: ephemeral+render, redaction=redact；无 persist/export/telemetry/retain"],
-      "notes": "错误文本类字段默认 redaction/read-only（plan Step 6），不依赖字段名白名单；字段形状证据缺失——受控复现 StopFailure 前仅作 redaction 兜底档，不构成可用性放行"
+      "notes": "错误文本类字段默认 redaction/read-only（plan Step 6），不依赖字段名白名单；官方文档（official-docs-2026-08-09）证实 StopFailure 接收 error（标识错误类型、用于 matcher 过滤）与可选 error_details，字段存在性获官方确认但值形状仍无受控证据——受控复现 StopFailure 前仅作 redaction 兜底档，不构成可用性放行"
     },
     {
       "field": "model", "structure": "string",
@@ -227,6 +235,102 @@
       "directness": "controlled", "version_applicability": "2.1.226-only",
       "review_status": "prohibited", "grants": [],
       "notes": "完整 tool input/output 聚合——禁止"
+    },
+    {
+      "field": "agent_id", "structure": "string",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档（official-docs-2026-08-09）记载为 subagent context 公共输入字段（hook 在 subagent 调用内触发时出现）及 SubagentStart/SubagentStop 输入字段；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "agent_type", "structure": "string",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载为公共输入字段（--agent 或 subagent 内出现；subagent 类型优先）及 SubagentStart/SubagentStop matcher 过滤面（agent 名，如 Explore）；agent 名值审查时仍过敏感扫描；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "permission_suggestions", "structure": "array（PermissionRequest optional）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载 PermissionRequest 可选字段，含权限对话框「always allow」选项（与 updatedPermissions 条目对象同形）；无受控探针 → read-only；未来任何放行须单独受控审查，不得预先假定可用"
+    },
+    {
+      "field": "teammate_name / team_name", "structure": "string",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载 TaskCreated/TaskCompleted 可选字段与 TeammateIdle 输入字段；team_name 官方标注 deprecated（未来版本移除）；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "worktree_path", "structure": "string（绝对路径）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载 WorktreeRemove 输入字段（待移除 worktree 的绝对路径；WorktreeCreate 返回路径亦经此传入）；路径类值——未来任何放行必须先过 redaction 审查；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "directory (DirectoryAdded)", "structure": "string（路径）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载 DirectoryAdded 输入字段（directory 与 source）；路径类值——未来任何放行必须先过 redaction 审查；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "name (WorktreeCreate slug)", "structure": "string（slug）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载 WorktreeCreate 输入字段（新 worktree 的 slug 标识，用户指定或自动生成，如 bold-oak-a3f2）；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "event (FileChanged)", "structure": "string",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档记载 FileChanged 输入字段（file_path 与 event；file_path 路径类同既有 incidental 档条目）；无受控探针 → read-only，零授权"
+    },
+    {
+      "field": "error_details", "structure": "string（StopFailure optional，错误文本形）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "官方文档（official-docs-2026-08-09）证实 StopFailure 接收 error 与可选 error_details（可用时的错误附加细节）；错误文本类——审查时按 error 条目同档 redaction-only 处理（plan Step 6）；官方文档只证实字段存在，值形状仍无受控证据，redaction 兜底档不变"
+    },
+    {
+      "field": "title (Notification)", "structure": "string（内容形）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "prohibited", "grants": [],
+      "notes": "官方文档记载 Notification 可选 title（通知标题文本，内容形，同 message 条目同档）——禁止字段，值永不 materialize"
+    },
+    {
+      "field": "session_title (SessionStart)", "structure": "string（内容形）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "prohibited", "grants": [],
+      "notes": "官方文档记载 SessionStart 可选 session_title（会话标题，经 --name 或 /rename 设置，内容形）——禁止字段，值永不 materialize"
+    },
+    {
+      "field": "agent_transcript_path", "structure": "string（transcript 路径形）",
+      "observed_in": [],
+      "directness": "official-docs-derived（无受控探针）",
+      "version_applicability": "无观察版本（官方文档依据；跨版本按 spec §8.9 fail-closed 重新探针）",
+      "review_status": "prohibited", "grants": [],
+      "notes": "官方文档记载 SubagentStop 输入字段（subagent 自身 transcript 路径，嵌套 subagents/ 目录，区别于主会话 transcript_path）——transcript 路径形同 transcript_path 条目同档：解码边界跳过（V1 前置门 ⑤：真实 transcript 不得入库）"
     }
   ],
   "not_presumed_usable": [
@@ -237,8 +341,8 @@
     },
     {
       "item": "StopFailure error",
-      "status": "unverified（事件未触发）→ 仅 redaction 兜底档",
-      "notes": "见 fields[].error；受控复现前不构成可用性放行"
+      "status": "unverified（事件未触发；官方文档证实 error/error_details 字段存在，值形状未受控验证）→ 仅 redaction 兜底档",
+      "notes": "见 fields[].error 与 fields[].error_details；官方文档（official-docs-2026-08-09）证实字段存在，受控复现前不构成可用性放行"
     },
     {
       "item": "permission tool/parameter summary",
