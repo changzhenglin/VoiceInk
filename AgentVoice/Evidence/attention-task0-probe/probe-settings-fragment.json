@@ -1,0 +1,29 @@
+{
+  "_comment": "Task 1 Step 7 探针 hook 组模板（占位符形态）。探针时以实际绝对路径替换 {{PROBE_SCRIPT}} / {{PROBE_OUTDIR}}，并把每个事件的 matcher 组 APPEND 到 ~/.claude/settings.json 的 hooks 对应事件数组；不得改动/删除生产组（基线 SHA-256 ff7836cf1dd0b41890c5113d6adbd58c7f78f841a1951c90ae0315b03b5712e2）。探针结束从备份恢复并复核 SHA。实际追加内容归档至 <version>/settings-appended.json。",
+  "_shell_safety": "command 为 /usr/bin/python3 直接调用（与 M1 deliver 脚本同一解释器路径）：stdin 直通脚本，无 shell 变量持有完整 payload，无 $(/反引号命令替换。stdout/stderr 由脚本保持空，避免 hook 输出注入会话上下文。",
+  "_probe_scope": "PreCompact/PostCompact 不在探针范围（M1 compact 护栏 systemMessage 面，非注意力事件矩阵面）；httpHookHandler/asyncCommandHook 为机制面（无独立 wire 名），本轮不做机制探针，矩阵记 unverified。",
+  "hooks": {
+    "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "StopFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "Notification": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "SessionStart": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "SessionEnd": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "UserPromptSubmit": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "PostToolBatch": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "TaskCreated": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "TaskCompleted": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "SubagentStart": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "SubagentStop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "TeammateIdle": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "WorktreeCreate": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "WorktreeRemove": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "ConfigChange": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "CwdChanged": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "DirectoryAdded": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }],
+    "FileChanged": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "/usr/bin/python3 {{PROBE_SCRIPT}} {{PROBE_OUTDIR}}" }] }]
+  }
+}

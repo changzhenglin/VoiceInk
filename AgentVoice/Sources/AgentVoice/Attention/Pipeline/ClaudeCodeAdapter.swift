@@ -82,3 +82,24 @@ public struct ClaudeCodeAdapter: Sendable {
             .joined(separator: "&")
     }
 }
+
+// MARK: - Task 0 事件矩阵桥接（扩展不重写：现有 parse 行为不回退）
+
+extension ClaudeCodeAdapter {
+    /// 当前 parse 消费面对应的 HookEventKind（与 parse 的 switch 保持一致；
+    /// StopFailure 独立于 Stop，不被归约为 Stop hook 失败——§8.10）。
+    /// 消费面之外返回 nil；供 EventVersionMatrix 的 adapterConsumed 代码事实列。
+    public static func consumedHookKind(hookEventName: String,
+                                        payload: [String: Any]) -> HookEventKind? {
+        switch hookEventName {
+        case "Stop": return .stop
+        case "Notification": return .notification
+        case "StopFailure": return .stopFailure
+        case "PreToolUse":
+            return payload["permission_requested"] as? Bool == true ? .preToolUse : nil
+        case "SessionStart": return .sessionStart
+        case "SessionEnd": return .sessionEnd
+        default: return nil
+        }
+    }
+}

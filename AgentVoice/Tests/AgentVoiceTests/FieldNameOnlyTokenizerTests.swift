@@ -152,4 +152,156 @@ final class FieldNameOnlyTokenizerTests: XCTestCase {
         XCTAssertTrue(paths.contains("中文键.ключ"))
         XCTAssertEqual(a.map(\.fieldNameHash), b.map(\.fieldNameHash), "Unicode key 哈希跨运行稳定")
     }
+
+    // MARK: - Step 2：探针 sink 安全（sentinel 零出现）
+
+    /// 探针 sink 工件（入库 evidence）；缺失即测试失败（fail-closed）
+    private func probeArtifact(_ name: String) throws -> URL {
+        let agentVoiceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // AgentVoiceTests
+            .deletingLastPathComponent()      // Tests
+            .deletingLastPathComponent()      // AgentVoice
+        let url = agentVoiceRoot
+            .appendingPathComponent("Evidence")
+            .appendingPathComponent("attention-task0-probe")
+            .appendingPathComponent(name)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                      "探针 sink 工件缺失（应入库）：\(url.path)")
+        return url
+    }
+
+    /// 以 sentinel payload 运行探针 sink；返回退出码与 stdout/stderr。
+    /// payload 只经 stdin（不进 argv/env/shell 变量）。
+    private func runProbeSink(payload: Data, outdir: URL) throws
+        -> (exit: Int32, stdout: String, stderr: String) {
+        let script = try probeArtifact("probe_hook.py")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        proc.arguments = [script.path, outdir.path]
+        for arg in proc.arguments ?? [] {
+            XCTAssertFalse(arg.contains(sentinel), "sentinel 不得进入进程参数")
+        }
+        var env = ProcessInfo.processInfo.environment
+        env["VOICECODING_TEST"] = "1"
+        proc.environment = env
+        let inPipe = Pipe(); let outPipe = Pipe(); let errPipe = Pipe()
+        proc.standardInput = inPipe
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+        try proc.run()
+        // 大 payload 时写端可能因读端提前关闭而失败——sink 已读到足够判定即可
+        try? inPipe.fileHandleForWriting.write(contentsOf: payload)
+        try? inPipe.fileHandleForWriting.close()
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return (proc.terminationStatus,
+                String(decoding: outData, as: UTF8.self),
+                String(decoding: errData, as: UTF8.self))
+    }
+
+    /// outdir 内所有文件不得含 sentinel
+    private func assertNoSentinelInTree(_ root: URL) throws {
+        guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+        else { return XCTFail("无法枚举 \(root.path)") }
+        for case let file as URL in en {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir),
+                  !isDir.boolValue else { continue }
+            let text = String(decoding: try Data(contentsOf: file), as: UTF8.self)
+            XCTAssertFalse(text.contains(sentinel), "sentinel 泄漏于 \(file.path)")
+        }
+    }
+
+    func testProbeSinkNeverLeaksSentinelValues() throws {
+        let payload: [String: Any] = [
+            "hook_event_name": "Stop",
+            "session_id": "11111111-1111-1111-1111-111111111111",
+            "secret_field": sentinel,
+            "deep": ["inner": sentinel, "items": [["k": sentinel]]],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        let outdir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("probe-sink-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outdir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outdir) }
+
+        let r = try runProbeSink(payload: data, outdir: outdir)
+        XCTAssertEqual(r.exit, 0, "sink stderr: \(r.stderr)")
+        // stdout/stderr 全输出面零 sentinel；stdout 应为空（防 hook 输出注入会话上下文）
+        XCTAssertTrue(r.stdout.isEmpty, "hook stdout 必须为空，实际：\(r.stdout)")
+        XCTAssertTrue(r.stderr.isEmpty, "hook stderr 必须为空，实际：\(r.stderr)")
+        try assertNoSentinelInTree(outdir)
+
+        // 正向对照：字段名清单/哈希已产出（元数据）
+        let jsonl = outdir.appendingPathComponent("probe-events.jsonl")
+        let text = try String(contentsOf: jsonl, encoding: .utf8)
+        XCTAssertTrue(text.contains("secret_field"))
+        XCTAssertTrue(text.contains("deep.inner"))
+        XCTAssertTrue(text.contains("deep.items[0].k"))
+        XCTAssertFalse(text.contains(sentinel))
+        XCTAssertTrue(text.contains("event_id_hash"))
+        XCTAssertTrue(text.contains("session_id_hash"))
+    }
+
+    func testProbeSinkMalformedFailClosedWithoutLeak() throws {
+        let outdir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("probe-sink-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outdir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outdir) }
+
+        let r = try runProbeSink(payload: Data("NOT-JSON \(sentinel)".utf8), outdir: outdir)
+        XCTAssertNotEqual(r.exit, 0, "畸形输入必须非零退出（fail-closed）")
+        XCTAssertFalse(r.stdout.contains(sentinel))
+        XCTAssertFalse(r.stderr.contains(sentinel))
+        try assertNoSentinelInTree(outdir)
+        let text = try String(contentsOf: outdir.appendingPathComponent("probe-events.jsonl"),
+                              encoding: .utf8)
+        XCTAssertTrue(text.contains("error_code"), "失败时只记录 error code")
+        XCTAssertFalse(text.contains(sentinel))
+    }
+
+    func testProbeSinkBodyTooLargeFailClosedWithoutLeak() throws {
+        let outdir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("probe-sink-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outdir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outdir) }
+
+        var big = Data("{\"pad\":\"".utf8)
+        big.append(Data(repeating: UInt8(ascii: "a"), count: 2 * 1024 * 1024))
+        big.append(Data(sentinel.utf8))
+        big.append(Data("\"}".utf8))
+        let r = try runProbeSink(payload: big, outdir: outdir)
+        XCTAssertEqual(r.exit, 3, ">1MiB 应以 body_too_large(3) fail-closed")
+        XCTAssertFalse(r.stdout.contains(sentinel))
+        XCTAssertFalse(r.stderr.contains(sentinel))
+        try assertNoSentinelInTree(outdir)
+        let text = try String(contentsOf: outdir.appendingPathComponent("probe-events.jsonl"),
+                              encoding: .utf8)
+        XCTAssertTrue(text.contains("body_too_large"))
+        XCTAssertFalse(text.contains(sentinel))
+    }
+
+    func testSettingsFragmentForbidsShellPayloadCapture() throws {
+        let url = try probeArtifact("probe-settings-fragment.json")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let obj = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        let hooks = try XCTUnwrap(obj?["hooks"] as? [String: Any])
+        XCTAssertFalse(hooks.isEmpty)
+        // 每个 command 都是 python3 直接调用（stdin 直通脚本，不经 shell 变量/命令替换）
+        for (event, groups) in hooks {
+            let arr = try XCTUnwrap(groups as? [[String: Any]], "\(event) 组形状异常")
+            for group in arr {
+                let inner = try XCTUnwrap(group["hooks"] as? [[String: Any]])
+                for h in inner {
+                    let cmd = try XCTUnwrap(h["command"] as? String)
+                    XCTAssertTrue(cmd.hasPrefix("/usr/bin/python3 "),
+                                  "\(event) command 必须是 python3 直接调用：\(cmd)")
+                    XCTAssertFalse(cmd.contains("$("), "\(event) command 禁止命令替换持有 payload")
+                    XCTAssertFalse(cmd.contains("`"), "\(event) command 禁止反引号替换持有 payload")
+                    XCTAssertFalse(cmd.contains(sentinel))
+                }
+            }
+        }
+    }
 }

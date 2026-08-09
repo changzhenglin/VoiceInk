@@ -1,0 +1,246 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "DirectoryAdded": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/probe_hook.py /Users/lcz/.claude/worktrees/voice-coding-attention-v4-impl/AgentVoice/Evidence/attention-task0-probe/2.1.226"
+          }
+        ]
+      }
+    ]
+  }
+}
