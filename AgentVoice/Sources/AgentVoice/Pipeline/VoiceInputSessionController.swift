@@ -49,7 +49,9 @@ public enum PhaseEvent: String, Sendable, Equatable {
 
 /// 纯函数转移表（非法转移 = nil）——包层单测全覆盖。
 /// 核心 5 态逐字照 brief 冻结表；R5b-2 补丁：(.previewing,.discarded)→.discardUndo
-/// （覆盖 brief sketch 的 .idle——丢弃进撤销窗口，超时才 settle，D23/D29）。
+/// （覆盖 brief sketch 的 .idle——丢弃进撤销窗口，超时才 settle，D23/D29）；
+/// I1 补丁（final review）：预览族四相 (.previewing/.recoveryPreview/.discardUndo/
+/// .recoverableError,.cancel)→.idle——取消族显式取消直接 settle，不进撤销窗口。
 public enum VoiceInputTransition {
     public static func next(current: AgentVoicePhase, event: PhaseEvent) -> AgentVoicePhase? {
         switch (current, event) {
@@ -68,6 +70,13 @@ public enum VoiceInputTransition {
         // 取消
         case (.recordingStreaming, .cancel):       return .idle
         case (.recordingBatch, .cancel):           return .idle
+        // I1（final review）：取消族预览相 = 显式取消，直接 settle 回 idle（不进撤销窗口）——
+        // 显式取消 ≠ 丢弃：取消族路径（Esc/menu-bar dismiss）settle 后 phase=idle，
+        // PreviewShortcutManager 作用域自然失效，不可见撤销窗快捷键无法触发不可见注入。
+        case (.previewing, .cancel):               return .idle
+        case (.recoveryPreview, .cancel):          return .idle
+        case (.discardUndo, .cancel):              return .idle
+        case (.recoverableError, .cancel):         return .idle
         // ── R5b-2 新增转移 ──
         case (.idle, .recoveryPresented):          return .recoveryPreview
         case (.recoveryPreview, .confirmed):       return .recoveryPreview   // 呈现下一条（留在本相）
@@ -127,10 +136,19 @@ public struct SessionControllerPorts {
 
 /// V1 会话控制器（D′ fold：包层状态机骨架；app 层 Coordinator 为薄壳）
 ///
-/// 并发语义：预期在 MainActor 调用（PTT/UI 事件汇集）；token 匹配兜底异步回调乱序。
-/// 回调投递：同步发出（@Sendable 闭包），MainActor hop 由 Task 6 Coordinator 在 app 层包装。
+/// 并发语义（final review C1 fix 备案）：类级 @MainActor 隔离——Swift 5 语言模式
+/// （包 swift-tools-version 5.9 / app target SWIFT_VERSION=5.0）下 nonisolated async 函数
+/// 入口 hop 全局 executor（SE-0338），Coordinator（@MainActor）`await controller.pttDown()`
+/// 后控制器 body 实际跑在全局 executor，第一个 transition→onPhaseChange→Coordinator 的
+/// MainActor.assumeIsolated 同步桥接必然 trap（SIGTRAP，首次 PTT 即崩溃）。故将「预期
+/// MainActor 调用」契约从注释升级为编译器强制。@MainActor 是隔离注解，不是 actor
+/// 并发模型——与 D′「不上 actor 并发模型」不冲突（无 mailbox 排队/无并发所有权语义，
+/// 只声明既有 MainActor 汇集事实；token 匹配仍兜底异步回调乱序）。
+/// 回调投递：同步发出（@Sendable 闭包，MainActor 上调用），app 层 Coordinator 用
+/// MainActor.assumeIsolated 同步桥接（回调必在 MainActor 发出后该桥接才合法）。
 /// 持久化结算边界（D16+D23/D29）：见文件头「交付结算」。
-public final class VoiceInputSessionController: @unchecked Sendable {
+@MainActor
+public final class VoiceInputSessionController {
 
     // ── 回调注入口（app 层绑 UI）──
     public var onPhaseChange: (@Sendable (AgentVoicePhase) -> Void)?
@@ -288,17 +306,45 @@ public final class VoiceInputSessionController: @unchecked Sendable {
         // streamingSession 保留供 finish 收尾；后续帧不再 feed（phase guard）
     }
 
-    /// 录音取消（用户显式放弃：session.cancel = settle，Task 3 契约）
+    /// 录音取消（用户显式放弃：session.cancel = settle，Task 3 契约）。
+    /// I1 fix（final review）：预览族相取消 = 直接 settle 回 idle——显式取消 ≠ 丢弃：
+    /// 取消族路径（Esc/menu-bar dismiss）若走 discardPreview 会进 discardUndo 撤销窗口，
+    /// 但面板已 dismiss，不可见撤销窗的快捷键（⌥⌘⌫ undo → ⌥⌘↩ confirm）可注入
+    /// 用户已看不见的预览（truthfulness 违背）。直接 settle 后 phase=idle，
+    /// PreviewShortcutManager 作用域自然失效。UI 预览面板「丢弃」按钮路径保持
+    /// discardPreview 不动（可见丢弃 + 撤销窗是正常 UX）。polishing 相保持既有
+    /// no-op 语义（原链取消路径不触控制器在途润色）。
     public func cancelRecording() async {
-        guard phase == .recordingStreaming || phase == .recordingBatch else { return }
-        let session = streamingSession
-        streamingSession = nil
-        if let session {
-            await session.cancel()
-            liveSessionId = nil
+        switch phase {
+        case .recordingStreaming, .recordingBatch:
+            let session = streamingSession
+            streamingSession = nil
+            if let session {
+                await session.cancel()
+                liveSessionId = nil
+            }
+            audioBuffer = []
+            _ = transition(.cancel)
+        case .previewing, .recoverableError:
+            settleLive()   // D16：显式取消 = 结算时点
+            clearPreview()
+            _ = transition(.cancel)
+        case .recoveryPreview:
+            settleAllRecoveryQueue()   // 显式放弃整个恢复队列（同 discardAllRecovered 结算语义）
+            clearPreview()
+            _ = transition(.cancel)
+        case .discardUndo:
+            cancelUndoTimer()
+            if undoSourcePhase == .recoveryPreview {
+                settleAllRecoveryQueue()   // 队列含当前丢弃条（超时才移除）
+            } else {
+                settleLive()
+            }
+            clearPreview()
+            _ = transition(.cancel)
+        case .idle, .polishing:
+            return
         }
-        audioBuffer = []
-        _ = transition(.cancel)
     }
 
     // MARK: - 松手

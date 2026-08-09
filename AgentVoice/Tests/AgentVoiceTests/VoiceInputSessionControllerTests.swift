@@ -264,7 +264,12 @@ private final class FakeASRChain: @unchecked Sendable {
 }
 
 // MARK: - 控制器编排测试
-
+//
+// @MainActor（final review C1 适配）：控制器 @MainActor 化后，同步读口（phase/currentToken）
+// 与同步入口（enqueueAudio/discardPreview/undoDiscard 等）均 MainActor 隔离——测试类整体
+// 标注 @MainActor 使调用点合法（XCTest async 用例原生支持 MainActor 隔离类）。
+// 既有断言语义零改动：仅执行上下文从全局 executor 收敛到 MainActor（与 app 实际运行形态一致）。
+@MainActor
 final class VoiceInputSessionControllerTests: XCTestCase {
     private var engine: StorageEngine!
 
@@ -329,10 +334,12 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         sut.previews.all.last ?? nil
     }
 
-    /// 事件驱动等待（不用固定 sleep——沿用 Task 3 测试风格）
+    /// 事件驱动等待（不用固定 sleep——沿用 Task 3 测试风格）。
+    /// C1 适配：条件闭包 @MainActor 化——控制器 @MainActor 后 phase 等读口隔离，
+    /// @Sendable 条件闭包内引用非法；waitUntil 随测试类在 MainActor 轮询，语义不变。
     @discardableResult
     private func waitUntil(timeout: TimeInterval = 2.0,
-                           _ condition: @Sendable () -> Bool) async -> Bool {
+                           _ condition: @MainActor () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if condition() { return true }
@@ -1041,5 +1048,40 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertEqual(sut.controller.phase, .idle)
         XCTAssertEqual(sut.statuses.last?.polished, true)
         XCTAssertEqual(sut.statuses.last?.polishProvider, "fake-polish")
+    }
+
+    // ── 22. final review C1 回归：app 层同款 MainActor.assumeIsolated 桥接全链不得 trap ──
+    //
+    // 机制：Swift 5 语言模式（包 tools 5.9 / app SWIFT_VERSION=5.0）下 nonisolated async 入口
+    // hop 全局 executor（SE-0338）——Coordinator（@MainActor）`await controller.pttDown()` 后
+    // 控制器 body 实际跑在全局 executor，第一个 transition→onPhaseChange→Coordinator 的
+    // MainActor.assumeIsolated 同步桥接立即 trap（SIGTRAP，reviewer 端到端复现 exit=133）。
+    // 修复 = 控制器类 @MainActor 化（契约从注释升级为编译器强制）。本测试模拟
+    // Coordinator bindController 同款桥接形态：修复前首次 PTT 即 trap（测试进程崩溃，
+    // RED 现象）；修复后全链绿。包层 237 用例盲区 = fake 回调不过桥接，本例补钉住。
+    @MainActor
+    func test_final_review_c1_assumeIsolated_bridge_no_trap_full_chain() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "桥接回归文本"
+        let sut = makeSUT(streamingASRs: { asr }, gate: { _ in false })
+
+        // 同款桥接：onPhaseChange 内 MainActor.assumeIsolated 同步记录（Coordinator bindController 形态）
+        let bridgedPhases = Recorder<AgentVoicePhase>()
+        sut.controller.onPhaseChange = { phase in
+            MainActor.assumeIsolated {
+                bridgedPhases.append(phase)
+            }
+        }
+
+        // 从 @MainActor 测试方法驱动 pttDown→enqueueAudio→pttUp 全链（app 调用同形）
+        await sut.controller.pttDown()
+        sut.controller.enqueueAudio(pcmData([1, 2, 3]))
+        await sut.controller.pttUp()
+
+        // 全链完成（无 trap）+ 相位序列正确（gate 关 → 直出）+ D16 结算边界
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.injector.injected, ["桥接回归文本"])
+        XCTAssertEqual(bridgedPhases.all, [.recordingStreaming, .polishing, .idle])
+        XCTAssertTrue(try recoverActive().isEmpty)
     }
 }
