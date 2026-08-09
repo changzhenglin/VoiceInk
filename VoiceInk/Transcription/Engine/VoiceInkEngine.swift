@@ -214,6 +214,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 coordinator.onPartialUpdate = nil
                 partialTranscript = ""
                 Task { @MainActor in
+                    // M2 fix（review round 1）：旧 run() 开头置 .processing，新流程经 endSession
+                    // 直跳结果态——补 .processing 恢复既有四态 UI 语义（plan Task 6 Step 1 声明）
+                    self.statusAdapter?.update(.processing)
                     await coordinator.endSession()   // 控制器 pttUp：drain→fallback→polish→预览/直出
                     if coordinator.previewSession != nil {
                         // V1 预览：面板不 dismiss，进入预览态（Task 8 渲染）
@@ -305,6 +308,22 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
                             await coordinator.beginSession()   // 控制器 pttDown：选路+流式启动+token
 
+                            // I1 fix（review round 1）：beginSession 挂起窗口守卫——窗口内取消
+                            // （面板取消/Esc→finishActiveRecorderCancellation/快按快松→cancelRecording）
+                            // 已由取消路径清 startID/onAudioChunk/快照并 cancelSession；不守卫则下方
+                            // 重装 onAudioChunk + startRecording = 幽灵录音复活。同型守卫参照原链 :359。
+                            // cancelSession 相守卫幂等：取消发生在控制器仍 idle 时 no-op，
+                            // beginSession 完成挂载后正常结算，两种时序都干净（控制器已核验）。
+                            guard self.activeRecordingStartID == startID, !self.shouldCancelRecording else {
+                                coordinator.onPartialUpdate = nil
+                                await coordinator.cancelSession()
+                                self.activeAgentVoiceSession = nil
+                                self.recorder.onAudioChunk = nil
+                                self.statusAdapter?.update(.idle)
+                                self.recordingState = .idle
+                                return
+                            }
+
                             // codex P1#6 fold：onAudioChunk 必须在 startRecording 之前安装
                             // （CoreAudio 启动后立即产帧，装晚了丢头部音频）
                             // outside voice #5 fold：onAudioChunk 从 CoreAudio 线程调用，
@@ -319,6 +338,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
                             do {
                                 try await self.recorder.startRecording(toOutputFile: permanentURL)
+                                // I1 fix（review round 1）：startRecording 本身是 await = 第二挂起窗口；
+                                // 守卫失败时 mic 已真启动，必须先 stopRecording 再清理（含 :313 自装的 onAudioChunk）
+                                guard self.activeRecordingStartID == startID, !self.shouldCancelRecording else {
+                                    await self.recorder.stopRecording()
+                                    coordinator.onPartialUpdate = nil
+                                    await coordinator.cancelSession()
+                                    self.activeAgentVoiceSession = nil
+                                    self.recorder.onAudioChunk = nil
+                                    self.statusAdapter?.update(.idle)
+                                    self.recordingState = .idle
+                                    return
+                                }
                                 self.recordingState = .recording
                             } catch {
                                 self.logger.error("AgentVoice recording failed to start: \(error, privacy: .public)")
