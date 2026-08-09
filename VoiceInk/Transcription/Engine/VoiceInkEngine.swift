@@ -239,6 +239,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     // 直跳结果态——补 .processing 恢复既有四态 UI 语义（plan Task 6 Step 1 声明）
                     self.statusAdapter?.update(.processing)
                     await coordinator.endSession()   // 控制器 pttUp：drain→fallback→polish→预览/直出
+                    // F5（codex 跨厂商 P1-5）：AgentVoice 分支 WAV 无消费者（不走原链
+                    // runPipeline/历史引用；本地 fallback 用内存 buffer）——交付结算后删除，
+                    // 不静默留存（Settings 隐私文案同步披露）。
+                    if let url = self.recordedFile {
+                        try? FileManager.default.removeItem(at: url)
+                        self.recordedFile = nil
+                    }
                     if coordinator.previewSession != nil {
                         // V1 预览：面板不 dismiss，进入预览态（Task 8 渲染）
                         recordingState = .previewing
@@ -256,6 +263,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 activeAgentVoiceSession = nil
                 recorder.onAudioChunk = nil
                 partialTranscript = ""
+                // F5（codex 跨厂商 P1-5）：显式取消——音频随结算删除（同交付路径语义）
+                if let url = recordedFile {
+                    try? FileManager.default.removeItem(at: url)
+                    recordedFile = nil
+                }
             }
 
             if let recordedFile {
@@ -852,6 +864,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
             partialTranscript = ""
             recordingState = .idle
             shouldFinishSessionImmediately = false
+            // F1（codex 跨厂商 P1-1）：AgentVoice 处理中（endSession 续体在途）取消——
+            // fix 前只关 UI 不通知控制器，polish 完成后预览仍弹出/直接注入（truthfulness
+            // 违背）。接通 cancelSession：控制器 .polishing 分支结算并失效在途续体；
+            // 原链 transcribing 时控制器 phase=idle，cancelRecording no-op 无害。
+            await agentVoiceCoordinator?.cancelSession()
         case .idle, .busy, .previewing:   // D8 fold：previewing 对原链等同 idle（非 recording/transcribing）
             partialTranscript = ""
             shouldCancelRecording = false

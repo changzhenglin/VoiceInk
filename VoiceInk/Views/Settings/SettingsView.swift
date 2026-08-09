@@ -297,6 +297,7 @@ struct SettingsView: View {
                                     Text("• 本地说完出字：Whisper / Apple Speech 在本机完成识别，音频不出设备。")
                                     Text("• 自动润色：转写文本经本机 device-hub 转发至云端润色模型，返回润色结果。")
                                     Text("• 关闭润色、润色失败或短文本（<50 字）：直接输出转写原文，不阻塞出字。")
+                                    Text("• 音频临时文件：交付完成后自动删除；取消的录音留在历史记录，可随时删除。")   // F5（codex 跨厂商 P1-5）：WAV 留存披露
                                 }
                                 .font(.caption)   // M-Task9-1 fix：语义字体替代固定 12pt（随辅助功能文本缩放）
                                 .foregroundColor(.secondary)
