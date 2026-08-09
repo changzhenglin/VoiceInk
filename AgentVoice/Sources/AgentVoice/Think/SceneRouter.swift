@@ -48,6 +48,17 @@ public final class SceneRouter: Sendable {
         text.count >= 50
     }
 
+    /// V1 润色准入组合（spec §3.3：默认开+可关，全局+场景级）
+    /// 短路顺序：全局开关 → 场景开关 → 长度规则
+    public func shouldPolish(text: String,
+                             globalEnabled: Bool,
+                             disabledScenes: Set<String>,
+                             sceneType: String) -> Bool {
+        globalEnabled
+            && !disabledScenes.contains(sceneType)
+            && shouldPolish(text: text)
+    }
+
     /// 降级动作
     public func degradedAction(cloudFailed: Bool) -> String {
         cloudFailed ? policy.degradedPolicy.cloudFail : policy.degradedPolicy.localFail

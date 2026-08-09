@@ -226,16 +226,26 @@ struct VoiceInkApp: App {
                 let hubPort = UserDefaults.standard.integer(forKey: "agentVoiceHubPort")
                 let polishAdapter = HubPolishAdapter(hubPort: hubPort > 0 ? hubPort : 9876)
 
-                // 润色 gate（Task 9 组合全局/场景开关；本 task 先用默认 50 字规则）
-                let gateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool = { _ in
-                    { $0.count >= 50 }
+                // 润色 gate 工厂（50 字规则 + 全局/场景开关，spec §3.3）
+                // C9-1 裁决：内层闭包每次调用时读 UserDefaults（开关变更下次润色生效，
+                // 比 plan Step 5 sketch 的工厂层快照读更新鲜一档）
+                // F10 fold：组合逻辑调用 router.shouldPolish(text:globalEnabled:disabledScenes:sceneType:)
+                // （SceneRouterTests 覆盖的被测方法为单一源），不复制 50 字判断
+                let gateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool = { sceneType in
+                    { text in
+                        let defaults = UserDefaults.standard
+                        let globalEnabled = defaults.object(forKey: "agentVoicePolishEnabled") as? Bool ?? true
+                        let disabled = Set(defaults.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? [])
+                        return router.shouldPolish(text: text, globalEnabled: globalEnabled,
+                                                   disabledScenes: disabled, sceneType: sceneType)
+                    }
                 }
 
                 let pipeline = VoicePipeline(
                     router: router,
                     knowledge: knowledgeStore,
                     polish: polishAdapter,
-                    shouldPolishGate: gateFactory(""))   // 过渡：Task 9 改为按场景动态工厂注入
+                    shouldPolishGate: gateFactory(""))   // pipeline gate：全局开关+50 字规则；场景感知 gate 保留于 ports.polishGateFactory
 
                 // 本地三级链素材：Apple Speech（macOS 26+）→ Whisper（spec §3.5.3）
                 let whisperASR = WhisperASR(transcriber: whisperTranscriber)

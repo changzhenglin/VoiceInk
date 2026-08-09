@@ -43,13 +43,20 @@ final class PreviewShortcutManager: ObservableObject {
 
     // MARK: - 默认快捷键（冲突不静默抢占——校验失败不注册并报告）
 
+    /// 预览快捷键默认表（单一源：seed 注册与 Settings 预览操作子区冲突显示共用，Task 9 C9-4）
+    static let previewDefaultShortcuts: [(action: ShortcutAction, shortcut: Shortcut)] = [
+        (.previewConfirm, .key(keyCode: UInt16(kVK_Return), modifierFlags: [.option, .command])),
+        (.previewToggleRevert, .key(keyCode: UInt16(kVK_ANSI_R), modifierFlags: [.option, .command])),
+        (.previewDiscard, .key(keyCode: UInt16(kVK_Delete), modifierFlags: [.option, .command])),
+    ]
+
+    /// 预览动作默认快捷键（Settings 子区呈现用，Task 9）
+    static func defaultShortcut(for action: ShortcutAction) -> Shortcut? {
+        previewDefaultShortcuts.first(where: { $0.action == action })?.shortcut
+    }
+
     private static func seedDefaultShortcuts(logger: Logger) {
-        let defaults: [(ShortcutAction, Shortcut)] = [
-            (.previewConfirm, .key(keyCode: UInt16(kVK_Return), modifierFlags: [.option, .command])),
-            (.previewToggleRevert, .key(keyCode: UInt16(kVK_ANSI_R), modifierFlags: [.option, .command])),
-            (.previewDiscard, .key(keyCode: UInt16(kVK_Delete), modifierFlags: [.option, .command])),
-        ]
-        for (action, shortcut) in defaults {
+        for (action, shortcut) in previewDefaultShortcuts {
             if let error = ShortcutValidator.validationError(for: shortcut, action: action) {
                 logger.warning(
                     "预览快捷键默认注册被拒（冲突不静默抢占）: \(action.storageName) \(shortcut.displayString) → \(String(describing: error))")

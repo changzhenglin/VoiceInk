@@ -35,6 +35,13 @@ struct SettingsView: View {
     @AppStorage("agentVoiceEnabled") private var agentVoiceEnabled = false
     @AppStorage("agentVoiceHubPort") private var agentVoiceHubPort = 9876
     @AppStorage("agentVoiceASRMode") private var agentVoiceASRMode = "auto"
+    /// V1 润色全局开关（spec §3.3：默认开+可关；AppDefaults 注册域同为 true）
+    @AppStorage("agentVoicePolishEnabled") private var agentVoicePolishEnabled = true
+    /// V1 润色场景级禁用列表（元素 = sceneType rawValue；数组无 @AppStorage 支持，@State + 写穿 UserDefaults）
+    @State private var polishDisabledScenes: [String] =
+        UserDefaults.standard.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? []
+    /// ③ 数据与隐私「了解数据流」展开状态（默认收起，不占首屏）
+    @State private var isDataFlowExpanded = false
     @State private var dashScopeAPIKeyInput = ""
     @State private var hasDashScopeKey = APIKeyManager.shared.hasAPIKey(forProvider: "dashscope")
     /// Design review D5 fold：AX 权限状态（checklist 显示用）
@@ -246,13 +253,57 @@ struct SettingsView: View {
                 Toggle("使用 AgentVoice 语音管线", isOn: $agentVoiceEnabled)
 
                 if agentVoiceEnabled {
-                    // ASR 模式选择器（自动 / 本地优先 / 云端优先）
-                    Picker("语音识别（ASR）", selection: $agentVoiceASRMode) {
-                        Text("自动").tag("auto")
-                        Text("本地优先").tag("local")
-                        Text("云端优先").tag("cloud")
+                    // ── D26 三段分组（Task 9）：①识别方式 ②自动润色 ③数据与隐私 + 预览操作快捷键子区 ──
+
+                    // ① 识别方式（既有 ASR 模式选择器：自动 / 本地优先 / 云端优先）
+                    GroupBox("识别方式") {
+                        Picker("语音识别（ASR）", selection: $agentVoiceASRMode) {
+                            Text("自动").tag("auto")
+                            Text("本地优先").tag("local")
+                            Text("云端优先").tag("cloud")
+                        }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
+
+                    // ② 自动润色（spec §3.3：默认开+可关，全局+场景级；关 → 直出原文）
+                    GroupBox("自动润色") {
+                        Toggle("自动润色", isOn: $agentVoicePolishEnabled)
+                        // 场景级开关：写穿 agentVoicePolishDisabledScenes（gate 每次润色调用时读，C9-1）
+                        HStack(spacing: 16) {
+                            Toggle("编程场景", isOn: scenePolishBinding("coding"))
+                            Toggle("办公写作场景", isOn: scenePolishBinding("office_writing"))
+                        }
+                        .disabled(!agentVoicePolishEnabled)
+                    }
+
+                    // 预览操作快捷键子区（Task 8 seam 复用：ShortcutAction stored / ShortcutStore /
+                    // ShortcutValidator / ShortcutRecorder；冲突不静默抢占，C9-4）
+                    GroupBox("预览操作") {
+                        ForEach(ShortcutAction.previewStoredActions, id: \.self) { action in
+                            PreviewShortcutSettingsRow(action: action)
+                        }
+                    }
+
+                    // ③ 数据与隐私（truthfulness：与系统实际数据流一致；两条短说明 + 展开详情）
+                    GroupBox("数据与隐私") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("云端实时出字会发送音频；本地模式音频不出设备。")
+                                .settingsDescription()
+                            Text("云润色会经 device-hub 发送转写文本；关闭或失败时直出原文。")
+                                .settingsDescription()
+                            ExpandableSettingsRow(title: "了解数据流", isExpanded: $isDataFlowExpanded) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("• 云端实时出字：音频流发送到 DashScope 语音服务，实时返回转写文本。")
+                                    Text("• 本地说完出字：Whisper / Apple Speech 在本机完成识别，音频不出设备。")
+                                    Text("• 自动润色：转写文本经本机 device-hub 转发至云端润色模型，返回润色结果。")
+                                    Text("• 关闭润色、润色失败或短文本（<50 字）：直接输出转写原文，不阻塞出字。")
+                                }
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
 
                     // Design review D5 fold：首次使用 checklist（用户一眼看到还缺什么）
                     GroupBox("配置状态") {
@@ -416,6 +467,22 @@ struct SettingsView: View {
         modifierFlags: []
     )
 
+    /// V1 场景级润色开关绑定（Task 9）：开 = 从禁用列表移除，关 = 加入；写穿 UserDefaults
+    /// （gate 每次润色调用时读，C9-1；键与 AppDefaults/gateFactory 同源）
+    private func scenePolishBinding(_ sceneType: String) -> Binding<Bool> {
+        Binding(
+            get: { !polishDisabledScenes.contains(sceneType) },
+            set: { enabled in
+                if enabled {
+                    polishDisabledScenes.removeAll { $0 == sceneType }
+                } else if !polishDisabledScenes.contains(sceneType) {
+                    polishDisabledScenes.append(sceneType)
+                }
+                UserDefaults.standard.set(polishDisabledScenes, forKey: "agentVoicePolishDisabledScenes")
+            }
+        )
+    }
+
     @ViewBuilder
     private func shortcutModePicker(binding: Binding<RecordingShortcutManager.Mode>) -> some View {
         Picker("", selection: binding) {
@@ -425,6 +492,69 @@ struct SettingsView: View {
         }
         .labelsHidden()
         .fixedSize()
+    }
+}
+
+/// V1 预览操作快捷键行（Task 9 D26/C9-4：显示当前键 + 可关闭/重绑；冲突不静默抢占）
+/// 复用 Task 8 seam：ShortcutStore（持久化，cleared 标记=关闭）/ ShortcutValidator（冲突校验）/
+/// ShortcutRecorder（重绑录制，校验失败拒绝并提示）
+private struct PreviewShortcutSettingsRow: View {
+    let action: ShortcutAction
+    /// 刷新令牌：shortcutDidChange 通知驱动（关闭/重绑/外部变更 → 重算呈现状态）
+    @State private var refreshToken = 0
+
+    var body: some View {
+        LabeledContent(action.displayName) {
+            HStack(spacing: 8) {
+                if let conflictText {
+                    HStack(spacing: 3) {
+                        Image(systemName: "exclamationmark.triangle")
+                        Text(conflictText)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+                ShortcutRecorder(action: action)
+                    .id(refreshToken)
+                    .controlSize(.small)
+                if isActive {
+                    // 关闭 = 写 cleared 标记（seed 不覆盖，非预览态不注册 → 真关闭）
+                    Button {
+                        ShortcutStore.setShortcut(nil, for: action)
+                        refreshToken += 1
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "Disable this shortcut"))
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ShortcutStore.shortcutDidChange)) { notification in
+            guard let changedAction = notification.object as? ShortcutAction, changedAction == action else { return }
+            refreshToken += 1
+        }
+    }
+
+    private var isActive: Bool { ShortcutStore.shortcut(for: action) != nil }
+
+    /// 冲突状态文案（C9-4：ShortcutValidator.validationError 信息源）——仅在「默认键无法启用」时显示：
+    /// seed 因冲突未写入且用户未主动关闭；「与 X 冲突，未启用」不静默抢占
+    private var conflictText: String? {
+        guard !isActive,
+            !ShortcutStore.isShortcutCleared(for: action),
+            let defaultShortcut = PreviewShortcutManager.defaultShortcut(for: action),
+            let error = ShortcutValidator.validationError(for: defaultShortcut, action: action)
+        else { return nil }
+        switch error {
+        case .alreadyUsedBy(let actionName):
+            return String(format: String(localized: "Conflicts with %@, not enabled"), actionName)
+        case .reservedBySystem:
+            return String(localized: "Conflicts with a system shortcut, not enabled")
+        default:
+            return String(localized: "Not enabled")
+        }
     }
 }
 
