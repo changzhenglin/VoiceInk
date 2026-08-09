@@ -37,6 +37,8 @@ public final class StreamingTranscriptionSession: @unchecked Sendable {
     private var feederTask: Task<Void, Never>?
     private var frameContinuation: AsyncStream<AudioFrame>.Continuation?
     private let lock = NSLock()
+    /// Task 12 监控：会话时长起点（构造即记；V1 攒证据用，构造后紧跟 start，偏差可忽略）
+    private let startTime = Date()
 
     public init(asr: any StreamingASR,
                 store: StreamingSessionStore?,
@@ -77,6 +79,7 @@ public final class StreamingTranscriptionSession: @unchecked Sendable {
             throw error
         }
         try? store?.begin(sceneType: sceneType)
+        AgentVoiceMetrics.shared.increment("streaming.session_started")   // Task 12 监控接线
     }
 
     /// 串行 feed 通道（D4/D10 fold）：单消费者 feeder Task，帧序确定；
@@ -140,6 +143,7 @@ public final class StreamingTranscriptionSession: @unchecked Sendable {
 
         guard !isFailed else {
             await closeASR()
+            AgentVoiceMetrics.shared.increment("streaming.session_lost")   // Task 12 监控接线
             return .streamingUnavailable
         }
         do {
@@ -147,9 +151,16 @@ public final class StreamingTranscriptionSession: @unchecked Sendable {
             await closeASR()
             // D17 fold：空 final（DashScope 超时返回 "" 不抛）= 流式不可用，触发 fallback
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Task 12 监控接线：.text 分支记时长；空 final（.streamingUnavailable）记 lost
+            if !trimmed.isEmpty {
+                AgentVoiceMetrics.shared.recordSessionDuration(Date().timeIntervalSince(startTime))
+            } else {
+                AgentVoiceMetrics.shared.increment("streaming.session_lost")
+            }
             return trimmed.isEmpty ? .streamingUnavailable : .text(text)
         } catch {
             await closeASR()
+            AgentVoiceMetrics.shared.increment("streaming.session_lost")   // Task 12 监控接线
             return .streamingUnavailable
         }
     }

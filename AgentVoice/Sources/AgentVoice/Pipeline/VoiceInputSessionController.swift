@@ -275,6 +275,7 @@ public final class VoiceInputSessionController: @unchecked Sendable {
         }
         session.enqueueFrame(AudioFrame(pcm: Self.pcmFromData(data),
                                         timestamp: Date().timeIntervalSince1970))
+        AgentVoiceMetrics.shared.increment("streaming.frames_fed")   // Task 12 监控接线（高频，50 次节流在实现内）
     }
 
     /// 录音中流式丢失——录音继续（buffer 累积），松手走本地链（D20）。
