@@ -48,7 +48,9 @@ public struct SessionIdentity: Equatable, Sendable {
         self.subagentId = subagentId
     }
 
-    /// 会话主键（adapter_type|native_session_id；与 GenerationCoordinator/SessionMutex 共享键格式）
+    /// 会话主键（adapter_type|native_session_id；与 GenerationCoordinator 共享键格式）。
+    /// 注意：SessionMutex（ADJ-2）以**裸 nativeSessionId** 为键（跨 adapter 碰撞检测的前提），
+    /// 与本键粒度不同——不得把 sessionKey 传给 SessionMutex.release(sessionId:)。
     public var sessionKey: String { "\(adapterType)|\(nativeSessionId)" }
 
     /// P0-3 防倒灌：仅接受与当前 generation 相等的事件。

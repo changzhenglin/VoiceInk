@@ -15,8 +15,10 @@ import Foundation
 /// store=nil 时 CAS 由 actor 隔离保证（测试/轻量路径）。
 ///
 /// 与 SessionMutex（ADJ-2）分工：SessionMutex 判「谁拥有这个 session id」（跨 adapter
-/// 所有权碰撞 → conflict）；本协调器判「这个身份当前哪个 connection generation 权威」
-/// （时间轴防倒灌）。键格式共享 `adapter_type|native_session_id`。
+/// 所有权碰撞 → conflict），以**裸 nativeSessionId** 为键（不带 adapter 前缀，
+/// 跨 adapter 碰撞检测才成立）；本协调器判「这个身份当前哪个 connection generation
+/// 权威」（时间轴防倒灌），以 `adapter_type|native_session_id`（sessionKey）为键。
+/// 二者键粒度不同：不得把 sessionKey 传给 SessionMutex.release(sessionId:)。
 public actor GenerationCoordinator {
     /// 首次连接 generation（reconnect 单调起点，固定一次）
     public static let baselineGeneration = 1
@@ -127,6 +129,11 @@ public actor GenerationCoordinator {
             if let state = store.generationState(sessionKey: sessionKey) {
                 rec.connectionGeneration = max(state.connectionGeneration,
                                                Self.baselineGeneration)
+                // I-1：token 分配器从 store scan_generation（前会话最近成功 commit 的
+                // token）续接 seed——否则重启后新实例 token 从 1 起，store CAS 的
+                // scan_generation < token 条件把新 scan commit 全部误拒。
+                // 重放防线不削弱：旧 token（≤ 已提交值）仍被 actor 门禁与 CAS 条件拒绝。
+                rec.nextToken = max(rec.nextToken, state.scanGeneration + 1)
             } else {
                 store.ensureGenerationBaseline(sessionKey: sessionKey)
             }

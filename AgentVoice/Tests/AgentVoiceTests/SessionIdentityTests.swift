@@ -120,7 +120,7 @@ final class SessionIdentityTests: XCTestCase {
     func testSessionKeyComposition() {
         XCTAssertEqual(makeIdentity().sessionKey,
                        "claude_code|11111111-1111-1111-1111-111111111111",
-                       "sessionKey = adapter_type|native_session_id（与 GenerationCoordinator/SessionMutex 共享键格式）")
+                       "sessionKey = adapter_type|native_session_id（与 GenerationCoordinator 共享键格式；SessionMutex 以裸 nativeSessionId 为键，键粒度不同）")
     }
 
     func testIncrementingGenerationKeepsLineageAndRepoContext() {
@@ -327,6 +327,28 @@ final class GenerationCoordinatorTests: XCTestCase {
         XCTAssertEqual(recovered, g2, "新实例必须从 store 恢复权威 generation")
         let g3 = await second.reconnect(sessionKey: key)
         XCTAssertGreaterThan(g3, g2, "跨实例 reconnect 仍严格单调")
+    }
+
+    func testCommitSucceedsAcrossCoordinatorRestart() async throws {
+        // I-1：新实例 token 分配器从 store scan_generation 续接 seed——
+        // 重启后新 scan 周期 commit 成功，不被 store CAS（scan_generation < token）误拒；
+        // 重放防线不削弱：前会话旧 token 跨重启仍拒绝
+        let store = try AttentionEventStore()
+        let key = "claude_code|sid-restart-commit"
+        let first = GenerationCoordinator(store: store)
+        let t1 = await first.beginScan(sessionKey: key)
+        let ok1 = await first.commit(sessionKey: key, token: t1)
+        XCTAssertTrue(ok1, "重启前 commit 必须成功（前置）")
+        XCTAssertEqual(store.generationState(sessionKey: key)?.scanGeneration, t1)
+
+        let second = GenerationCoordinator(store: store)
+        let t2 = await second.beginScan(sessionKey: key)
+        XCTAssertGreaterThan(t2, t1, "重启后 token 必须从 store scan_generation 续接（不回退）")
+        let replayOld = await second.commit(sessionKey: key, token: t1)
+        XCTAssertFalse(replayOld, "前会话旧 token 跨重启仍必须拒绝（重放防线不削弱）")
+        let ok2 = await second.commit(sessionKey: key, token: t2)
+        XCTAssertTrue(ok2, "重启后新 scan 周期 commit 必须成功")
+        XCTAssertEqual(store.generationState(sessionKey: key)?.scanGeneration, t2)
     }
 }
 
