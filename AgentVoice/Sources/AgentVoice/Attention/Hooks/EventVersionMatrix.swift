@@ -103,12 +103,17 @@ public struct ProbeManifest: Codable, Equatable, Sendable {
 public enum EventVersionMatrix {
 
     /// M1 固定基线版本（evidence/voice-coding/m1/ 只引用不修改；
-    /// 不得用其给其他版本填 observed）
-    public static let m1BaselineVersion = "2.1.224"
+    /// 不得用其给其他版本填 observed）。
+    /// 版本按 committed 证据实际标注取 2.1.220（本仓 shadow runs 的 source_claude_version
+    /// 标注值；sealed A/B run 证据在 AgentOS 仓，同版本引用）。
+    /// known hole：source_claude_version 为默认固定值而非逐行运行时捕获（版本孔）。
+    public static let m1BaselineVersion = "2.1.220"
 
-    /// M1 2.1.224 shadow run 实际观察到的事件集（固定基线，仅此 6 项）
+    /// M1 基线观察事件集（固定基线，仅此 5 项）：本仓 shadow runs export 有实测行支撑。
+    /// preToolUse 不在列——export 零观察行（A-only 设计不入 store），按 observed 纪律
+    /// 降级 unverified（wire 存在性由 verdict.md by_design 计数支撑，见该行 sourceNote）。
     public static let m1BaselineObserved: Set<HookEventKind> = [
-        .stop, .stopFailure, .notification, .preToolUse, .sessionStart, .sessionEnd,
+        .stop, .stopFailure, .notification, .sessionStart, .sessionEnd,
     ]
 
     /// adapter 当前消费面（代码事实，与 ClaudeCodeAdapter.parse 一致；测试逐事件核对）
@@ -119,7 +124,7 @@ public enum EventVersionMatrix {
     // MARK: - 静态表（代码内 single source）
 
     /// 构建静态矩阵表。observed 列规则：仅当 runtimeVersion == M1 基线版本时，
-    /// 基线 6 事件填 `observed("2.1.224")`；其余一律 `unverified(runtimeVersion)`。
+    /// 基线 5 事件填 `observed(m1BaselineVersion)`；其余一律 `unverified(runtimeVersion)`。
     public static func staticTable(runtimeVersion: String) -> [EventMatrixRow] {
         func obs(_ kind: HookEventKind) -> EventVersionSupport {
             if runtimeVersion == m1BaselineVersion && m1BaselineObserved.contains(kind) {
@@ -127,7 +132,8 @@ public enum EventVersionMatrix {
             }
             return .unverified(version: runtimeVersion)
         }
-        let fixedM1 = "固定依据：生产 settings.json 注册 + M1 \(m1BaselineVersion) shadow run 实测"
+        let fixedM1 = "固定依据：生产 settings.json 注册 + M1 shadow runs 观测（本仓 evidence/voice-coding/m1/shadow-runs export 有该事件实测行；版本孔：source_claude_version 为默认固定值 \(m1BaselineVersion)，非运行时捕获，known hole）+ sealed A/B 同版本引用（sealed 证据在 AgentOS 仓）"
+        let preToolUseBaselineNote = "基线档位裁决（I-1 修复）：本仓 shadow runs export 无 PreToolUse 观察行（M1 A-only 设计：非 permission_requested 的 PreToolUse 不入 store）→ 同版本 sealed 观察行不满足 observed 纪律，降 unverified，基线不填；wire 存在性由 verdict.md 2326 条 by_design 计数支撑（by_design 定义见 shadow-protocol.md）；版本孔同在（source_claude_version 默认固定）"
         let gaNote = "固定依据：官方 hooks GA 面（本轮官方文档网络受限未复核，如与探针冲突以探针为准）"
         let surveyNote = "来源：spec §8.10 调研；官方文档本轮不可达（网络受限），未官方复核；以 Step 7 探针实测为准"
         let subtypeNote = surveyNote + "；Step 7 探针（2.1.226）实测 wire 字段名为 notification_type（纠正调研推测的 subtype）；四值值域未实测（field-name-only 只确认字段名）"
@@ -149,7 +155,7 @@ public enum EventVersionMatrix {
             EventMatrixRow(event: .preToolUse, official: .documentedNow, runtimeVersion: runtimeVersion,
                            observed: obs(.preToolUse), adapterConsumed: true, reducedState: "waiting_permission",
                            semanticLoss: "仅 permission_requested=true 时消费，否则 unrecognizedEvent；spec §11：permission_requested 分支随 I5 删除",
-                           sourceNote: fixedM1),
+                           sourceNote: preToolUseBaselineNote),
             EventMatrixRow(event: .sessionStart, official: .documentedNow, runtimeVersion: runtimeVersion,
                            observed: obs(.sessionStart), adapterConsumed: true, reducedState: "connection_fact",
                            semanticLoss: nil,

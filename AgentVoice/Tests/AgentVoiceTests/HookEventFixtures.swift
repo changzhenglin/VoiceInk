@@ -23,7 +23,7 @@ enum HookEventFixtures {
     /// M1 固定基线版本（只引用 evidence/voice-coding/m1/，不修改；不得解锁其他版本）
     static let m1BaselineVersion = EventVersionMatrix.m1BaselineVersion
 
-    /// 官方 hooks GA 面公共字段（跨版本稳定；M1 2.1.224 实测确认）
+    /// 官方 hooks GA 面公共字段（跨版本稳定；M1 2.1.220 shadow runs 观测，版本孔 known hole）
     static func base(_ hookEventName: String) -> [String: Any] {
         [
             "hook_event_name": hookEventName,

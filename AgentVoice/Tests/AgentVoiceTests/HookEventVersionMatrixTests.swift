@@ -6,7 +6,7 @@ import XCTest
 /// 纪律（plan 逐字）：
 /// - 每事件映射到 EventMatrixRow（穷举）；
 /// - 任何仅由合成 fixture 覆盖的事件保持 `unverified(version: runtimeVersion)`，不得填 `observed`；
-/// - 历史 2.1.224 evidence 仅作固定基线，不得解锁其他版本（ADJ-4）；
+/// - 历史 2.1.220 M1 evidence 仅作固定基线，不得解锁其他版本（ADJ-4）；
 /// - StopFailure 不被归约为 Stop hook 失败；
 /// - Step 8 双轨：只有真探针 manifest（精确版本匹配）可填 observed；版本变化旧 evidence 自动失效；
 /// - 合成 fixture 失败阻断 adapter 回归，真探针缺失阻断能力 gate（两轨分离）。
@@ -55,7 +55,7 @@ final class HookEventVersionMatrixTests: XCTestCase {
     }
 
     func testM1BaselineOnlyUnlocksItsExactVersion() {
-        // 同版本：基线 6 事件 observed(2.1.224)，其余仍 unverified
+        // 同版本：基线 5 事件 observed(2.1.220)，其余仍 unverified
         let atBaseline = EventVersionMatrix.staticTable(runtimeVersion: EventVersionMatrix.m1BaselineVersion)
         for row in atBaseline {
             if EventVersionMatrix.m1BaselineObserved.contains(row.event) {
@@ -69,7 +69,7 @@ final class HookEventVersionMatrixTests: XCTestCase {
         let other = EventVersionMatrix.staticTable(runtimeVersion: "2.1.226")
         for row in other {
             XCTAssertEqual(row.observed, .unverified(version: "2.1.226"),
-                           "\(row.event)：2.1.224 基线不得解锁 2.1.226 的 observed")
+                           "\(row.event)：2.1.220 基线不得解锁 2.1.226 的 observed")
         }
     }
 
