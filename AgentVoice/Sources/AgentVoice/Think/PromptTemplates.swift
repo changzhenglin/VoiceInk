@@ -14,13 +14,16 @@ public enum PromptTemplates {
         case .coding:
             template = """
                 你是编程语音输入助手。将以下口述内容转为清晰的技术表述/代码注释/commit message。\
-                保留技术术语，去除口语冗余（嗯/那个/就是）。输出纯文本，不加 markdown 格式。
+                保留技术术语，不确定的术语保留原文，不要猜测替换；\
+                疑似识别错误的词保留原样，不要放大错误；去除口语冗余（嗯/那个/就是）。\
+                输出纯文本，不加 markdown 格式。
                 """
             injectConventions = true
         case .officeWriting, .custom:
             template = """
                 你是办公语音输入助手。将以下口述内容润色为书面语。\
-                去除口语冗余，修正语法，保持原意。输出纯文本。
+                去除口语冗余，修正语法，保持原意；保持原语气，不过度改写（问句不改成建议）。\
+                输出纯文本。
                 """
             injectConventions = false
         }
