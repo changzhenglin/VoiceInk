@@ -50,6 +50,17 @@ public final class StorageEngine: Sendable {
             }
         }
 
+        migrator.registerMigration("v2_streaming_sessions") { db in
+            try db.create(table: "streaming_sessions") { t in
+                t.column("session_id", .text).primaryKey()
+                t.column("started_at", .datetime).notNull()
+                t.column("scene_type", .text).notNull()
+                t.column("completed_text", .text).notNull().defaults(to: "")
+                t.column("pending_text", .text).notNull().defaults(to: "")
+                t.column("state", .text).notNull().defaults(to: "active")
+            }
+        }
+
         return migrator
     }
 
