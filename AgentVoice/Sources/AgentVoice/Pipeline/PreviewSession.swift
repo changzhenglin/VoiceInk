@@ -1,6 +1,16 @@
 // AgentVoice/Sources/AgentVoice/Pipeline/PreviewSession.swift
 import Foundation
 
+/// 预览来源类型（R5b-1 裁决：Task 5b 恢复逐条版与可恢复错误面板复用 PreviewSession）
+public enum PreviewKind: String, Sendable {
+    /// 润色结果预览（V1 主链路）
+    case polished
+    /// 崩溃恢复草稿（逐条呈现，不跨会话拼接——R1/D30）
+    case recoveredDraft
+    /// 可恢复错误：交付失败但文本可用，保留正文供输出/重试（D22）
+    case recoverableError
+}
+
 /// 预览会话（V1 spec §3.2：松手→润色→面板展示+一键回退→确认输出）
 public struct PreviewSession: Sendable, Equatable, Identifiable {
     /// = traceId（全链路追踪一致性）
@@ -11,14 +21,21 @@ public struct PreviewSession: Sendable, Equatable, Identifiable {
     public let sceneType: String
     /// 当前将输出的文本（默认润色结果；回退后 = 原文）
     public var selectedText: String
+    /// 预览来源（R5b-1；默认 .polished 保 Task 5 冻结调用兼容）
+    public let kind: PreviewKind
+    /// 来源描述（恢复条目 = 时间+场景；普通润色预览 = nil）
+    public let sourceSummary: String?
 
     public init(traceId: String, originalText: String,
-                polishedText: String, sceneType: String) {
+                polishedText: String, sceneType: String,
+                kind: PreviewKind = .polished, sourceSummary: String? = nil) {
         self.traceId = traceId
         self.originalText = originalText
         self.polishedText = polishedText
         self.sceneType = sceneType
         self.selectedText = polishedText
+        self.kind = kind
+        self.sourceSummary = sourceSummary
     }
 
     /// 一键回退原文（spec §3.5 验收 #4）
