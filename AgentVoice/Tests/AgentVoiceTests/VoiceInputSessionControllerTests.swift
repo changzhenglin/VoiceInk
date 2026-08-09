@@ -297,7 +297,8 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         gate: @escaping @Sendable (String) -> Bool = { _ in true },
         polishGateFactory: @escaping @Sendable (String) -> @Sendable (String) -> Bool = { _ in { _ in true } },
         scene: SceneContext = SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting),
-        discardUndoTimeout: TimeInterval = 0.05
+        discardUndoTimeout: TimeInterval = 0.05,
+        detectScene: (@Sendable () async -> SceneContext)? = nil   // round-3：晚到窗口测试 seam（默认立即返回）
     ) -> SUT {
         let injector = FakeInjector()
         let polishProvider = FakePolishProvider()
@@ -311,7 +312,7 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         let ports = SessionControllerPorts(
             makeStreamingASR: streamingASRs,
             localASRChain: localChain,
-            detectScene: { scene },
+            detectScene: detectScene ?? { scene },
             pipeline: pipeline,
             injector: injector,
             storageEngine: engine,
@@ -1300,5 +1301,56 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         // fix 前 RED：catch 腿无守卫 → 向新状态发 .blocked
         XCTAssertTrue(sut.statuses.all.allSatisfy { $0.state != .blocked })
         XCTAssertEqual(sut.controller.phase, .recordingBatch)   // 新录音不受污染（无云 ASR 落 batch）
+    }
+
+    // MARK: - codex re-review round 2 遗留项回归（round 3）
+
+    /// round-3 回归（codex r2 P1-4a 取消腿）：纯本地模式取消后记录必须结算——
+    /// fix 前无 streamingSession 时 cancel 分支不触 settleLive，beginLocalRecord
+    /// 的记录永久遗留（下次 pttDown 覆盖 liveSessionId 成孤儿）。
+    func test_pure_local_cancel_settles_record() async throws {
+        let local = FakeLocalASR(providerId: "fake-local")
+        local.finalText = "本地识别全文"
+        let sut = makeSUT(streamingASRs: { nil }, localChain: { [local] })
+
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)
+        XCTAssertEqual(try recoverActive().count, 1)   // 记录在盘
+
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)   // fix 前 RED：=1（取消不结算纯本地记录）
+
+        // 再录一次不留孤儿（覆盖写 liveSessionId 场景）
+        await sut.controller.pttDown()
+        await sut.controller.cancelRecording()
+        XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    /// round-3 回归（codex r2 P1-4a 晚到腿）：detectScene 挂起窗口内取消——
+    /// 恢复后不得在错误相位建记录（token+相守卫，与 I1 挂载守卫同构）。
+    func test_detect_scene_late_cancel_does_not_create_record() async throws {
+        let local = FakeLocalASR(providerId: "fake-local")
+        local.finalText = "本地识别全文"
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let sut = makeSUT(streamingASRs: { nil }, localChain: { [local] },
+                          detectScene: {
+                              for await _ in gate.stream { break }   // 挂起直到测试放行
+                              return SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting)
+                          })
+
+        let pttTask = Task { @MainActor in await sut.controller.pttDown() }
+        let recording = await waitUntil { sut.controller.phase == .recordingStreaming }
+        XCTAssertTrue(recording)
+
+        await sut.controller.cancelRecording()   // detectScene 挂起窗口内取消
+        XCTAssertEqual(sut.controller.phase, .idle)
+
+        gate.continuation.yield(())              // 放行 detectScene
+        await pttTask.value
+
+        // fix 前 RED：晚到续体 beginLocalRecord 建孤儿记录
+        XCTAssertTrue(try recoverActive().isEmpty)
+        XCTAssertEqual(sut.controller.phase, .idle)
     }
 }

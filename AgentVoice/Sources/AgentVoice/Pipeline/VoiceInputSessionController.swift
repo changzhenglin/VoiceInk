@@ -232,6 +232,9 @@ public final class VoiceInputSessionController {
         audioBuffer = []
         currentTraceId = UUID().uuidString
         let scene = await ports.detectScene()
+        // round-3（codex r2 P1-4a）：detectScene 晚到守卫——挂起窗口内取消/松手后，
+        // 不得在错误相位建会话/记录（token+相双条件，与 I1 挂载守卫同构）。
+        guard currentToken == token, phase == .recordingStreaming else { return }
         currentScene = scene
 
         // 云流式启动（D2：选中云 ASR 才流式；工厂每会话新建实例——Task 2 裁决）
@@ -326,6 +329,8 @@ public final class VoiceInputSessionController {
                 await session.cancel()
                 liveSessionId = nil
             }
+            settleLive()   // round-3（codex r2 P1-4a）：纯本地模式无 streamingSession，
+                           // 记录的唯一结算路径（流式路径 liveSessionId 已置 nil，幂等 no-op）
             audioBuffer = []
             _ = transition(.cancel)
         case .previewing, .recoverableError:
@@ -674,9 +679,11 @@ public final class VoiceInputSessionController {
     /// 直出交付（polish 关/失败/无变化路径）
     private func deliver(text: String, traceId: String, outcome: PolishOutcome,
                          asrProvider: String, token: SessionToken?) async {
-        // F1-round2（codex re-review P1-1 缩窗）：发起粘贴前预检——已取消则根本不 inject。
-        // 诚实边界：paste 启动后的在途窗口（CursorPaster 剪贴板→prePasteDelay→⌘V，
-        // 与原链共享组件）物理不可撤回，known hole 声明（PR body），不改共享组件。
+        // round-2 预检（诚实注记，codex r2 核验）：与 pttUp 尾部 token guard 之间无 await
+        // （MainActor 串行），不缩短 paste 在途窗口——保留为防御纵深（未来路径插入 await
+        // 时的兜底）。paste 在途窗口（剪贴板→prePasteDelay→⌘V）的闭合需 CursorPaster
+        // （与原链共享组件）加 cancel seam，超本 SDD 边界，known hole + follow-up 登记，
+        // 不声明「物理不可撤回」。
         if let token, currentToken != token { return }
         do {
             try await ports.injector.inject(text)
