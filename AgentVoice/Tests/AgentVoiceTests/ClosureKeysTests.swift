@@ -181,6 +181,14 @@ final class ClosureKeysTests: XCTestCase {
         XCTAssertThrowsError(try store.recordEvent(EventID(rawValue: "evt-close-2")))
     }
 
+    func testSetCurrentGenerationWriteFailureReturnsFalse() throws {
+        // I-1 fix：权威写失败不得静默吞掉——返回 false 信号交接线层 fail-closed 裁决
+        let store = try makeStore()
+        XCTAssertTrue(store.setCurrentGeneration(1), "正常写入返回 true")
+        store.closeForTesting()
+        XCTAssertFalse(store.setCurrentGeneration(2), "写失败返回 false 信号，不静默")
+    }
+
     // MARK: - 并发：user_action / agent_command 同键单事实
 
     func testConcurrentSameUserActionYieldsSingleFact() throws {

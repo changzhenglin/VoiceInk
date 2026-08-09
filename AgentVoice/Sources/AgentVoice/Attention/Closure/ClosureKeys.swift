@@ -281,8 +281,11 @@ public final class ClosureKeyStore: @unchecked Sendable {
     /// 写入当前 generation（生产接线由 GenerationCoordinator 注入 per-session 当前值；
     /// 测试桩直接调用）。单调不回退：`max()` 守卫与 M1 `upsertConnectionGeneration` 同式——
     /// generation 只能经 reconnect 抬升，旧值重放不得拉低权威（P0-3 防倒灌）。
-    /// 写失败降级不 crash（对齐 M1 C17 式）；后续 record* 若存储异常走 throw fail-closed。
-    public func setCurrentGeneration(_ generation: Int) {
+    /// 失败信号化（不留静默 fail-open）：写成功 → true；写失败（存储异常/库已关闭）→ false，
+    /// 不再空 catch 吞掉——调用方须在接线层处理 false（fail-closed 决策归接线者，
+    /// P0 层给信号不静默）。
+    @discardableResult
+    public func setCurrentGeneration(_ generation: Int) -> Bool {
         do {
             try dbQueue.write { db in
                 try db.execute(sql: """
@@ -292,8 +295,9 @@ public final class ClosureKeyStore: @unchecked Sendable {
                         generation = max(generation, excluded.generation)
                     """, arguments: [generation])
             }
+            return true
         } catch {
-            // C17 对齐：写失败降级不 crash；调用侧后续写入命中存储异常 → throw fail-closed
+            return false   // fail-closed 信号：权威写失败不得静默，交接线层裁决
         }
     }
 
