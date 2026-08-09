@@ -297,4 +297,96 @@ final class HookEventVersionMatrixTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Task 4A：官方文档证据对账（official 列升级 + field-review 登记）
+
+    /// 矩阵 official 列全行 documentedNow：官方 hooks reference 对账入库后，
+    /// §8.10 事件面全部有官方文档依据（evidence 件 official-docs-2026-08-09）。
+    /// observed 列纪律不受本断言影响（只有真探针可填 observed；
+    /// 见 testSyntheticOnlyCoverageStaysUnverified）。
+    func testOfficialColumnFullyDocumentedAfterDocsReconciliation() {
+        let rows = EventVersionMatrix.staticTable(runtimeVersion: "9.9.9-docs-reconcile")
+        XCTAssertEqual(rows.count, HookEventKind.allCases.count)
+        for row in rows {
+            XCTAssertEqual(row.official, .documentedNow,
+                           "\(row.event) official 列必须为 documentedNow（官方文档已对账入库 official-docs-2026-08-09）")
+        }
+    }
+
+    /// 由 unverified 提升的行，sourceNote 必须显式引用官方文档证据件
+    /// （「不臆造」纪律：依据分级可溯源）。
+    func testReconciledRowsCiteOfficialDocsEvidence() {
+        let promoted: Set<HookEventKind> = [
+            .notificationPermissionPrompt, .notificationIdlePrompt,
+            .notificationAgentNeedsInput, .notificationAgentCompleted,
+            .permissionRequest, .postToolUseFailure, .postToolBatch,
+            .taskCreated, .taskCompleted, .subagentStart, .teammateIdle,
+            .worktreeCreate, .worktreeRemove, .configChange, .cwdChanged,
+            .directoryAdded, .fileChanged,
+            .httpHookHandler, .asyncCommandHook,
+        ]
+        XCTAssertEqual(promoted.count, 19, "提升集合 = 当前 official 列 unverified 的 19 行")
+        for row in EventVersionMatrix.staticTable(runtimeVersion: "9.9.9-docs-reconcile")
+        where promoted.contains(row.event) {
+            XCTAssertTrue(row.sourceNote.contains("official-docs-2026-08-09"),
+                          "\(row.event) sourceNote 必须引用官方文档证据件")
+        }
+    }
+
+    /// field-review.json 必须登记官方文档有载、探针未覆盖的字段（零新增授权，fail-closed）：
+    /// 结构化字段 → unreviewed/read-only；内容/transcript 路径形 → prohibited。
+    func testFieldReviewRegistersOfficialDocumentedFields() throws {
+        let agentVoiceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // AgentVoiceTests
+            .deletingLastPathComponent()      // Tests
+            .deletingLastPathComponent()      // AgentVoice
+        let reviewURL = agentVoiceRoot
+            .appendingPathComponent("Evidence")
+            .appendingPathComponent("attention-task0-probe")
+            .appendingPathComponent("2.1.226")
+            .appendingPathComponent("field-review.json")
+        let data = try Data(contentsOf: reviewURL)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let fields = obj["fields"] as? [[String: Any]] else {
+            return XCTFail("field-review.json 形状异常")
+        }
+        var byField: [String: String] = [:]
+        for entry in fields {
+            guard let f = entry["field"] as? String else { continue }
+            byField[f] = (entry["review_status"] as? String) ?? ""
+        }
+
+        // 官方文档有载、探针未覆盖的结构化字段 → unreviewed/read-only（observed 纪律）
+        let unreviewedExpected = [
+            "agent_id", "agent_type", "permission_suggestions",
+            "teammate_name / team_name", "worktree_path",
+            "directory (DirectoryAdded)", "name (WorktreeCreate slug)",
+            "event (FileChanged)", "error_details",
+        ]
+        for f in unreviewedExpected {
+            XCTAssertEqual(byField[f], "unreviewed/read-only",
+                           "\(f) 必须登记为 unreviewed/read-only（官方文档有载、无受控探针）")
+        }
+
+        // 内容/transcript 路径形 → prohibited（与禁止集既有条目同形）
+        let prohibitedExpected = [
+            "title (Notification)", "session_title (SessionStart)", "agent_transcript_path",
+        ]
+        for f in prohibitedExpected {
+            XCTAssertEqual(byField[f], "prohibited",
+                           "\(f) 必须登记为 prohibited（内容/transcript 路径形）")
+        }
+
+        // fail-closed：新登记条目零 grants（不因官方文档记载而获得任何授权）
+        for entry in fields {
+            guard let f = entry["field"] as? String,
+                  unreviewedExpected.contains(f) || prohibitedExpected.contains(f) else { continue }
+            let grants = entry["grants"] as? [String]
+            XCTAssertTrue(grants == nil || grants!.isEmpty, "\(f) 登记不得携带 grants")
+        }
+
+        // evidence_basis 必须引用官方文档证据件（溯源链完整）
+        let basis = obj["evidence_basis"] as? [String: Any]
+        XCTAssertNotNil(basis?["official_docs"], "evidence_basis 必须含 official_docs 引用")
+    }
 }
