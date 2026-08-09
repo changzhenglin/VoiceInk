@@ -284,7 +284,7 @@ public enum FieldAllowlist {
                 try expect(UInt8(ascii: ":"))
                 switch FieldAllowlist.classify(rootKey: key, source: source) {
                 case .prohibited, .unknown:
-                    try skipValue(depth: 1)          // 结构校验照跑，字节不收集
+                    try skipValue(depth: 2)          // 结构校验照跑，字节不收集（根=1 层，根内容器=2 层起）
                 case .allowed(let row):
                     try collectRootScalar(key: key, row: row)
                 }
@@ -315,7 +315,7 @@ public enum FieldAllowlist {
             case UInt8(ascii: "-"), UInt8(ascii: "0")...UInt8(ascii: "9"):
                 value = .numberLiteral(try scanNumber(limit: row.sizeLimit))
             default:
-                try skipValue(depth: 1)                 // object/array：不收集部分容器
+                try skipValue(depth: 2)                 // object/array：不收集部分容器（根内容器=2 层起）
                 return
             }
             // 值内容级防护（V1 门 ②）：允许字段的值也跑敏感模式扫描
@@ -348,7 +348,8 @@ public enum FieldAllowlist {
 
         // MARK: 跳过（结构校验 + 上限执行；字节不收集）
 
-        /// 跳过任意值；depth = 若该值为容器时的栈层数（根内容器从 1 起，同 tokenizer 口径）
+        /// 跳过任意值；depth = 该值若为容器时其自身的栈层数（根=1，根内容器=2 起，
+        /// 与 FieldNameOnlyTokenizer.scanValue 同编号；上限 maxContainerStack=17 ⇔ 根内 ≤16 层）
         mutating func skipValue(depth: Int) throws {
             skipWhitespace()
             guard let b = peek() else { throw ScanError.malformed }

@@ -1,0 +1,266 @@
+{
+  "artifact": "field-review",
+  "task": "Task 4 Step 1 —— 待审字段清单（由 Task 0 真探针证据驱动）",
+  "generated_at": "2026-08-09",
+  "runtime_version_observed": "2.1.226",
+  "evidence_basis": {
+    "field_lists": "AgentVoice/Evidence/attention-task0-probe/2.1.226/field-lists.json",
+    "manifest": "AgentVoice/Evidence/attention-task0-probe/2.1.226/manifest.json"
+  },
+  "review_policy": {
+    "observed_discipline": "未受控验证（unverified / incidental / spec-derived）→ 保持 read-only/unreviewed 档；question text/options/answers、StopFailure error、permission tool/parameter summary 不得预先假定可用",
+    "fail_closed": "未审查字段 → CapabilityFieldMatrix 无行 → 全 sink blocked/read-only，不因兄弟字段 PASS 放行；禁止字段在解码边界跳过，值永不 materialize",
+    "version_applicability": "所有 observed 字段仅在 2.1.226 验证；跨版本适用性未验证——runtime 升级须按 spec §8.9 fail-closed 重新探针后再裁",
+    "value_content": "授权字段的值也过 SensitivePatternScanner 扫描（路径/凭证样/prompt 标记/URL 内部地址）；命中 → 字段级降级或 redaction，不整事件降级"
+  },
+  "fields": [
+    {
+      "field": "session_id", "structure": "string",
+      "observed_in": ["PostToolUse", "PostToolBatch", "PreToolUse", "Stop", "SessionEnd", "SessionStart", "UserPromptSubmit", "PermissionRequest(incidental)", "Notification(incidental)", "CwdChanged(incidental)", "TaskCompleted(incidental)", "ConfigChange(incidental)"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": [
+        "attentionIngest: ephemeral+render+persist",
+        "statuslineRender: ephemeral+render（§8.8 行 2 session 辅助 ID；spec-derived，无 2.1.226 statusline 探针）",
+        "sessionIndexLookup: ephemeral+render（§8.8 行 3；默认不落原文、遥测禁止）",
+        "syntheticTest: ephemeral+render+persist+retain（§8.8 行 6 长期测试资产，非生产保留面）"
+      ],
+      "notes": "身份主键；官方 hook 面无 retain（原始事件短期保留，§8.8 行 1）"
+    },
+    {
+      "field": "hook_event_name", "structure": "string",
+      "observed_in": ["全部 11 类已观察事件"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render+persist", "syntheticTest: +retain（测试资产）"],
+      "notes": "event name（§8.8 行 1 允许采集面）"
+    },
+    {
+      "field": "cwd", "structure": "string",
+      "observed_in": ["PostToolUse", "PostToolBatch", "PreToolUse", "Stop", "SessionEnd", "SessionStart", "UserPromptSubmit"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render, redaction=redact（无 persist）"],
+      "notes": "§8.8 行 1「cwd 规范化标识」——值为绝对路径，命中路径模式即替换 [REDACTED]；规范化标识形态待产品层定义"
+    },
+    {
+      "field": "prompt_id", "structure": "string",
+      "observed_in": ["PostToolUse", "PostToolBatch", "PreToolUse", "Stop", "UserPromptSubmit"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render+persist"],
+      "notes": "turn 标识（session/root turn/generation 谱系）"
+    },
+    {
+      "field": "permission_mode", "structure": "string",
+      "observed_in": ["PostToolUse", "PostToolBatch", "PreToolUse", "Stop", "UserPromptSubmit"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render+persist"],
+      "notes": "状态码类（§8.8 行 1）"
+    },
+    {
+      "field": "tool_name", "structure": "string",
+      "observed_in": ["PostToolUse", "PreToolUse", "PermissionRequest(incidental)"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render（保守最小档：无 persist）"],
+      "notes": "工具名元数据；值域仍过敏感扫描"
+    },
+    {
+      "field": "stop_hook_active", "structure": "boolean",
+      "observed_in": ["Stop"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render+persist"],
+      "notes": "状态码类（§8.8 行 1）"
+    },
+    {
+      "field": "duration_ms", "structure": "number",
+      "observed_in": ["PostToolUse"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render+persist"],
+      "notes": "数值度量；数字字面量按 RFC 8259 文法收集，sizeLimit 约束同字符串"
+    },
+    {
+      "field": "reason", "structure": "string",
+      "observed_in": ["SessionEnd"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render+persist"],
+      "notes": "自由文本值面 → 必须过敏感扫描（prompt 标记/内部 URL/凭证样命中即字段级降级）；测试锚点 testPromptMarkerInAllowedValueDowngraded"
+    },
+    {
+      "field": "source", "structure": "string",
+      "observed_in": ["SessionStart", "ConfigChange(incidental)"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "reviewed-granted",
+      "grants": ["attentionIngest: ephemeral+render（无 persist）"],
+      "notes": "值域 startup/resume 类状态标识"
+    },
+    {
+      "field": "error", "structure": "string（StopFailure 推测形）",
+      "observed_in": [],
+      "directness": "unverified（StopFailure 2.1.226 未触发，manifest 记录 unverified）",
+      "version_applicability": "无观察版本",
+      "review_status": "reviewed-granted-redaction-only（不得预先假定可用）",
+      "grants": ["attentionIngest: ephemeral+render, redaction=redact；无 persist/export/telemetry/retain"],
+      "notes": "错误文本类字段默认 redaction/read-only（plan Step 6），不依赖字段名白名单；字段形状证据缺失——受控复现 StopFailure 前仅作 redaction 兜底档，不构成可用性放行"
+    },
+    {
+      "field": "model", "structure": "string",
+      "observed_in": [],
+      "directness": "spec-derived（§8.8 行 2；Task 0 探针仅覆盖官方 hook 源，无 statusline 探针）",
+      "version_applicability": "无观察版本",
+      "review_status": "reviewed-granted（保守档）",
+      "grants": ["statuslineRender: ephemeral+render（无 persist/export/telemetry）"],
+      "notes": "§8.8 行 2「数值可落」V1 未开 persist；值过敏感扫描（凭证样命中降级，测试锚点 testStatuslineModelWithCredentialPatternDowngraded）"
+    },
+    {
+      "field": "effort / effort.level", "structure": "object / string（嵌套）",
+      "observed_in": ["PostToolUse", "PostToolBatch", "PreToolUse", "Stop"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only",
+      "grants": [],
+      "notes": "observed 但未审查；嵌套 object 形态本就不在根标量放行面"
+    },
+    {
+      "field": "tool_use_id", "structure": "string",
+      "observed_in": ["PostToolUse", "PreToolUse", "PostToolBatch(tool_calls 内)"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "observed 但未审查"
+    },
+    {
+      "field": "background_tasks", "structure": "array",
+      "observed_in": ["Stop"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [], "notes": "observed 但未审查"
+    },
+    {
+      "field": "session_crons", "structure": "array",
+      "observed_in": ["Stop"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [], "notes": "observed 但未审查"
+    },
+    {
+      "field": "notification_type", "structure": "string",
+      "observed_in": ["Notification(incidental)"],
+      "directness": "incidental（未受控触发，field-name-only）",
+      "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "wire 字段名实测纠正（非 spec §8.10 推测的 subtype）有证据价值；受控复现待补，不放行"
+    },
+    {
+      "field": "old_cwd / new_cwd", "structure": "string",
+      "observed_in": ["CwdChanged(incidental)"],
+      "directness": "incidental", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "路径类值——未来任何放行必须先过 redaction 审查"
+    },
+    {
+      "field": "task_id", "structure": "string",
+      "observed_in": ["TaskCompleted(incidental)"],
+      "directness": "incidental", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [], "notes": ""
+    },
+    {
+      "field": "file_path", "structure": "string",
+      "observed_in": ["ConfigChange(incidental)"],
+      "directness": "incidental", "version_applicability": "2.1.226-only",
+      "review_status": "unreviewed/read-only", "grants": [],
+      "notes": "路径类值——未来任何放行必须先过 redaction 审查"
+    },
+    {
+      "field": "transcript_path", "structure": "string",
+      "observed_in": ["全部 11 类已观察事件"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "transcript 路径 → 解码边界跳过（V1 前置门 ⑤：真实 transcript 不得入库）"
+    },
+    {
+      "field": "prompt", "structure": "string",
+      "observed_in": ["UserPromptSubmit"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "用户输入正文——禁止字段，值永不 materialize"
+    },
+    {
+      "field": "last_assistant_message", "structure": "string",
+      "observed_in": ["Stop"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "正文类"
+    },
+    {
+      "field": "message", "structure": "string",
+      "observed_in": ["Notification(incidental)"],
+      "directness": "incidental", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "正文类"
+    },
+    {
+      "field": "task_subject / task_description", "structure": "string",
+      "observed_in": ["TaskCompleted(incidental)"],
+      "directness": "incidental", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "正文类（主题/描述按正文禁止档处理）"
+    },
+    {
+      "field": "tool_input（含 .command/.description/.timeout）", "structure": "object",
+      "observed_in": ["PostToolUse", "PreToolUse", "PostToolBatch(tool_calls 内)", "PermissionRequest(incidental)"],
+      "directness": "controlled + incidental", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "完整 tool input（含完整命令行 tool_input.command）——禁止；permission tool/parameter summary 不得预先假定可用"
+    },
+    {
+      "field": "tool_response（含 .stdout/.stderr/.interrupted/.isImage/.noOutputExpected）", "structure": "object",
+      "observed_in": ["PostToolUse"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "完整 tool output——禁止"
+    },
+    {
+      "field": "tool_calls（含嵌套 tool_name/tool_input/tool_response/tool_use_id）", "structure": "array",
+      "observed_in": ["PostToolBatch"],
+      "directness": "controlled", "version_applicability": "2.1.226-only",
+      "review_status": "prohibited", "grants": [],
+      "notes": "完整 tool input/output 聚合——禁止"
+    }
+  ],
+  "not_presumed_usable": [
+    {
+      "item": "question text / options / answers",
+      "status": "unreviewed（2.1.226 无对应字段观察）",
+      "notes": "spec 调研推测面（permission/question 交互文本）；未受控验证 → read-only/unreviewed 档，不得预先假定可用"
+    },
+    {
+      "item": "StopFailure error",
+      "status": "unverified（事件未触发）→ 仅 redaction 兜底档",
+      "notes": "见 fields[].error；受控复现前不构成可用性放行"
+    },
+    {
+      "item": "permission tool/parameter summary",
+      "status": "prohibited/read-only",
+      "notes": "PermissionRequest 仅 incidental 档；tool_input 及参数明细属禁止集；摘要形态若未来需要须单独受控审查"
+    }
+  ],
+  "source_capability_gaps": [
+    {
+      "source": "processTTY",
+      "status": "无矩阵行（全 read-only）",
+      "notes": "§8.8 行 5 名义允许 PID/TTY/启动时间，但 2.1.226 零受控探针证据 → observed 纪律不放行（测试锚点 testProcessTTYAllFieldsUnreviewedReadOnly）"
+    },
+    {
+      "source": "transcript",
+      "status": "整源 blocked（无能力面）",
+      "notes": "§8.8 行 4：本阶段禁止读取正文"
+    },
+    {
+      "source": "statusline / sessionIndex",
+      "status": "spec-derived 最小行",
+      "notes": "Task 0 探针仅覆盖官方 hook 源；两源行仅 §8.8 行 2/3 最小档（无 export/telemetry；sessionIndex 无 persist）"
+    }
+  ]
+}

@@ -63,14 +63,21 @@ public struct CapabilityFieldMatrix: Sendable {
 
     public init(rows: [CapabilityFieldRow]) { self.rows = rows }
 
-    /// 字段在任一 capability 下是否持有该 sink 授权；未收录字段恒 false
+    /// 字段在任一**生产** capability 面下是否持有该 sink 授权；未收录字段恒 false。
+    /// syntheticTest 是测试资产面（§8.8 行 6），其 retain 授权仅指合成 fixture 的
+    /// 长期测试保留，不是生产保留面——不计入本生产授权查询；
+    /// 测试资产面用 `row(capability: .syntheticTest, field:)` 显式查询。
     public func allows(field: String, sink: PrivacySink) -> Bool {
-        rows.contains { $0.sourceField == field && $0.allows(sink: sink) }
+        rows.contains {
+            $0.capability != .syntheticTest && $0.sourceField == field && $0.allows(sink: sink)
+        }
     }
 
-    /// 首个授权该 sink 的行（行序=授权面升序 → 返回最保守锚点）
+    /// 首个授权该 sink 的**生产**面行（行序=授权面升序 → 返回最保守锚点；
+    /// syntheticTest 不计入，语义同 `allows(field:sink:)`）。V1 无生产 retain 面 →
+    /// `firstRowAllowing(sink: .retain)` 恒 nil。
     public func firstRowAllowing(sink: PrivacySink) -> CapabilityFieldRow? {
-        rows.first { $0.allows(sink: sink) }
+        rows.first { $0.capability != .syntheticTest && $0.allows(sink: sink) }
     }
 
     /// 已审查字段集（去重，按首见序）——矩阵收录即审查通过
