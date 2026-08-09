@@ -36,7 +36,11 @@ public struct StalenessPolicy: Sendable {
     /// 活动事实 → 档位阈值（G5 三档）
     public static func threshold(for fact: ActivityFact) -> TimeInterval {
         switch fact {
-        case .working:
+        case .working, .idle, .waitingExternal:
+            // Task 5 词表补齐：spec §3 时效「working/idle 30min」明文；
+            // waiting_external 归 work 档——G9 将 waiting_external 与 working/idle
+            // 同列活跃态 ◌绿簇，4h 档按 spec 限定为等我介入类事实
+            // （waiting_user/waiting_permission/failed，「等待人判断」）。
             return workThreshold
         case .waitingUser, .waitingPermission, .failed:
             return waitThreshold

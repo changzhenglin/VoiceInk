@@ -10,6 +10,13 @@ public enum ActivityFact: String, Codable, Sendable {
     /// A-only 边界相应放宽：working 仅由真实 hook 活动证据产生——
     /// P0-4 不变（PID/TTY liveness 仍不得制造 working）。
     case working
+    /// v4 Task 5 词表补齐（附录 A G9）：空闲——受管且无活跃任务，投影 ◌绿。
+    /// 来源：completed >5min 的 timed reducer 转移（归 Task 8；投影层只消费）与
+    /// adapter 显式空闲证据。additive 扩容，不改变既有 case 语义。
+    case idle
+    /// v4 Task 5 词表补齐（附录 A G9）：等外部——agent 等待外部系统
+    /// （非等用户介入），投影 ◌绿 hover 区分「等外部」。additive 扩容。
+    case waitingExternal = "waiting_external"
 }
 public enum FreshnessState: String, Codable, Sendable { case fresh, aging, stale }
 public enum ConnectionState: String, Codable, Sendable { case connected, degraded, disconnected }

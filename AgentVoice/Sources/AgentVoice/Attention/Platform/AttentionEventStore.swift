@@ -80,6 +80,25 @@ public final class AttentionEventStore: @unchecked Sendable {
                 t.column("connection_generation", .integer).notNull()
                 t.column("scan_generation", .integer).notNull().defaults(to: 0)
             }
+            // Task 5：当前投影持久化表——冷启动只读本表（O(槽位数)），
+            // 禁止重放历史事件（plan Step 5 冷启动预算 p95≤500ms 钉死）。
+            // additive schema：既有库重放 init 幂等 migrate（IF NOT EXISTS）。
+            try db.create(table: "current_projections", ifNotExists: true) { t in
+                t.column("session_key", .text).primaryKey()
+                t.column("lamp", .text).notNull()
+                t.column("subreason", .text).notNull().defaults(to: "")
+                t.column("dimmed", .boolean).notNull().defaults(to: false)
+                t.column("hover_note", .text).notNull().defaults(to: "")
+                t.column("watermark_observed_at", .datetime).notNull()
+                t.column("updated_at", .datetime).notNull()
+            }
+            // Task 5：per-session 增量读取覆盖索引——DirtyProjectionScheduler
+            // 单 dirty session 工作量 O(该 session 增量) 的查询计划前提，
+            // 无索引则退化为历史全表扫描（性能预算测试钉死）。
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_attention_events_session_observed
+                ON attention_events(adapter_type, native_session_id, observed_at)
+                """)
         }
     }
 
@@ -547,6 +566,177 @@ extension AttentionEventStore {
             }
         } catch {
             return false   // 存储异常按 CAS 失败处理（fail-closed）
+        }
+    }
+}
+
+// MARK: - Task 5: 投影增量调度 seam（per-session 增量读 + 冷启动投影 + 批量基线）
+
+extension AttentionEventStore {
+    /// 冷启动投影行快照（current_projections 表；spec §5 ≤2s 口径的
+    /// 「激活瞬间原子读 store 当前投影」与冷启动恢复共用本形状）。
+    public struct ProjectionRecord: Equatable, Sendable {
+        public let sessionKey: String
+        public let lamp: String              // Lamp.rawValue 持久化
+        public let subreason: String
+        public let dimmed: Bool
+        public let hoverNote: String
+        /// 该会话投影消费到的事件水位线（增量调度恢复起点；单调不回退）
+        public let watermarkObservedAt: Date
+        public let updatedAt: Date
+
+        public init(sessionKey: String, lamp: String, subreason: String,
+                    dimmed: Bool, hoverNote: String,
+                    watermarkObservedAt: Date, updatedAt: Date) {
+            self.sessionKey = sessionKey
+            self.lamp = lamp
+            self.subreason = subreason
+            self.dimmed = dimmed
+            self.hoverNote = hoverNote
+            self.watermarkObservedAt = watermarkObservedAt
+            self.updatedAt = updatedAt
+        }
+    }
+
+    /// per-session 增量读取（DirtyProjectionScheduler O(增量) 预算的读取面）：
+    /// 只读该 session 自水位线以来的事件（走 session_observed 覆盖索引，
+    /// 与历史总量无关）。sessionKey 按首个 `|` 拆为 adapter_type/native_session_id
+    /// （与 ingestForTesting 同约定）。C17：读路径禁 try!，失败降级空集。
+    public func events(sessionKey: String, since: Date) -> [NormalizedAgentEvent] {
+        let parts = sessionKey.split(separator: "|", maxSplits: 1,
+                                     omittingEmptySubsequences: false)
+        let adapterType = String(parts[0])
+        let nativeSessionId = parts.count > 1 ? String(parts[1]) : ""
+        do {
+            let rows = try dbQueue.read { db in
+                try String.fetchAll(db, sql: """
+                    SELECT event_json FROM attention_events
+                    WHERE adapter_type = ? AND native_session_id = ? AND observed_at > ?
+                    ORDER BY observed_at
+                    """, arguments: [adapterType, nativeSessionId, since])
+            }
+            return rows.compactMap { $0.data(using: .utf8) }
+                .compactMap { try? JSONDecoder().decode(NormalizedAgentEvent.self, from: $0) }
+        } catch {
+            return []   // C17：磁盘/损坏/关闭态降级空集（同 events(since:) 模式）
+        }
+    }
+
+    /// 当前投影 upsert（投影持久化 seam；同 session_key 覆盖旧投影，
+    /// 冷启动只读本表）。写失败降级不 crash（C17 同式；fail-closed 裁决归接线层）。
+    public func persistProjection(_ record: ProjectionRecord) {
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO current_projections
+                    (session_key, lamp, subreason, dimmed, hover_note,
+                     watermark_observed_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_key) DO UPDATE SET
+                        lamp = excluded.lamp,
+                        subreason = excluded.subreason,
+                        dimmed = excluded.dimmed,
+                        hover_note = excluded.hover_note,
+                        watermark_observed_at = excluded.watermark_observed_at,
+                        updated_at = excluded.updated_at
+                    """, arguments: [record.sessionKey, record.lamp, record.subreason,
+                        record.dimmed, record.hoverNote,
+                        record.watermarkObservedAt, record.updatedAt])
+            }
+        } catch {
+            // C17：写失败降级不 crash
+        }
+    }
+
+    /// 冷启动只读 current projection/watermark（plan Step 5：禁止重放历史）——
+    /// SELECT ... LIMIT 有界查询，O(槽位数) 与历史事件总量无关。
+    /// throws 保留给存储错误（冷启动失败必须由接线层 fail-closed 裁决，不静默空集）。
+    public func loadColdStartProjectionsForTesting(limit: Int) throws -> [ProjectionRecord] {
+        let rows = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT session_key, lamp, subreason, dimmed, hover_note,
+                       watermark_observed_at, updated_at
+                FROM current_projections
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """, arguments: [limit])
+        }
+        return rows.compactMap { row in
+            guard let sessionKey: String = row["session_key"],
+                  let lamp: String = row["lamp"],
+                  let subreason: String = row["subreason"],
+                  let dimmed: Bool = row["dimmed"],
+                  let hoverNote: String = row["hover_note"],
+                  let watermark: Date = row["watermark_observed_at"],
+                  let updatedAt: Date = row["updated_at"] else { return nil }
+            return ProjectionRecord(sessionKey: sessionKey, lamp: lamp,
+                                    subreason: subreason, dimmed: dimmed,
+                                    hoverNote: hoverNote,
+                                    watermarkObservedAt: watermark, updatedAt: updatedAt)
+        }
+    }
+
+    // MARK: 批量基线 seam（测试专用；不得进生产路径）
+
+    /// 测试辅助：批量播种单 session 事件行（性能预算基线用）。
+    /// 单写事务 + 复用预编译语句；event_json 为真实 schema 形状 + 人工合成值
+    /// （privacy：零真实内容；可被 JSONDecoder 按 NormalizedAgentEvent 解码）。
+    public func bulkIngestForTesting(sessionKey: String, count: Int,
+                                     startingAt: Date) throws {
+        let parts = sessionKey.split(separator: "|", maxSplits: 1,
+                                     omittingEmptySubsequences: false)
+        let adapterType = String(parts[0])
+        let nativeSessionId = parts.count > 1 ? String(parts[1]) : ""
+        try dbQueue.write { db in
+            for i in 0..<count {
+                let observedAt = startingAt.addingTimeInterval(TimeInterval(i))
+                let eventId = "bulk-\(sessionKey)-\(i)"
+                // 真实 schema 形状的最小可解码 JSON（键名对齐 CodingKeys；
+                // Date 按 JSONDecoder 默认策略 = timeIntervalSinceReferenceDate 双精度）
+                let json = """
+                    {"event_id":"\(eventId)","adapter_type":"\(adapterType)",\
+                    "native_session_id":"\(nativeSessionId)",\
+                    "observed_at":\(observedAt.timeIntervalSinceReferenceDate),\
+                    "kind":"connection_fact","payload_version":1,\
+                    "source_level":"synthetic_fixture","hook_event_name":""}
+                    """
+                try db.execute(sql: """
+                    INSERT INTO attention_events
+                    (event_id, adapter_type, native_session_id, observed_at, kind,
+                     payload_version, sanitized_payload_ref, source_level,
+                     source_claude_version, hook_event_name, cwd_label, cwd_ref, event_json)
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, '', NULL, NULL, ?)
+                    """, arguments: [eventId, adapterType, nativeSessionId, observedAt,
+                        "connection_fact", SchemaVersions.eventSchema,
+                        "synthetic_fixture", json])
+            }
+        }
+    }
+
+    /// 测试辅助：批量播种 receipt 基线行（性能预算 100k receipt 质量）。
+    /// 落点为测试专用表 `testing_channel_receipts`（本 seam 首次调用时创建）——
+    /// 生产 receipt 归闭环层 closure_receipts（ClosureKeyStore additive 同库），
+    /// 本表只承担基线质量，不触闭环表语义（carryover 边界）。
+    public func bulkSeedReceiptsForTesting(count: Int, sessions: [String]) throws {
+        precondition(!sessions.isEmpty, "bulkSeedReceiptsForTesting 需要至少一个 session")
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS testing_channel_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    session_key TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    recorded_at DATETIME NOT NULL
+                )
+                """)
+            let base = Date(timeIntervalSinceReferenceDate: 0)
+            for i in 0..<count {
+                try db.execute(sql: """
+                    INSERT INTO testing_channel_receipts
+                    (receipt_id, session_key, channel, recorded_at)
+                    VALUES (?, ?, ?, ?)
+                    """, arguments: ["bulk-rcpt-\(i)", sessions[i % sessions.count],
+                        "panel", base.addingTimeInterval(TimeInterval(i))])
+            }
         }
     }
 }

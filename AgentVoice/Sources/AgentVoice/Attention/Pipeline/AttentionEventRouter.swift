@@ -193,6 +193,7 @@ public final class AttentionEventRouter: @unchecked Sendable {
         case .failed: return .failed
         case .completed: return .completed
         case .working: return .connectionFact   // v4 I5：working 无专属注意力 kind，低优先证据档（rank -1）
+        case .idle, .waitingExternal: return .connectionFact   // Task 5 词表补齐：G9 ◌绿簇无专属注意力 kind，最小归属同 working
         case .unknown: return .connectionFact
         }
     }
