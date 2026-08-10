@@ -199,8 +199,11 @@ struct PreviewPanelContent: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 2)
             }
-            // 短文本不强撑高度（fixedSize 取内容理想高）；长文本 120pt 上限内滚动（UI 规范 §2）
-            .fixedSize(horizontal: false, vertical: true)
+            // 长文本在 120pt 上限内滚动（UI 规范 §2）；ScrollView 跟随宿主固定高度容器
+            // 的剩余预算自适应（宿主 previewContentHeight 固定，见 NotchRecorderView）。
+            // 验收修复（Task 13 FAIL-1/FAIL-2 同根因）：原 .fixedSize(vertical: true) 强制
+            // ScrollView 取内容理想高度，长文本击穿 120pt 上限与宿主容器，正文铺满面板、
+            // 操作区被推出可视区致按钮不可点击（键盘快捷键不受影响可注入=判别证据）。
             .frame(maxHeight: bodyMaxHeight)
         case .processing:
             if !contextText.isEmpty {
