@@ -92,8 +92,11 @@ public final class AttentionEventRouter: @unchecked Sendable {
             }
         }
         // Task 8B #9a：unseen 摘要队列冷启动恢复——未 drain 条目重新入队
-        //（dedupe 语义保持：enqueueUnseenSummary 按 attentionItemId 幂等；
-        // 已 drain 行在 drain 时已删，不在恢复集 = 已交付不重播）
+        //（dedupe 语义保持：enqueueUnseenSummary 按 attentionItemId 幂等）。
+        // 语义口径（8B1-M5 更正）：未确认项跨重启再交付——seen 是用户侧确认
+        //（M1 面板动作面），drain 交付本身不产生 seen；且 removeDrained 存在失败
+        // 降级路径（行残留），残留行跨重启恢复后可再交付。**at-most-once 限生命
+        // 周期内**（summaryDrainArmed 重启重置为 true，恢复集参与新生命周期首 drain）。
         if let summaryStore, let restored = try? summaryStore.restore() {
             for entry in restored {
                 summaryQueue.enqueueUnseenSummary(entry)
@@ -311,11 +314,18 @@ public final class AttentionEventRouter: @unchecked Sendable {
         public var expiredLeases: Int
         public var timedTransitions: Int
         public var summariesDrained: Int
+        /// Task 8B-2（8B1-M1 消费，additive）：本 tick drain 交付的条目本体——
+        /// app 侧只经 tick 返回体消费，不跨队列读 router 内部状态（数据竞争消除）。
+        /// privacy：条目只载关联键+时间戳，零内容字段。默认 [] 保持既有任何点
+        ///（骨架计数器断言/既有构造）零改动。
+        public var drainedEntries: [UnseenSummaryEntry]
         public init(expiredLeases: Int = 0, timedTransitions: Int = 0,
-                    summariesDrained: Int = 0) {
+                    summariesDrained: Int = 0,
+                    drainedEntries: [UnseenSummaryEntry] = []) {
             self.expiredLeases = expiredLeases
             self.timedTransitions = timedTransitions
             self.summariesDrained = summariesDrained
+            self.drainedEntries = drainedEntries
         }
     }
 
@@ -368,9 +378,15 @@ public final class AttentionEventRouter: @unchecked Sendable {
                 attentionItemId: item.attentionItemId, sessionKey: item.sessionKey,
                 kind: item.kind, completedAt: item.createdAt))
             if summaryQueue.count > before {
-                try? summaryStore?.enqueue(UnseenSummaryEntry(
-                    attentionItemId: item.attentionItemId, sessionKey: item.sessionKey,
-                    kind: item.kind, completedAt: item.createdAt))
+                do {
+                    try summaryStore?.enqueue(UnseenSummaryEntry(
+                        attentionItemId: item.attentionItemId, sessionKey: item.sessionKey,
+                        kind: item.kind, completedAt: item.createdAt))
+                } catch {
+                    // 8B1-M2 消费：enqueue 失败降级接受（内存队列仍生效），
+                    // 但信号必须上报（onPersistError 注入面，app 接 os.Logger）
+                    store.onPersistError?(error)
+                }
             }
         }
 
@@ -382,10 +398,17 @@ public final class AttentionEventRouter: @unchecked Sendable {
         if summaryDrainArmed, summaryQueue.count > 0 {
             let drained = summaryQueue.drain()
             report.summariesDrained = drained.count
+            report.drainedEntries = drained   // 8B-2 additive：app 只经返回体消费（8B1-M1）
             lastDrainedSummaries = drained
             summaryDrainArmed = false   // 本生命周期不再 drain（at-most-once）
             for entry in drained {
-                try? summaryStore?.removeDrained(attentionItemId: entry.attentionItemId)
+                do {
+                    try summaryStore?.removeDrained(attentionItemId: entry.attentionItemId)
+                } catch {
+                    // 8B1-M3 消费：removeDrained 失败降级接受（本生命周期 armed=false
+                    // 不重播），但信号必须上报；行残留的跨重启再交付语义见 replay 注释
+                    store.onPersistError?(error)
+                }
             }
         }
         return report

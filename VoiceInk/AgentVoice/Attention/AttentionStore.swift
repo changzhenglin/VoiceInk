@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AgentVoice
+import os
 
 /// 投影会话条目（spec §3.2：4 常见/6 上限/+N 不静默）
 struct SessionDisplay: Identifiable, Equatable {
@@ -37,8 +38,18 @@ final class AttentionStore: ObservableObject {
     private var router: AttentionEventRouter?
     private var server: AttentionHTTPServer?
     private var retentionScheduler: AttentionRetentionScheduler?   // 携带项 B：保留策略维护
+    /// Task 8B-2 #9b：生产 tick 驱动器（DispatchSourceTimer；RetentionScheduler 先例）
+    private var productionTicker: AttentionProductionTicker?
     private let maxVisible = 6
     private var timer: Timer?
+
+    // MARK: - Task 8B-2：tick 呈现 seam（additive；穷举呈现面归 14A，本处只暴露）
+    /// 最近一次 tick drain 交付的摘要条目（8B1-M1：只经 tick 返回体获得，不跨队列
+    /// 读 router 内部状态）。flag off 时清空静默（呈现面门控；管线 tick 不受影响）。
+    private(set) var lastDrainedEntries: [UnseenSummaryEntry] = []
+    /// 最近一次 tick 的音频补偿决策（#10：全屏检测 → decideSound 路由结果）。
+    /// 播放表面归 14A 穷举面（本批只接决策路由，不建通知 UI）。
+    private(set) var lastSoundCompensation: SoundCompensationDecision = .none
 
     // MARK: - Task 8A：v4 灯条生产表面（behind versioned flag，裁决 A/B）
     /// 稳定 session_key→slot 空间记忆（§4；裁决 5 持久落点=UserDefaults additive，
@@ -70,6 +81,13 @@ final class AttentionStore: ObservableObject {
         let token = Self.sharedAuthToken()
         // ① 存储 + router + replay + 保留调度（携带项 B）
         let store = try AttentionEventStore(path: attentionDBPath())
+        // Task 8B-2 #8（8B1-M2/M3 消费）：persist 错误信号化 app 注入——包层保持
+        // Foundation-only，app 侧注入 os.Logger closure（replay 前注入，启动期
+        // 持久化错误一并可观察）。降级语义在包层（失败不 crash），本面只上报。
+        store.onPersistError = { error in
+            Logger(subsystem: "com.voiceink.attention", category: "persist")
+                .error("attention persist error: \(String(describing: error), privacy: .public)")
+        }
         let r = AttentionEventRouter(store: store)
         r.replayFromStore()   // F6：启动重建（含持久化 items，C5 不丢用户操作）
         let sched = AttentionRetentionScheduler(store: store)
@@ -105,17 +123,52 @@ final class AttentionStore: ObservableObject {
         }
         RunLoop.main.add(refreshTimer, forMode: .common)
         timer = refreshTimer
+        // Task 8B-2 #9b：生产 tick 驱动器——管线无条件运行（flag 只门控呈现消费面，
+        // 不门控 tick：store 采集/租约/摘要属管线非呈现）。放在 enable 全链成功后
+        // 启动（任一前置步骤失败回滚时 ticker 不产生，无悬挂定时器）。
+        let ticker = AttentionProductionTicker(router: r)
+        ticker.onTick = { [weak self] report in
+            Task { @MainActor [weak self] in self?.consumeTickReport(report) }
+        }
+        ticker.start()
+        productionTicker = ticker
     }
 
     /// enable 逆操作：timer/scheduler/server/hooks/投影状态全清（幂等）
     func disable() {
         timer?.invalidate(); timer = nil
+        productionTicker?.stop(); productionTicker = nil   // Task 8B-2：tick 驱动器幂等停止
         retentionScheduler?.stop(); retentionScheduler = nil
         server?.stop()
         HookInstaller(token: Self.sharedAuthToken()).uninstall()
         router = nil; server = nil
         // Task 14 review M4①：versionDrift 一并重置（上一轮 enable 的 drift 残留不跨开关）
         enabled = false; sessions = []; pendingCount = 0; overflow = nil; versionDrift = false
+        lastDrainedEntries = []; lastSoundCompensation = .none   // 8B-2 seam 态不跨开关
+    }
+
+    // MARK: - Task 8B-2：tick 报告消费（呈现 seam；管线/呈现分界见 productionTicker 注释）
+
+    /// tick 报告呈现消费——**flag gate 语义**：off → 呈现面静默（seam 清空），
+    /// 但管线 tick 不停（驱动器侧不读本 flag：store 采集/租约/摘要属管线非呈现）。
+    /// 穷举呈现面（通知 UI/面板消费/播放表面）归 14A；本面只暴露条目与补偿决策。
+    private func consumeTickReport(_ report: AttentionEventRouter.ProductionTickReport) {
+        guard UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled) else {
+            lastDrainedEntries = []
+            lastSoundCompensation = .none
+            return
+        }
+        lastDrainedEntries = report.drainedEntries
+        // #10：全屏检测 → 音频补偿路由。fail-closed：检测不可用按非全屏处理
+        //（detector 内部语义），不错误静默可呈现路径。输入口径：drain 交付=呈现
+        // 诉求（floatAllowed=true）；preset/mute 的 settings 注册归 14A 环境面
+        //（本批红线出 scope），此处按 spec §2 L31 可发声档 .strong + 未 mute
+        // 接通路由，用户设置面落地后替换；interventionQueued 归 #3c（defer V2）。
+        let fullScreen = AttentionFullScreenDetector.frontmostAppIsFullScreen()
+        lastSoundCompensation = NotificationSoundRouter().decideSound(
+            preset: .strong, muted: false, floatAllowed: true,
+            systemCanPresentFloat: !fullScreen, interventionQueued: false,
+            isCompleted: false, explicitOff: false)
     }
 
     /// 投影刷新（C18：真实时间戳/显式 rank 排序/同名后缀/completed 超 24h 过滤）

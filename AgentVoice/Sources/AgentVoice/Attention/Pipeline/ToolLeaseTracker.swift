@@ -7,11 +7,20 @@ import Foundation
 ///   permission_requested 产出分支；waiting_permission enum 保留但无 CC 产出路径）；
 /// - lease 由 PID/TTY liveness 续租（真实存活证据），非伪称周期心跳；
 ///   liveness 不活不得续租（不撒谎）；
-/// - 到期只清 overlay（lease 失效），不改 activityFact（§8.3：`tool_lease_expires_at`
-///   过期后行为 = 清 overlay，不改事实）；
+/// - 到期只清 overlay（lease 失效），tracker 自身不改 activityFact（§8.3：
+///   `tool_lease_expires_at` 过期后行为 = 清 overlay，不改事实）；
 /// - CC 面永不产 waiting_permission——`waitingPermissionProduced` 观察点恒 nil。
 ///
 /// lease 是 overlay 不是事实：P0-4 一致——lease 存在不得制造 working/waiting。
+///
+/// **8B brief 授权的生产者侧降档例外**（8B1-M4：消 doc/code 分歧）：
+/// 消费方 router `tick(at:)` ① 在 expireOverdue 清 overlay 时，对该刻 activityFact
+/// 仍为 working 的会话降档 .unknown（fail-closed ?灰）。依据：lease 是 working 的
+/// 存活证据，到期未续 = 证据不可验证，不得继续声称 working。例外边界：
+/// ① 只降档不升档（lease 存在仍不得制造 working——P0-4 负向不放宽）；
+/// ② tracker 本体保持零事实写入，降档发生在 router 消费面（§8.3 对 tracker 的
+///   约束不变）；③ 该分支真实可达——UAS（userPromptSubmit）可产 working 事实与
+///   活跃 lease 共存（会话提示后跑工具、lease 到期无续租时命中降档）。
 public final class ToolLeaseTracker: @unchecked Sendable {
     /// lease 默认 TTL（与 G5 work 档 30min 同量级；到期前由 liveness 续租延长）
     public static let defaultLeaseTTL: TimeInterval = 30 * 60
@@ -54,7 +63,8 @@ public final class ToolLeaseTracker: @unchecked Sendable {
     }
 
     /// 到期 lease 清 overlay：移除并返回所有 expiresAt ≤ at 的 lease（§8.3）。
-    /// 只清 overlay——调用方不得据此改 activityFact。
+    /// 只清 overlay——tracker 自身不改 activityFact；消费侧降档例外（router tick
+    /// working→unknown，只降不升）见文件头 8B brief 授权例外节。
     public func expireOverdue(at: Date) -> [ToolLease] {
         lock.lock(); defer { lock.unlock() }
         let expired = leases.values
