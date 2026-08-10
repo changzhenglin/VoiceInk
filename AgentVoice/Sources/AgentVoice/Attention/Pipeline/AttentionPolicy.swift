@@ -41,6 +41,16 @@ public struct AttentionPolicy: Sendable {
         return .created(item)
     }
 
+    /// Task 8B #9b（additive）：事件自身注意力项工厂——与 `.created` 路径同构造规则
+    ///（ID 格式单一真源）。供 router `.superseded` 路径补建当前事件项：
+    /// completed/failed 事件在 supersede 过时 waiting 项时，自身事实也须有项
+    ///（§8.7 unseen completed 摘要入队以 item 为前提；此前该路径只超替不建项）。
+    public func makeItem(for event: NormalizedAgentEvent) -> AttentionItem {
+        AttentionItem(
+            attentionItemId: "ai-\(event.nativeSessionId)-\(event.kind.rawValue)-\(event.eventId)",
+            sessionKey: event.nativeSessionId, kind: event.kind, createdAt: event.observedAt)
+    }
+
     public func markSeen(_ i: AttentionItem, at: Date) -> AttentionItem {
         var x = i; x.status = .seen; x.updatedAt = at; return x
     }

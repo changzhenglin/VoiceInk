@@ -19,6 +19,21 @@ public final class AttentionEventRouter: @unchecked Sendable {
     private let mutex = SessionMutex()
     private let reducer = AttentionReducer()
     private let policy = AttentionPolicy()
+    /// Task 8B #3a（I5 生产接线）：tool_in_flight lease overlay——
+    /// router 内实例化持有（additive 字段）；lease 是 overlay 不是事实（ToolLeaseTracker 语义合同）
+    private let leaseTracker = ToolLeaseTracker()
+    /// Task 8B #9a/#9b：unseen completed 摘要队列（纯内存 seam=Task 8 交付；
+    /// 持久化面由 UnseenSummaryStore 附着同库，见 replayFromStore/tick 接线）
+    private var summaryQueue = UnseenSummaryQueue()
+    /// drain 控制器裁决值 `presentationDrainRepeat=false`：每 router 生命周期
+    /// 至多一次 drain 呈现（at-most-once 一次性呈现；禁止重复呈现路径）
+    private var summaryDrainArmed = true
+    /// 最近一次 drain 交付的摘要条目（app 呈现层 seam；privacy：只载关联键+时间戳）
+    public private(set) var lastDrainedSummaries: [UnseenSummaryEntry] = []
+    /// Task 8B #9a：摘要队列持久化（同库附着 unseen_summary_queue 表）——
+    /// schema 失败降级 nil = 仅内存队列生效（C17 同式降级，不 crash；
+    /// 跨重启恢复能力丢失，known hole 记报告）
+    private let summaryStore: UnseenSummaryStore?
     private var snapshots: [String: AttentionStateSnapshot] = [:]
     private var items: [AttentionItem] = []
     private var sessionCwdLabels: [String: String] = [:]   // F4/C20：sessionKey → cwd basename 标签（契约安全）
@@ -30,6 +45,8 @@ public final class AttentionEventRouter: @unchecked Sendable {
     public init(store: AttentionEventStore) {
         self.store = store
         self.generationCoordinator = GenerationCoordinator(store: store)
+        // Task 8B #9a：同库附着摘要队列表（IF NOT EXISTS additive；失败降级 nil）
+        self.summaryStore = try? UnseenSummaryStore(store: store)
     }
 
     /// F6+C5：app 重启后重建——快照从事件重放；items 以持久化版为准（用户操作不丢）
@@ -61,6 +78,27 @@ public final class AttentionEventRouter: @unchecked Sendable {
             snapshot = reducer.reduce(events: [e], state: snapshot)
             snapshots[e.nativeSessionId] = snapshot
         }
+        // Task 8B #6（T5-M1 消费面）：冷启动水位恢复——消费 current_projections
+        // 既有只读面，把持久化水位注入 snapshot（单调不回退：取 replay 值与持久化值
+        // 的 max）；恢复后 C11 水位裁决跨重启不回退（旧低优先事件拒绝/新事件接受）
+        if let records = try? store.loadColdStartProjectionsForTesting(limit: 4096) {
+            for record in records {
+                var snapshot = snapshots[record.sessionKey]
+                    ?? AttentionStateSnapshot(sessionKey: record.sessionKey)
+                if record.watermarkObservedAt > snapshot.watermarkObservedAt {
+                    snapshot.watermarkObservedAt = record.watermarkObservedAt
+                }
+                snapshots[record.sessionKey] = snapshot
+            }
+        }
+        // Task 8B #9a：unseen 摘要队列冷启动恢复——未 drain 条目重新入队
+        //（dedupe 语义保持：enqueueUnseenSummary 按 attentionItemId 幂等；
+        // 已 drain 行在 drain 时已删，不在恢复集 = 已交付不重播）
+        if let summaryStore, let restored = try? summaryStore.restore() {
+            for entry in restored {
+                summaryQueue.enqueueUnseenSummary(entry)
+            }
+        }
     }
 
     public func ingest(hookEventName: String, payloadJson: String,
@@ -88,7 +126,11 @@ public final class AttentionEventRouter: @unchecked Sendable {
                 sanitizedPayloadRef: ref, sourceLevel: parsed.sourceLevel,
                 sourceClaudeVersion: parsed.sourceClaudeVersion,
                 hookEventName: parsed.hookEventName,
-                cwdLabel: parsed.cwdLabel, cwdRef: parsed.cwdRef)
+                cwdLabel: parsed.cwdLabel, cwdRef: parsed.cwdRef,
+                // Task 8B #5：信号透传（UAS userPromptRelated / PostToolUse toolCompleted）——
+                // 此前重建未携信号字段，I5 信号消费链在 ingest 面断开
+                activitySignal: parsed.activitySignal,
+                notificationSubtype: parsed.notificationSubtype)
         } catch AdapterError.zeroUUIDSession {
             store.persistIncident(code: .identity, sid: nil, at: observedAt)  // C12：留证
             return .rejected(.identity)          // ADJ-1
@@ -147,11 +189,39 @@ public final class AttentionEventRouter: @unchecked Sendable {
                     store.persistItem(items[idx])                // C5
                 }
             }
+            // Task 8B #9b：supersede 路径补建当前事件自身项（此前该路径只超替不建项）——
+            // §8.7 unseen completed 摘要入队以 completed item 为前提；构造规则同 .created 路径
+            let eventItem = policy.makeItem(for: event)
+            items.append(eventItem)
+            store.persistItem(eventItem)                         // C5
         case .none: break
+        }
+        // Task 8B #3a（I5 生产接线）：tool_in_flight 事件建 lease overlay——
+        // 只建 lease 事实（不产 waiting，ToolLeaseTracker 语义合同）；
+        // deliveryId 取 eventId（契约安全，不载工具内容）
+        if event.kind == .toolInFlight {
+            leaseTracker.registerToolInFlight(sessionKey: event.nativeSessionId,
+                                              deliveryId: event.eventId, at: observedAt)
+        }
+        // Task 8B #5（完成面接线）：PostToolUse toolCompleted 信号 → lease 解除。
+        // 关联键（tool_use_id）缺失不阻断解除——lease 按 sessionKey 单键持有；
+        // 缺键只读降级约束的是题面联想（policy.resolveQuestion），不是 lease 生命周期
+        if event.activitySignal == .toolCompleted {
+            leaseTracker.completeToolInFlight(sessionKey: event.nativeSessionId)
         }
         // 携带项 A（ADJ-2 闭合）：sessionEnd 成功入库后释放 mutex ownership——
         // 修 owner 表只增不减的泄漏，同 session 结束后重新声明无冲突残留
         if event.kind == .sessionEnd {
+            // Task 8B #3b（I3/§8.6 生产接线）：该会话未决 items supersede 闭合——
+            // supersedeOpenItems 是逐项纯映射，调用方按 session 限定范围（不跨会话误伤）；
+            // 面板保留历史（waiting/failed→superseded，completed→resolved，终态幂等）
+            for idx in items.indices where items[idx].sessionKey == event.nativeSessionId {
+                let updated = policy.supersedeOpenItems([items[idx]], at: observedAt)[0]
+                if updated != items[idx] {
+                    items[idx] = updated
+                    store.persistItem(updated)   // C5：闭合状态持久化
+                }
+            }
             mutex.release(sessionId: event.nativeSessionId)
         }
         return .accepted(snapshot: snapshot)
@@ -226,6 +296,112 @@ public final class AttentionEventRouter: @unchecked Sendable {
     /// 供携带项 A release wiring 测试观测用（同阶段① Task 4 dbQueue internal 先例）。
     func holdsOwnership(sessionId: String) -> Bool {
         mutex.holds(sessionId: sessionId)
+    }
+
+    // MARK: - Task 8B：生产接线面（lease 观测 + 生产 tick；包层纯逻辑，app 驱动器归 8B-2）
+
+    /// Task 8B #3a：会话在 at 时刻是否持有活跃 tool lease（委托 ToolLeaseTracker）
+    public func toolLeaseActive(sessionKey: String, at: Date) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return leaseTracker.hasActiveLease(sessionKey: sessionKey, at: at)
+    }
+
+    /// Task 8B #9b：生产 tick 报告（计数面；诊断/测试观测，不载内容）
+    public struct ProductionTickReport: Equatable, Sendable {
+        public var expiredLeases: Int
+        public var timedTransitions: Int
+        public var summariesDrained: Int
+        public init(expiredLeases: Int = 0, timedTransitions: Int = 0,
+                    summariesDrained: Int = 0) {
+            self.expiredLeases = expiredLeases
+            self.timedTransitions = timedTransitions
+            self.summariesDrained = summariesDrained
+        }
+    }
+
+    /// Task 8B #9a：当前未 drain 摘要条目数（队列读面；测试/诊断观测）
+    public var pendingSummaryCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return summaryQueue.count
+    }
+
+    /// Task 8B 生产 tick（包层纯逻辑单循环，§8.7）：
+    /// ① lease 到期清 overlay（§8.3；working 依据消失 → fail-closed 降档 ?灰）→
+    /// ② timedTransition（completed∧>5min→idle，completedAt=会话最近事件时刻）→
+    /// ③ expireCompletedPresentation（bounded 查询，零删改）→ unseen 摘要入队（dedupe）→
+    /// ④ drain 一次性呈现（at-most-once 裁决：每生命周期首个非空队列 tick 才 drain；
+    ///    drained 条目对应 item 标 seen——unseen→seen 闭合，结构性保证已 drain 不重播）。
+    /// app 层 DispatchSourceTimer 驱动器归 8B-2。
+    @discardableResult
+    public func tick(at: Date) -> ProductionTickReport {
+        lock.lock(); defer { lock.unlock() }
+        var report = ProductionTickReport()
+
+        // ① #3a：过期 lease 清 overlay——lease 是 working 的存活证据，过期后
+        // 该证据不可验证 → fail-closed 降档 .unknown（?灰；不猜测仍在工作）
+        for lease in leaseTracker.expireOverdue(at: at) {
+            report.expiredLeases += 1
+            if var snap = snapshots[lease.sessionKey], snap.activityFact == .working {
+                snap.activityFact = .unknown
+                snapshots[lease.sessionKey] = snap
+            }
+        }
+
+        // ② #9b：timed 转移（Task 8 reducer.timedTransition 生产消费）——
+        // completedAt 取会话最近事件时刻（completed 态下即 Stop 事件时刻）
+        for (sessionKey, snap) in snapshots where snap.activityFact == .completed {
+            let after = reducer.timedTransition(snapshot: snap,
+                                                completedAt: sessionLastEventAt[sessionKey],
+                                                at: at)
+            if after.activityFact != snap.activityFact {
+                snapshots[sessionKey] = after
+                report.timedTransitions += 1
+            }
+        }
+
+        // ③ #9b：completed unseen presentation TTL 过期项入摘要队列——
+        // store 面零删改（裁决 A）；重复返回的幂等由队列 dedupe 承担。
+        // 持久化同步行（未 drain 条目跨重启恢复的前提；INSERT OR IGNORE 幂等）
+        for item in store.expireCompletedPresentation(at: at) {
+            let before = summaryQueue.count
+            summaryQueue.enqueueUnseenSummary(UnseenSummaryEntry(
+                attentionItemId: item.attentionItemId, sessionKey: item.sessionKey,
+                kind: item.kind, completedAt: item.createdAt))
+            if summaryQueue.count > before {
+                try? summaryStore?.enqueue(UnseenSummaryEntry(
+                    attentionItemId: item.attentionItemId, sessionKey: item.sessionKey,
+                    kind: item.kind, completedAt: item.createdAt))
+            }
+        }
+
+        // ④ drain 一次性呈现（presentationDrainRepeat=false 裁决值）。
+        // drain = 交付呈现层，不改 item seen 状态（seen = 用户侧确认，M1 面板动作面；
+        // 两者分离——§8.7 retention≠重播：未确认项跨重启可再交付，不丢失）。
+        // 行删除 = 持久层「已交付」事实：本生命周期 armed=false 不再 drain，
+        // 行删后重入队 = 队列文档允许的「新呈现周期」（dedupe 集合 drain 时已清）
+        if summaryDrainArmed, summaryQueue.count > 0 {
+            let drained = summaryQueue.drain()
+            report.summariesDrained = drained.count
+            lastDrainedSummaries = drained
+            summaryDrainArmed = false   // 本生命周期不再 drain（at-most-once）
+            for entry in drained {
+                try? summaryStore?.removeDrained(attentionItemId: entry.attentionItemId)
+            }
+        }
+        return report
+    }
+
+    /// Task 8B #6（T5-M1，additive）：投影+水位持久化入口——per session 把
+    /// snapshot 水位写入 current_projections（水位专用面，不覆盖投影层灯态）。
+    /// 冷启动恢复见 replayFromStore 对 loadColdStartProjectionsForTesting 的消费。
+    public func persistCurrentProjections() {
+        lock.lock(); defer { lock.unlock() }
+        for (sessionKey, snapshot) in snapshots {
+            store.persistProjectionWatermark(
+                sessionKey: sessionKey,
+                watermarkObservedAt: snapshot.watermarkObservedAt,
+                updatedAt: sessionLastEventAt[sessionKey] ?? snapshot.watermarkObservedAt)
+        }
     }
 
     // MARK: - C3：mutation API（Task 16 面板动作的管道入口；C5 持久化）

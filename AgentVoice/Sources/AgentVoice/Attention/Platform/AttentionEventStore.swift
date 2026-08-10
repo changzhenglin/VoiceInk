@@ -14,6 +14,14 @@ public final class AttentionEventStore: @unchecked Sendable {
     // Task 8：brief 注记——可见性 private→internal，供同文件 retention extension 访问
     let dbQueue: DatabaseQueue
 
+    /// Task 8B #9（T5-M6 消费面，additive）：持久化错误信号注入点——
+    /// 包层保持 Foundation-only（不引 os.Logger 依赖）；app 接线层（8B-2）注入
+    /// os.Logger closure。默认 nil = 既有降级不 crash 行为零回退。
+    /// 接线面 = persistProjection / persistProjectionWatermark / persistItem
+    /// 三处写路径空 catch（投影与 item 闭合权威面）；其余空 catch（retention/
+    /// 冷聚合/诊断面）维持现状，归属 known hole。
+    public var onPersistError: ((Error) -> Void)?
+
     public init(path: String? = nil) throws {
         if let path {
             dbQueue = try DatabaseQueue(path: path)
@@ -184,6 +192,7 @@ public final class AttentionEventStore: @unchecked Sendable {
             }
         } catch {
             // C17：写失败降级不 crash（与 append .error 语义一致的 fail-closed 由路由层承担）
+            onPersistError?(error)   // Task 8B #9：错误信号化（默认 nil=既有行为）
         }
     }
 
@@ -698,8 +707,36 @@ extension AttentionEventStore {
             }
         } catch {
             // C17：写失败降级不 crash。
-            // Task 8A carryover #8：空 catch 补日志——纯包无 logging seam，接线层
-            // （app 侧 os.Logger）消费本降级信号时应记日志；此处保持无副作用不 crash。
+            // Task 8A carryover #8 → Task 8B #9 接线：错误信号化——app 接线层注入的
+            // onPersistError closure（如 os.Logger）消费本降级信号；默认 nil 保持
+            // 无副作用不 crash 的既有行为。
+            onPersistError?(error)
+        }
+    }
+
+    /// Task 8B #6（T5-M1 消费面，additive）：per-session 水位专用 upsert——
+    /// 与 `persistProjection`（全列覆盖）不同，本方法只写 watermark_observed_at：
+    /// 行存在取 MAX(现值, 新值)（单调不回退，ProjectionRecord 水位语义同律）；
+    /// 行不存在则以空灯态占位建行。router 侧持久化水位不覆盖投影层灯态。
+    /// 写失败降级不 crash（C17 同式）。
+    public func persistProjectionWatermark(sessionKey: String,
+                                           watermarkObservedAt: Date, updatedAt: Date) {
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO current_projections
+                    (session_key, lamp, subreason, dimmed, hover_note,
+                     watermark_observed_at, updated_at)
+                    VALUES (?, '', '', 0, '', ?, ?)
+                    ON CONFLICT(session_key) DO UPDATE SET
+                        watermark_observed_at = MAX(current_projections.watermark_observed_at,
+                                                    excluded.watermark_observed_at),
+                        updated_at = excluded.updated_at
+                    """, arguments: [sessionKey, watermarkObservedAt, updatedAt])
+            }
+        } catch {
+            // C17：写失败降级不 crash（同 persistProjection）
+            onPersistError?(error)   // Task 8B #9：错误信号化（默认 nil=既有行为）
         }
     }
 

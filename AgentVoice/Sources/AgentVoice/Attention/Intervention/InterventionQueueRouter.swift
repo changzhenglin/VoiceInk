@@ -150,4 +150,35 @@ public struct InterventionQueueRouter: Sendable {
                                    queue: Array(queue), invalidated: invalidated,
                                    readOnlyInPlace: readOnlyInPlace)
     }
+
+    /// Task 8B #12（T6-M1 双向护栏，additive overload）：在既有路由语义上叠加
+    /// generation 对账双向护栏——
+    /// ① presented/editing/submitting ∧ generation=0 → invalidated（呈现声称无权威
+    ///    世代凭据，fail-closed；既有 route() 对该不一致态是「不路由」，接线层对账
+    ///    需要显式失效面）；
+    /// ② eligible/queued ∧ presentedGeneration > currentGeneration → invalidated
+    ///    （世代漂移：旧世代记录的呈现凭据新于当前世代 = 不可信）。
+    /// 其余面与既有 route() 一致（单向不变量 7 不回退；优先级/FIFO 语义不变）。
+    public func route(items: [InterventionQueueItem], currentGeneration: Int,
+                      maxPresented: Int = 2) -> InterventionRouting {
+        var guardInvalidated: [String] = []
+        var filtered: [InterventionQueueItem] = []
+        for item in items {
+            let presentedClaim = item.lifecycle == .presented
+                || item.lifecycle == .editing || item.lifecycle == .submitting
+            if presentedClaim, item.presentedGeneration == 0 {
+                guardInvalidated.append(item.interventionKey)   // ① 无世代凭据
+                continue
+            }
+            if (item.lifecycle == .eligible || item.lifecycle == .queued),
+               item.presentedGeneration > currentGeneration {
+                guardInvalidated.append(item.interventionKey)   // ② 世代漂移
+                continue
+            }
+            filtered.append(item)
+        }
+        var routing = route(items: filtered, maxPresented: maxPresented)
+        routing.invalidated.append(contentsOf: guardInvalidated)
+        return routing
+    }
 }

@@ -40,7 +40,19 @@ public struct ClaudeCodeAdapter: Sendable {
             }
         case "SessionStart":  kind = .connectionFact     // C10：显式连接事实
         case "SessionEnd":    kind = .sessionEnd         // C10/C1：唯一触发 lifecycle=closed
+        case "UserPromptSubmit": kind = .connectionFact  // Task 8B #5：UAS → connectionFact + userPromptRelated 信号（reducer 解除 waiting/failed → working）
+        case "PostToolUse":   kind = .connectionFact     // Task 8B #5：tool 完成 → connectionFact + toolCompleted 信号（router 解除 lease）
         default: throw AdapterError.unrecognizedEvent(hookEventName)
+        }
+
+        // Task 8B #5 信号面：UAS 携 userPromptRelated（I5 信号消费 reducer 已就位）；
+        // PostToolUse 携 toolCompleted（router 侧 lease 解除）；其余事件无信号。
+        // privacy：parse 只消费 session_id/tool_name 打标字段，不读 prompt/tool_response 内容
+        let signal: ActivitySignal?
+        switch hookEventName {
+        case "UserPromptSubmit": signal = .userPromptRelated
+        case "PostToolUse":      signal = .toolCompleted
+        default:                 signal = nil
         }
 
         // C6（re-review 修法 B）：event_id = 源内容指纹 + 投递 nonce
@@ -68,7 +80,8 @@ public struct ClaudeCodeAdapter: Sendable {
             sanitizedPayloadRef: nil,
             sourceLevel: "experimental_fragile", sourceClaudeVersion: claudeVersion,
             hookEventName: hookEventName,          // C8：TrustDetail/导出
-            cwdLabel: cwdLabel, cwdRef: cwdRef)    // C20：F4 短标识/导航数据源
+            cwdLabel: cwdLabel, cwdRef: cwdRef,    // C20：F4 短标识/导航数据源
+            activitySignal: signal)                // Task 8B #5：UAS/PostToolUse 信号面
     }
 
     /// C6：canonical payload 内容指纹——`JSONSerialization` + `.sortedKeys` 递归排序键的
@@ -104,6 +117,8 @@ extension ClaudeCodeAdapter {
         case "PreToolUse": return .preToolUse   // I5：消费不再以 permission_requested 为条件
         case "SessionStart": return .sessionStart
         case "SessionEnd": return .sessionEnd
+        case "UserPromptSubmit": return .userPromptSubmit   // Task 8B #5：parse 级消费面
+        case "PostToolUse": return .postToolUse             // Task 8B #5：parse 级消费面
         default: return nil
         }
     }
@@ -128,6 +143,9 @@ extension ClaudeCodeAdapter {
         case "Notification": return .waitingUser   // 泛型保守归类（四子类归约见 NotificationSubtype.reducedKind）
         case "SessionStart": return .connectionFact
         case "SessionEnd": return .sessionEnd
+        // Task 8B #5：UAS/PostToolUse 消费面（归约层 connectionFact；
+        // UAS 经 userPromptRelated 信号转 working，PostToolUse 经 toolCompleted 解除 lease）
+        case "UserPromptSubmit", "PostToolUse": return .connectionFact
         default: return nil
         }
     }

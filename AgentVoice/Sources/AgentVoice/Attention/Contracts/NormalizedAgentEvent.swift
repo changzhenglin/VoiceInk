@@ -69,9 +69,12 @@ public enum EventKind: String, Codable, Sendable {
 /// I5 活动信号（spec §6 转移矩阵 L158-159 的归一化表达；reducer 只消费信号不读内容）。
 /// nil = 非信号事件；`.none` = 显式无关联；`.userPromptRelated` = 相关用户输入
 /// （UserPromptSubmit 回复信号 / 浮窗动作 → 解除相关 waiting/failed 转 working）。
+/// `.toolCompleted` = Task 8B #5：PostToolUse tool 完成信号（router 层消费解除
+/// tool lease；归约层不产注意力事实）。
 public enum ActivitySignal: String, Codable, Sendable {
     case none
     case userPromptRelated = "user_prompt_related"
+    case toolCompleted = "tool_completed"
 }
 
 public enum SchemaVersions {

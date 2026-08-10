@@ -70,6 +70,18 @@ public final class ToolLeaseTracker: @unchecked Sendable {
         guard let lease = leases[sessionKey] else { return false }
         return lease.expiresAt > at
     }
+
+    /// Task 8B #5（additive）：tool 完成 → lease 解除（PostToolUse 完成面接线）。
+    /// 移除并返回该会话当前 lease；无 lease → nil（幂等：重复/迟到 PostToolUse 无副作用）。
+    /// 关联键（tool_use_id）不参与解除裁决——lease 按 sessionKey 单键持有，
+    /// 缺关联键时完成面照常解除（只读降级只约束题面联想，不约束 lease 生命周期）。
+    @discardableResult
+    public func completeToolInFlight(sessionKey: String) -> ToolLease? {
+        lock.lock(); defer { lock.unlock() }
+        guard let lease = leases[sessionKey] else { return nil }
+        leases.removeValue(forKey: sessionKey)
+        return lease
+    }
 }
 
 /// tool_in_flight lease 记录（overlay 元数据；不载工具内容，privacy 安全）

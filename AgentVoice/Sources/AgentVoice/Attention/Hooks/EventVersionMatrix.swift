@@ -119,6 +119,7 @@ public enum EventVersionMatrix {
     /// adapter 当前消费面（代码事实，与 ClaudeCodeAdapter.parse 一致；测试逐事件核对）
     public static let adapterConsumedKinds: Set<HookEventKind> = [
         .stop, .stopFailure, .notification, .preToolUse, .sessionStart, .sessionEnd,
+        .userPromptSubmit, .postToolUse,   // Task 8B #5：parse 级消费接线（settings 注册仍缺位）
     ]
 
     // MARK: - 静态表（代码内 single source）
@@ -167,14 +168,15 @@ public enum EventVersionMatrix {
                            semanticLoss: nil,
                            sourceNote: fixedM1 + "；C10/C1 唯一触发 lifecycle=closed"),
 
-            // MARK: M1 面提及但 settings 未注册 / adapter 未消费（按代码事实记录差异）
+            // MARK: M1 面提及但 settings 未注册（Task 8B #5：adapter parse 级消费已接线；
+            // settings.json 注册仍缺位——事件到达依赖用户面 hook 配置，14A 环境事项）
             EventMatrixRow(event: .userPromptSubmit, official: .documentedNow, runtimeVersion: runtimeVersion,
-                           observed: obs(.userPromptSubmit), adapterConsumed: false, reducedState: "not_consumed",
-                           semanticLoss: "未消费：settings.json 未注册且 adapter 抛 unrecognizedEvent（代码事实）；任务 brief 的「M1 已消费」清单与之不一致，差异按代码事实记录待主窗口复核",
+                           observed: obs(.userPromptSubmit), adapterConsumed: true, reducedState: "connection_fact",
+                           semanticLoss: "Task 8B #5 接线：归约为 connection_fact + userPromptRelated 活动信号（reducer 解除 waiting/failed → working，I5）；settings.json 未注册（事件到达依赖用户面 hook 配置，14A 环境事项）；privacy 矩阵零扩充——关联键缺失只读降级不猜题",
                            sourceNote: gaNote),
             EventMatrixRow(event: .postToolUse, official: .documentedNow, runtimeVersion: runtimeVersion,
-                           observed: obs(.postToolUse), adapterConsumed: false, reducedState: "not_consumed",
-                           semanticLoss: "未消费：settings.json 未注册且 adapter 抛 unrecognizedEvent（代码事实）；同 userPromptSubmit 差异记录",
+                           observed: obs(.postToolUse), adapterConsumed: true, reducedState: "connection_fact",
+                           semanticLoss: "Task 8B #5 接线：归约为 connection_fact + toolCompleted 信号（router 解除 tool lease 完成面）；settings.json 未注册（同 userPromptSubmit，14A 环境事项）；关联键（tool_use_id）缺失 → lease 按 sessionKey 解除、题面不联想（§6 三档纪律）",
                            sourceNote: gaNote),
 
             // MARK: §8.10 v4 补齐事件面——Notification 四子类
