@@ -1,0 +1,38 @@
+[
+  {
+    "hook_event_name": "SessionStart",
+    "payload": {
+      "session_id": "14a3f37e-0003-4c03-9c03-000000000d03",
+      "delivery_id": "14a-ooo-d1",
+      "cwd": "/Users/synthetic-14a/proj-gamma"
+    },
+    "observed_at_epoch": 1700000000.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a3f37e-0003-4c03-9c03-000000000d03",
+      "delivery_id": "14a-ooo-d2",
+      "cwd": "/Users/synthetic-14a/proj-gamma"
+    },
+    "observed_at_epoch": 1700000010.0
+  },
+  {
+    "hook_event_name": "UserPromptSubmit",
+    "payload": {
+      "session_id": "14a3f37e-0003-4c03-9c03-000000000d03",
+      "delivery_id": "14a-ooo-d3",
+      "cwd": "/Users/synthetic-14a/proj-gamma"
+    },
+    "observed_at_epoch": 1700000020.0
+  },
+  {
+    "hook_event_name": "Stop",
+    "payload": {
+      "session_id": "14a3f37e-0003-4c03-9c03-000000000d03",
+      "delivery_id": "14a-ooo-d4",
+      "cwd": "/Users/synthetic-14a/proj-gamma"
+    },
+    "observed_at_epoch": 1700000030.0
+  }
+]
