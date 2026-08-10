@@ -45,6 +45,8 @@ final class AttentionStore: ObservableObject {
     /// 不做 schema 迁移——interventionKey schema 迁移明确不消费）。
     private var lampSlotMap = SlotMap()
     private var lampSlotMapLoaded = false
+    /// 8A-M1（fix round 1）：上一次持久化的映射——脏标记比较，变化才写 UserDefaults。
+    private var lastPersistedSlotMap = SlotMap()
     private static let lampSlotMapKey = "attentionLampSlotMap.v1"
 
     init() {}
@@ -196,25 +198,34 @@ final class AttentionStore: ObservableObject {
 
     // MARK: - Task 8A：v4 灯条生产表面投影（behind versioned flag；裁决 A app 接线）
 
-    /// 灯条槽位摘要（呈现层消费面）：router 快照经 Task 5 projector 穷举投影 +
-    /// LampSlotAllocator 稳定分槽（§4）。flag off 时调用方不呈现（store 采集继续）。
-    /// fail-closed guard 轴：hookHealth 按 versionDrift 注入；privacy/identity 由
-    /// ingestPrivacyGated 门在入库时已 fail-closed（见 AttentionLampBarProjection 头注）。
-    func lampBarSlots() -> [LampSlotSummary] {
-        guard let router else { return [] }
+    /// 灯条 bar 数据（呈现层消费面）：router 快照经 Task 5 projector 穷举投影 +
+    /// LampSlotAllocator 稳定分槽（§4）+ 8+N 折叠 + ●黄等待时长。flag off 时调用方
+    /// 不呈现（store 采集继续）。C1（fix round 1）：投影桥仅对 .managed 分槽、先释放
+    /// closed/archived（避免活跃会话被挤出 overflow）。fail-closed guard 轴：hookHealth
+    /// 按 versionDrift 注入；privacy/identity 由 ingestPrivacyGated 门入库时已 fail-closed。
+    func lampBarData() -> AttentionLampBarData {
+        guard let router else { return AttentionLampBarData() }
         restoreLampSlotMapIfNeeded()
         let snaps = router.currentSnapshots()
         var lastMap: [String: Date] = [:]
-        for s in snaps where s.activityFact == .completed {
+        for s in snaps {
             if let t = router.lastEventAt(for: s.sessionKey) { lastMap[s.sessionKey] = t }
         }
         let hookHealth: HookHealth = versionDrift ? .unhealthy : .healthy
         let projection = AttentionLampBarProjection()
-        let slots = projection.slots(from: snaps, hookHealth: hookHealth,
-                                     lastEventAt: { lastMap[$0] }, now: Date(),
-                                     slotMap: &lampSlotMap)
-        persistLampSlotMap()
-        return slots
+        let data = projection.project(from: snaps, hookHealth: hookHealth,
+                                      lastEventAt: { lastMap[$0] }, now: Date(),
+                                      slotMap: &lampSlotMap)
+        persistLampSlotMapIfChanged()
+        return data
+    }
+
+    /// Return/点灯跳转（§7 点灯=跳原窗口，复用 AXNavigator；I2 fix round 1）。
+    /// 跳转失败降级（灯态不变+⨯+toast+复制定位）由 AXNavigator.degradation 提供值面，
+    /// 渲染归灯条视图；最小面只触发跳转。
+    func navigateLampBarSession(_ sessionKey: String) {
+        let cwd = router?.cwdPath(for: sessionKey)
+        _ = AXNavigator().navigate(sessionKey: sessionKey, cwd: cwd)
     }
 
     /// 空间记忆恢复（§4 重启不重置；clean-start——stale 发现⑤：M1 无 slot 映射，
@@ -226,11 +237,16 @@ final class AttentionStore: ObservableObject {
            let map = try? JSONDecoder().decode(SlotMap.self, from: data) {
             lampSlotMap = map
         }
+        lastPersistedSlotMap = lampSlotMap   // 恢复后即与持久态一致（免立即重写）
     }
 
-    private func persistLampSlotMap() {
+    /// 8A-M1（fix round 1）：脏标记持久化——仅映射变化才写 UserDefaults，
+    /// 免每 2s tick 无条件写。
+    private func persistLampSlotMapIfChanged() {
+        guard lampSlotMap != lastPersistedSlotMap else { return }
         if let data = try? JSONEncoder().encode(lampSlotMap) {
             UserDefaults.standard.set(data, forKey: Self.lampSlotMapKey)
+            lastPersistedSlotMap = lampSlotMap
         }
     }
 

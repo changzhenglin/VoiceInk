@@ -17,8 +17,8 @@ enum AttentionPresentationKeys {
     /// P1 versioned feature gate：v4 灯条渲染层 behind flag（plan P1 feature gate 原文）。
     /// off（默认）→ 呈现层全静默；store 采集继续（§2 Off 语义同律）。
     static let lampBarP1Enabled = "AttentionLampBarP1Enabled"
-    /// 呈现策略 drain 重入语义——**临时，待控制器裁决**（Task 8 carryover 呈现策略项）。
-    /// true=drain 周期重入重复呈现；false=一次性呈现。默认 false（保守：不重复打扰）。
+    /// 呈现策略 drain 重入语义——控制器裁决=at-most-once（一次性呈现），待 8B 接线批消费。
+    /// true=drain 周期重入重复呈现；false=一次性呈现。默认 false（裁决值，非临时）。
     static let presentationDrainRepeat = "AttentionPresentationDrainRepeat"
 }
 

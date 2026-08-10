@@ -2,8 +2,21 @@ import SwiftUI
 import AppKit
 import AgentVoice
 
+/// v4 灯条 bar 数据（裁决 A app 桥面聚合）：槽位摘要 + 8+N 折叠 + ●黄等待时长供给。
+struct AttentionLampBarData: Equatable {
+    var slots: [LampSlotSummary] = []
+    /// 第 9+ 受管会话数（8+N 折叠，不占槽；§4）。
+    var overflowCount: Int = 0
+    /// overflow 中最高优先灯态（+N 形状通道聚合色；穷举 +N 形状归 14A）。
+    var overflowAggregateLamp: Lamp = .none
+    /// sessionKey → 等待时长（●黄 hover 文案消费 AttentionHoverWaitText 单源，§7）。
+    var waitElapsed: [String: TimeInterval] = [:]
+    /// bar 隐藏判据（§3：无受管会话隐藏）。overflow 亦算存在。
+    var isEmpty: Bool { slots.isEmpty && overflowCount == 0 }
+}
+
 /// v4 灯条呈现投影桥（裁决 A app 层纯桥面）：把 router 五轴快照经 Task 5 projector
-/// 穷举投影成 Lamp，再用 LampSlotAllocator 稳定分槽，聚合为 [LampSlotSummary]。
+/// 穷举投影成 Lamp，再用 LampSlotAllocator 稳定分槽，聚合为 AttentionLampBarData。
 /// 零 UI 依赖、可注入、fail-closed：guard 轴（privacy/identity/hookHealth）不可验证即 ?灰。
 ///
 /// guard 轴来源（fail-closed 纪律，red-line §3）：
@@ -16,20 +29,26 @@ struct AttentionLampBarProjection: Sendable {
     private let projector = AttentionProjector()
     private let allocator = LampSlotAllocator()
 
-    /// 由快照投影出稳定槽位摘要序列（按槽位升序）。
-    /// - Parameter completedAt: 完成时刻供给（G8 ✓绿 TTL 裁决依据；缺失 → fail-closed ?灰）。
-    func slots(from snapshots: [AttentionStateSnapshot],
-               hookHealth: HookHealth,
-               lastEventAt: (String) -> Date?,
-               now: Date,
-               slotMap: inout SlotMap) -> [LampSlotSummary] {
-        // 定序：sessionKey 字典序（与 AttentionStore.refresh M3 同口径，消除抖动）。
-        var summaries: [(slot: Int, summary: LampSlotSummary)] = []
-        for snap in snapshots.sorted(by: { $0.sessionKey < $1.sessionKey }) {
-            let assignment = allocator.assign(sessionKey: snap.sessionKey, to: &slotMap)
-            guard case .slot(let index) = assignment else {
-                continue   // overflow 第 9+：不占槽（8+N 折叠视觉项归渲染层 +N 通道）
-            }
+    /// 由快照投影出 bar 数据（槽位摘要按槽位升序 + 8+N 折叠 + 等待时长）。
+    func project(from snapshots: [AttentionStateSnapshot],
+                 hookHealth: HookHealth,
+                 lastEventAt: (String) -> Date?,
+                 now: Date,
+                 slotMap: inout SlotMap) -> AttentionLampBarData {
+        // C1（fix round 1）：先释放 closed/archived（§4 释放条件；槽位真实复用）。
+        // router snapshots 字典只增不减，closed 会话须先释放——否则其槽位永久占用，
+        // 活跃会话被挤出 overflow。
+        for snap in snapshots {
+            _ = allocator.release(sessionKey: snap.sessionKey,
+                                  lifecycle: snap.lifecycle, from: &slotMap)
+        }
+        var data = AttentionLampBarData()
+        var placed: [(slot: Int, summary: LampSlotSummary)] = []
+        // C1（fix round 1）：仅对受管（.managed）会话分槽。discovered 未受管（G1 NoLamp）
+        // 不占槽；closed/archived 已释放不重分。避免闭会话按字典序先占满 0-7 槽、
+        // 活跃会话全得 overflow → bar 永久「8 暗点 + +N」零活跃灯（违 §4/G1）。
+        for snap in snapshots.sorted(by: { $0.sessionKey < $1.sessionKey })
+        where snap.lifecycle == .managed {
             let input = ProjectionInput(
                 lifecycle: snap.lifecycle,
                 activity: snap.activityFact,
@@ -43,17 +62,39 @@ struct AttentionLampBarProjection: Sendable {
                     ? lastEventAt(snap.sessionKey) : nil,
                 now: now)
             let result = projector.project(input)
-            summaries.append((index, LampSlotSummary(
-                sessionKey: snap.sessionKey,
-                lamp: result.lamp,
-                privacyMasked: result.privacyMasked)))
+            let assignment = allocator.assign(sessionKey: snap.sessionKey, to: &slotMap)
+            if case .slot(let index) = assignment {
+                placed.append((index, LampSlotSummary(
+                    sessionKey: snap.sessionKey,
+                    lamp: result.lamp,
+                    privacyMasked: result.privacyMasked)))
+                // ●黄等待时长供给（hover 文案单源消费，§7）。
+                if result.lamp == .waitingYellow, let last = lastEventAt(snap.sessionKey) {
+                    data.waitElapsed[snap.sessionKey] = max(0, now.timeIntervalSince(last))
+                }
+            } else {
+                // 8+N 折叠（I2 fix round 1）：overflow 计数 + 最高优先灯态聚合。
+                data.overflowCount += 1
+                if Self.lampAttentionRank(result.lamp)
+                    > Self.lampAttentionRank(data.overflowAggregateLamp) {
+                    data.overflowAggregateLamp = result.lamp
+                }
+            }
         }
-        // closed/archived 会话释放槽位（§4 释放条件）。
-        for snap in snapshots {
-            _ = allocator.release(sessionKey: snap.sessionKey,
-                                  lifecycle: snap.lifecycle, from: &slotMap)
+        data.slots = placed.sorted { $0.slot < $1.slot }.map(\.summary)
+        return data
+    }
+
+    /// +N 聚合灯态优先级（§4 +N 形状通道：▲红>●黄>?灰>✓绿>◌绿；穷举归 14A）。
+    static func lampAttentionRank(_ lamp: Lamp) -> Int {
+        switch lamp {
+        case .failedRed: return 4
+        case .waitingYellow: return 3
+        case .unknownGray: return 2
+        case .completedGreen: return 1
+        case .workingGreen: return 0
+        case .none: return -1
         }
-        return summaries.sorted { $0.slot < $1.slot }.map(\.summary)
     }
 }
 
@@ -68,16 +109,30 @@ enum AttentionHoverWaitText {
         let hours = minutes / 60
         return "\(hours) 小时\(minutes % 60) 分"
     }
+    /// ●黄 hover 等待行（单源派生，不另造文案）。
+    static func waitingHoverLine(_ elapsed: TimeInterval) -> String {
+        "等待 \(waiting(elapsed))"
+    }
 }
 
 /// v4 注意力悬浮灯条视图（裁决 A app 层；穷举 UI/AX/E2E 验收归 Task 14A gate）。
-/// 五灯颜色+形状双通道 + 灯下短标识单源；privacy 遮罩排除 VO/计数；
-/// Reduce Motion/Contrast 即时替换不闪烁（spec §3/§7）。
+/// 五灯颜色+形状双通道 + 灯下短标识单源 + 8+N 折叠 + hover 卡 + 键盘最小路径；
+/// privacy 遮罩排除 VO/计数；Reduce Motion/Contrast 即时替换不闪烁（spec §3/§7）。
 struct AttentionLampBarView: View {
-    let slots: [LampSlotSummary]
+    let data: AttentionLampBarData
     /// 短标识单源（§7：hover/面板/VoiceOver 同一字符串）；sessionKey → 1-2 字符。
     let shortIdentifier: (String) -> String
+    /// Return 跳转（复用 AXNavigator；§7 点灯=跳原窗口）。
+    let onNavigate: (String) -> Void
+    /// Escape 第二级（bar → previousFocus；FocusRestorationCoordinator 裁决归控制器）。
+    let onEscape: () -> Void
     private let model = AttentionLampBarModel()
+    private let focusCoordinator = FocusRestorationCoordinator()
+
+    /// 键盘焦点槽位序（nil = bar 级，未聚焦具体灯）。
+    @State private var focusedIndex: Int?
+    /// hover 槽位 sessionKey（hover 卡驱动）。
+    @State private var hoveredKey: String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -86,9 +141,16 @@ struct AttentionLampBarView: View {
     var body: some View {
         HStack(spacing: 10) {
             ForEach(Array(visibleSlots.enumerated()), id: \.element.sessionKey) { pair in
-                lampGlyph(pair.element)
+                lampGlyph(pair.element, index: pair.offset)
                     .accessibilityIdentifier("attention.lamp.\(pair.offset)")
                     .accessibilityLabel(voiceOverLabel(for: pair.element))
+            }
+            // 8+N 折叠最小面（I2 fix round 1）：overflow 摘要置于 bar 尾；
+            // 聚合色取 overflow 最高优先灯态（穷举 +N 形状通道归 14A gate）。
+            if data.overflowCount > 0 {
+                overflowGlyph
+                    .accessibilityIdentifier("attention.lamp.overflow")
+                    .accessibilityLabel("还有 \(data.overflowCount) 个会话")
             }
         }
         .padding(.horizontal, 12)
@@ -96,15 +158,64 @@ struct AttentionLampBarView: View {
         .background(barBackground)
         .accessibilityIdentifier("attention.lampBar")
         .accessibilityElement(children: .contain)
+        // 键盘最小路径（I2 fix round 1）：bar 可聚焦 + ←→ 槽间 + Return 跳转 + Escape 两级。
+        .focusable()
+        .onKeyPress { press in handleKey(press) }
     }
+
+    // MARK: - 键盘（§2 键盘契约最小路径；穷举归 14A gate）
+
+    private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        switch press.key {
+        case .leftArrow:
+            moveFocus(-1); return .handled
+        case .rightArrow:
+            moveFocus(1); return .handled
+        case .return:
+            jumpFocused(); return .handled
+        case .escape:
+            escapePressed(); return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    /// ←→ 槽间焦点移动（确定性；越界停留端点）。
+    private func moveFocus(_ delta: Int) {
+        let count = visibleSlots.count
+        guard count > 0 else { return }
+        let current = focusedIndex ?? (delta > 0 ? -1 : count)
+        focusedIndex = min(max(current + delta, 0), count - 1)
+    }
+
+    /// Return 跳转聚焦槽位会话（复用 AXNavigator，§7 点灯=跳原窗口）。
+    private func jumpFocused() {
+        guard let idx = focusedIndex, visibleSlots.indices.contains(idx) else { return }
+        onNavigate(visibleSlots[idx].sessionKey)
+    }
+
+    /// Escape 两级（§2 键盘契约，消费 FocusRestorationCoordinator）：
+    /// 灯聚焦 → bar（第一级）；bar → previousFocus（第二级，控制器经 coordinator 裁决）。
+    private func escapePressed() {
+        if focusedIndex != nil {
+            // 第一级：灯 → bar（coordinator .lamp→.bar 确定性）。
+            _ = focusCoordinator.escapeTarget(current: .lamp(0), previousFocus: nil)
+            focusedIndex = nil
+        } else {
+            // 第二级：bar → previousFocus（onEscape 由控制器经 coordinator.escapeTarget 裁决）。
+            onEscape()
+        }
+    }
+
+    // MARK: - 渲染
 
     /// privacy 遮罩槽位排除出渲染/VO（§3 L92——不泄漏存在性；渲染面同 VO 面一致）。
     private var visibleSlots: [LampSlotSummary] {
-        slots.filter { !$0.privacyMasked }
+        data.slots.filter { !$0.privacyMasked }
     }
 
     @ViewBuilder
-    private func lampGlyph(_ slot: LampSlotSummary) -> some View {
+    private func lampGlyph(_ slot: LampSlotSummary, index: Int) -> some View {
         VStack(spacing: 2) {
             lampShape(slot.lamp)
                 .frame(width: 14, height: 14)
@@ -113,6 +224,48 @@ struct AttentionLampBarView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+        .padding(2)
+        .background(focusedIndex == index
+                    ? Color.accentColor.opacity(0.25) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 4))
+        // hover 卡最小面（I2 fix round 1）：消费 AttentionHoverWaitText 单源，勿另造文案。
+        .onHover { hovering in
+            hoveredKey = hovering ? slot.sessionKey
+                : (hoveredKey == slot.sessionKey ? nil : hoveredKey)
+        }
+        .popover(isPresented: Binding(
+            get: { hoveredKey == slot.sessionKey },
+            set: { if !$0, hoveredKey == slot.sessionKey { hoveredKey = nil } }
+        )) {
+            hoverCard(for: slot)
+        }
+    }
+
+    /// hover 卡（§7 hover/键盘焦点同组件最小面）：身份+灯态语义（包内单源）+ ●黄等待时长。
+    private func hoverCard(for slot: LampSlotSummary) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(model.voiceOverItems([slot]).first ?? shortIdentifier(slot.sessionKey))
+                .font(.system(size: 11, weight: .medium))
+            if slot.lamp == .waitingYellow,
+               let elapsed = data.waitElapsed[slot.sessionKey] {
+                Text(AttentionHoverWaitText.waitingHoverLine(elapsed))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+    }
+
+    /// 8+N 折叠灯（聚合色=overflow 最高优先灯态；穷举 +N 形状归 14A）。
+    private var overflowGlyph: some View {
+        VStack(spacing: 2) {
+            lampShape(data.overflowAggregateLamp)
+                .frame(width: 14, height: 14)
+            Text("+\(data.overflowCount)")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(2)
     }
 
     /// 五灯颜色+形状双通道（附录 A 全部唯一）。Reduce Motion 下即时替换无动效。
@@ -142,9 +295,10 @@ struct AttentionLampBarView: View {
             .shadow(radius: reduceMotion ? 0 : 2)
     }
 
-    /// VoiceOver 标签（单源 model.voiceOverItems 的单项口径）。
+    /// VoiceOver 标签（8A-M3 fix round 1：消费包内 AttentionLampBarModel 单源口径——
+    /// 身份+灯态语义，不分叉；model.voiceOverItems 单项）。
     private func voiceOverLabel(for slot: LampSlotSummary) -> String {
-        "\(shortIdentifier(slot.sessionKey))"
+        model.voiceOverItems([slot]).first ?? shortIdentifier(slot.sessionKey)
     }
 }
 
