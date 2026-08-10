@@ -202,13 +202,29 @@ class CursorPaster {
         vDown.flags = .maskCommand
         vUp.flags = .maskCommand
 
-        cmdDown.post(tap: .cghidEventTap)
-        await wait(pasteShortcutEventDelay)
-        vDown.post(tap: .cghidEventTap)
-        await wait(pasteShortcutEventDelay)
-        vUp.post(tap: .cghidEventTap)
-        await wait(pasteShortcutEventDelay)
-        cmdUp.post(tap: .cghidEventTap)
+        // Task 13 验收修复（点击注入失效根因）：全局 HID post 把 ⌘V 发给「键盘焦点窗口
+        // 所属应用」。预览面板 canBecomeKey=true，鼠标点击按钮使面板成为焦点窗口后，
+        // 全局 post 的 ⌘V 被发给 VoiceInk 自己而非用户目标应用（键盘快捷键确认不受影响
+        // 是因为该路径从不点击面板、焦点窗口始终是用户应用）。改为定向投递给当前前台
+        // 应用（nonactivating 面板从不抢前台，前台应用=用户目标应用，语义恒真）；
+        // 取不到前台应用时回退全局 post。
+        if let targetPid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            cmdDown.postToPid(targetPid)
+            await wait(pasteShortcutEventDelay)
+            vDown.postToPid(targetPid)
+            await wait(pasteShortcutEventDelay)
+            vUp.postToPid(targetPid)
+            await wait(pasteShortcutEventDelay)
+            cmdUp.postToPid(targetPid)
+        } else {
+            cmdDown.post(tap: .cghidEventTap)
+            await wait(pasteShortcutEventDelay)
+            vDown.post(tap: .cghidEventTap)
+            await wait(pasteShortcutEventDelay)
+            vUp.post(tap: .cghidEventTap)
+            await wait(pasteShortcutEventDelay)
+            cmdUp.post(tap: .cghidEventTap)
+        }
 
         return .commandPosted
     }
