@@ -124,7 +124,7 @@
     "owner": "P0 交付（已入库）/ 交互回传 PoC 归 P2",
     "phase": "P0（已交付）+ P2（PoC）",
     "automated_or_manual": "automated",
-    "evidence_path": "P0 证据在库：evidence/voice-coding/m1/（shadow runs 基线）+ evidence/voice-coding/attention-task0-probe/（探针 manifest）; AgentVoice/Sources/AgentVoice/Attention/Hooks/EventVersionMatrix.swift（版本矩阵）; AgentVoice/Sources/AgentVoice/Attention/Privacy/CapabilityFieldMatrix.swift（字段矩阵）",
+    "evidence_path": "P0 证据在库：evidence/voice-coding/m1/（shadow runs 基线）+ AgentVoice/Evidence/attention-task0-probe/（探针 manifest）; AgentVoice/Sources/AgentVoice/Attention/Hooks/EventVersionMatrix.swift（版本矩阵）; AgentVoice/Sources/AgentVoice/Attention/Privacy/CapabilityFieldMatrix.swift（字段矩阵）",
     "status": "blocked_by_p2",
     "measurement": "payload 字段清单/脱敏 evidence 已由 P0 交付（m1 基线 + task0 探针 manifest 在库）；交互回传 PoC 依赖 P2 intervention/command 面，当前不得消费",
     "threshold": "能力门 evidence 在库 + PoC 过 P2 门"
