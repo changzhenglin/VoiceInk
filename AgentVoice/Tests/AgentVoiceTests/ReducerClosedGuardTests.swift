@@ -13,6 +13,7 @@ import XCTest
 ///
 /// RED 来源：新 observedAt 的 waiting/failed/completed 三向量 runtime 失败
 ///（守卫未建）；已守卫向量即时 GREEN=回归锚。断言语义不可放宽。
+/// Additive（2026-08-11 收尾）：testClosedNotResurrectedByNotificationWithNewDeliveryId——带 delivery_id 的 Notification 不碰撞 C6 去重（生产重试形状），直达 closed 守卫直钉 waitingUser 轴。
 final class ReducerClosedGuardTests: XCTestCase {
 
     static let sid = "abababab-abab-abab-abab-abababababab"
@@ -42,10 +43,12 @@ final class ReducerClosedGuardTests: XCTestCase {
     }
 
     /// closed 后注入新 observedAt 事件，断言快照五轴保持 closed 吸收态。
+    /// payloadJson 默认 nil → 用 payload()（additive：带 delivery_id 的生产重试形状可注入）。
     func assertStillClosed(_ router: AttentionEventRouter,
                            after hook: String, atOffset offset: Double,
+                           payloadJson: String? = nil,
                            file: StaticString = #filePath, line: UInt = #line) throws {
-        _ = router.ingest(hookEventName: hook, payloadJson: payload(),
+        _ = router.ingest(hookEventName: hook, payloadJson: payloadJson ?? payload(),
                           observedAt: Date(timeIntervalSince1970: Self.baseEpoch + offset))
         let snapshot = try XCTUnwrap(router.currentSnapshots().first, file: file, line: line)
         XCTAssertEqual(snapshot.lifecycle, .closed, "closed 后 \(hook) 不得改 lifecycle",
@@ -88,6 +91,18 @@ final class ReducerClosedGuardTests: XCTestCase {
                        "closed 后 toolInFlight 不得追加证据引用")
         XCTAssertEqual(snapshot.freshness, closed.freshness,
                        "closed 后 toolInFlight 不得改 freshness")
+    }
+
+    /// Additive（2026-08-11 收尾，reviewer 建议/控制器裁决）：直钉例——带 delivery_id 的
+    /// Notification 不碰撞 C6 内容指纹去重（stablePayloadFingerprint 排除 delivery_id，
+    /// eventId 差异来自 basis 显式组合——恰是生产重试形状），事件穿过去重直达 reducer
+    /// closed 守卫，守卫是唯一兜底。与 testClosedNotResurrectedByNotification 互补
+    ///（后者被 C6 去重拦在守卫之前，从未触达守卫）。
+    func testClosedNotResurrectedByNotificationWithNewDeliveryId() throws {
+        let router = try makeRouter()
+        try closeSession(router)
+        try assertStillClosed(router, after: "Notification", atOffset: 600,
+                              payloadJson: #"{"session_id":"\#(Self.sid)","delivery_id":"d-post-close"}"#)
     }
 
     // MARK: - 回归锚（即时 GREEN，防未来回退）
