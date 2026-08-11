@@ -26,6 +26,10 @@ public struct AttentionReducer: Sendable {
     }
 
     private func apply(_ e: NormalizedAgentEvent, to s: inout AttentionStateSnapshot) {
+        // KH-1（硬化批）：closed 吸收守卫——sessionEnd→closed 后任何事件不建立/不修改
+        // 事实（含 evidenceRefs/freshness 轴；重复 sessionEnd 亦幂等无害）。
+        // 下游 applyUserPromptSignal/applyConnection 既有 closed 守卫保留（defense-in-depth）。
+        if s.lifecycle == .closed { return }
         switch e.kind {
         case .waitingUser, .waitingPermission:
             s.activityFact = e.kind == .waitingUser ? .waitingUser : .waitingPermission

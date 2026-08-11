@@ -80,6 +80,9 @@ final class AttentionLampBarController: NSObject {
     private func installHotkeyMonitor() {
         hotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            // 8A-M4（硬化批）：flag off 不消费 ⌘⇧V——「flag off 全静默」契约
+            //（同 syncPanel/refresh gate 同式）；还原事件给 app 正常处理。
+            guard viewModel.p1RenderingEnabled else { return event }
             let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
             if flags == [.command, .shift],
                event.charactersIgnoringModifiers?.lowercased() == "v" {
