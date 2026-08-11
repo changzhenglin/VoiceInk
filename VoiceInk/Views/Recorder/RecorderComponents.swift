@@ -43,7 +43,7 @@ struct RecorderRecordButton: View {
 
     private var visualState: VisualState {
         switch recordingState {
-        case .idle, .starting, .busy:
+        case .idle, .starting, .busy, .previewing:   // D8 fold：previewing 等同 idle 外观
             return .ready
         case .recording:
             return .recording
@@ -54,7 +54,7 @@ struct RecorderRecordButton: View {
 
     private var isDisabled: Bool {
         switch recordingState {
-        case .idle, .recording:
+        case .idle, .recording, .previewing:   // D8 fold：previewing 等同 idle 可点击
             return false
         case .starting, .transcribing, .enhancing, .busy:
             return true
@@ -125,7 +125,7 @@ struct RecorderRecordButton: View {
 
     private var accessibilityLabel: String {
         switch recordingState {
-        case .idle:
+        case .idle, .previewing:   // D8 fold：previewing 等同 idle 语义
             return String(localized: "Start recording")
         case .starting:
             return String(localized: "Starting recording")

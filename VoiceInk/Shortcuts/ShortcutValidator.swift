@@ -95,6 +95,7 @@ enum ShortcutValidator {
         var seenActions = Set<ShortcutAction>()
         let actions =
             ShortcutAction.legacyKeyboardShortcutActions
+            + ShortcutAction.previewStoredActions   // V1 Task 8：预览动作纳入冲突校验（重绑不静默抢占）
             + ModeManager.shared.configurations.map { ShortcutAction.mode($0.id) }
 
         return actions.filter { seenActions.insert($0).inserted }

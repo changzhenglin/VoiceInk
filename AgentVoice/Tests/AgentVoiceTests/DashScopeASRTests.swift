@@ -47,4 +47,75 @@ final class DashScopeASRTests: XCTestCase {
         XCTAssertNotNil(result)
         await asr.endSession()
     }
+
+    // ── V1 流式观测增强 ──
+
+    func test_sentenceSnapshot_tracks_finalized_and_pending() {
+        let asr = DashScopeASR(apiKey: "test-key")
+        // 句子 1 定稿（end_time > 0）
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"你好。","end_time":1200}}}}
+            """)
+        // 句子 2 进行中（end_time 缺省 = 中间结果）
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"世界正在"}}}}
+            """)
+        let snap = asr.sentenceSnapshot()
+        XCTAssertEqual(snap.completed, ["你好。"])
+        XCTAssertEqual(snap.pending, "世界正在")
+        XCTAssertEqual(snap.fullText, "你好。世界正在")
+    }
+
+    func test_task_failed_marks_session_lost_and_fires_callback() {
+        let asr = DashScopeASR(apiKey: "test-key")
+        let expectation = expectation(description: "onSessionLost")
+        asr.onSessionLost = { expectation.fulfill() }
+        asr.parseASRResponse("""
+            {"header":{"event":"task-failed","error_code":"CONNECTION_FAILED"}}
+            """)
+        XCTAssertTrue(asr.isSessionLost)
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func test_currentFullText_matches_snapshot() {
+        let asr = DashScopeASR(apiKey: "test-key")
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"甲。","end_time":100}}}}
+            """)
+        XCTAssertEqual(asr.currentFullText(), "甲。")
+    }
+
+    /// F3 回归（codex P1-3）：partial 事件到达后，partials 流消费者读到的快照必须
+    /// 已包含该 partial 文本（生产实现 yield 先于快照更新，observer 可读到旧快照；
+    /// fix = yield 移到快照更新之后）。诚实声明：parseASRResponse 为同步体无中间
+    /// seam，yield/更新的先后无法在测试中确定性钉住（跨线程调度竞态）——顺序保障
+    /// 依赖 fix 本身与 scoped re-review，本测试防功能回归（快照内容与流送达不丢失）。
+    func test_partial_snapshot_contains_text_and_stream_delivers() async throws {
+        let asr = DashScopeASR(apiKey: "test-key")
+        var received: [String] = []
+        let consumer = Task {
+            for await text in asr.partials() {
+                received.append(text)
+                if received.count >= 2 { break }
+            }
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)   // 等消费者挂到 for await
+
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"你好","end_time":null}}}}
+            """)
+        asr.parseASRResponse("""
+            {"header":{"event":"result-generated"},
+             "payload":{"output":{"sentence":{"text":"你好世界","end_time":null}}}}
+            """)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(received, ["你好", "你好世界"])
+        XCTAssertEqual(asr.sentenceSnapshot().pending, "你好世界")
+        consumer.cancel()
+    }
 }

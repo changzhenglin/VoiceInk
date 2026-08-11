@@ -1,6 +1,7 @@
 import AgentVoice
 import AppIntents
 import AppKit
+import Combine
 import FluidAudio
 import OSLog
 import Sparkle
@@ -18,6 +19,8 @@ struct VoiceInkApp: App {
     @StateObject private var transcriptionModelManager: TranscriptionModelManager
     @StateObject private var recorderUIManager: RecorderUIManager
     @StateObject private var recordingShortcutManager: RecordingShortcutManager
+    /// V1 预览专用全局快捷键（Task 8 B5：⌥⌘↩ 输出 / ⌥⌘R 回退 / ⌥⌘⌫ 丢弃·撤销，预览态作用域）
+    @StateObject private var previewShortcutManager: PreviewShortcutManager
     @StateObject private var updaterViewModel: UpdaterViewModel
     @StateObject private var menuBarManager: MenuBarManager
     @StateObject private var agentVoiceStatusAdapter: AgentVoiceStatusAdapter
@@ -151,6 +154,10 @@ struct VoiceInkApp: App {
         let recordingShortcutManager = RecordingShortcutManager(engine: engine, recorderUIManager: recorderUIManager)
         _recordingShortcutManager = StateObject(wrappedValue: recordingShortcutManager)
 
+        // V1 Task 8 B5：预览专用快捷键管理器（预览态作用域监听；默认 ⌥⌘↩/⌥⌘R/⌥⌘⌫，Settings UI 归 Task 9）
+        let previewShortcutManager = PreviewShortcutManager(engine: engine)
+        _previewShortcutManager = StateObject(wrappedValue: previewShortcutManager)
+
         let menuBarManager = MenuBarManager()
         _menuBarManager = StateObject(wrappedValue: menuBarManager)
         menuBarManager.configure(modelContainer: resolvedContainer, engine: engine)
@@ -210,36 +217,110 @@ struct VoiceInkApp: App {
                     policy = decoded.payload
                 }
 
-                let storageEngine = try StorageEngine(path: nil)
+                // V1 D5：磁盘持久化（崩溃恢复 + 术语库附带收益）
+                let appSupport = FileManager.default
+                    .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+                try? FileManager.default.createDirectory(
+                    at: appSupport, withIntermediateDirectories: true)
+                let storageEngine = try StorageEngine(
+                    path: appSupport.appendingPathComponent("agentvoice.db").path)
                 let sceneDetector = MacSceneDetector()
                 let router = SceneRouter(policy: policy)
                 let knowledgeStore = KnowledgeStore(engine: storageEngine)
                 let whisperTranscriber = VoiceInkWhisperTranscriber(
                     whisperModelManager: whisperModelManager)
                 let hubPort = UserDefaults.standard.integer(forKey: "agentVoiceHubPort")
+                let polishAdapter = HubPolishAdapter(hubPort: hubPort > 0 ? hubPort : 9876)
 
-                let coordinator = AgentVoiceCoordinator(
-                    sceneDetector: sceneDetector,
+                // 润色 gate 工厂（50 字规则 + 全局/场景开关，spec §3.3）
+                // C9-1 裁决：内层闭包每次调用时读 UserDefaults（开关变更下次润色生效，
+                // 比 plan Step 5 sketch 的工厂层快照读更新鲜一档）
+                // F10 fold：组合逻辑调用 router.shouldPolish(text:globalEnabled:disabledScenes:sceneType:)
+                // （SceneRouterTests 覆盖的被测方法为单一源），不复制 50 字判断
+                let gateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool = { sceneType in
+                    { text in
+                        let defaults = UserDefaults.standard
+                        let globalEnabled = defaults.object(forKey: "agentVoicePolishEnabled") as? Bool ?? true
+                        let disabled = Set(defaults.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? [])
+                        return router.shouldPolish(text: text, globalEnabled: globalEnabled,
+                                                   disabledScenes: disabled, sceneType: sceneType)
+                    }
+                }
+
+                let pipeline = VoicePipeline(
                     router: router,
-                    knowledgeStore: knowledgeStore,
-                    whisperTranscriber: whisperTranscriber,
-                    statusAdapter: agentVoiceStatusAdapter,
-                    hubPort: hubPort > 0 ? hubPort : 9876,
-                    dashScopeAPIKeyProvider: {
-                        APIKeyManager.shared.getAPIKey(forProvider: "dashscope")
-                    })
+                    knowledge: knowledgeStore,
+                    polish: polishAdapter,
+                    shouldPolishGate: { router.shouldPolish(text: $0) })   // C9-7 ②：纯 50 字规则（L2208 退化形）；全局/场景开关归控制器 polishGateFactory 消费
 
+                // 本地三级链素材：Apple Speech（macOS 26+）→ Whisper（spec §3.5.3）
+                let whisperASR = WhisperASR(transcriber: whisperTranscriber)
+                let appleSpeechASR = AppleSpeechASR(locale: "zh-CN")
+
+                // 流式 ASR 工厂（A2 fold：asrMode 三模式语义保留——local → nil 直走本地链；
+                // cloud/auto key 门控，无 key → nil 由控制器 fallback 三级链接本地）
+                let streamingASRFactory = AgentVoiceCoordinator.streamingASRFactory(
+                    modeProvider: { UserDefaults.standard.string(forKey: "agentVoiceASRMode") },
+                    keyProvider: { APIKeyManager.shared.getAPIKey(forProvider: "dashscope") })
+
+                let ports = SessionControllerPorts(
+                    makeStreamingASR: streamingASRFactory,
+                    localASRChain: {
+                        var chain: [any ASRProvider] = []
+                        if #available(macOS 26, *) { chain.append(appleSpeechASR) }
+                        chain.append(whisperASR)
+                        return chain
+                    },
+                    detectScene: { await sceneDetector.detect() },
+                    pipeline: pipeline,
+                    injector: VoiceInkInjector(),
+                    storageEngine: storageEngine,
+                    polishGateFactory: gateFactory)
+
+                let controller = VoiceInputSessionController(ports: ports)
+                let coordinator = AgentVoiceCoordinator(
+                    controller: controller, statusAdapter: agentVoiceStatusAdapter)
                 engine.agentVoiceCoordinator = coordinator
+
+                // V1（Task 8 Step 1）：预览状态与相位转发（UI 观察 engine）
+                engine.storePreviewCancellable(
+                    coordinator.$previewSession
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak engine] session in
+                            engine?.previewSessionForward = session
+                        })
+                // B1：相位转发——preview==nil 窗口（discardUndo 撤销条 / polishing 处理呈现）的信号源
+                engine.storePreviewCancellable(
+                    coordinator.$phase
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak engine] phase in
+                            engine?.agentVoicePhaseForward = phase
+                        })
+
+                // 启动清理时序（Task 10）：resetOnLaunch 原为独立 Task（本 Task 之后入队），
+                // 其 recordingState 置 idle + 隐藏面板会在恢复呈现之后执行、清掉恢复态，
+                // 故并入本 Task：await 完成清理后再恢复接线，顺序确定性（偏差声明见 task-10-report）。
+                await recorderUIManager.resetOnLaunch()
+
+                // V1 崩溃恢复：查残留流式会话（spec §3.5 #5）
+                if let crashed = try? StreamingSessionStore.recoverActive(engine: storageEngine),
+                   !crashed.isEmpty {
+                    coordinator.presentRecoveredSessions(crashed)
+                    if coordinator.previewSession != nil {
+                        engine.recordingState = .previewing   // 必须设置（F7 fold）：previewPanelMode 渲染守卫
+                        recorderUIManager.presentRecorderPanelIfNeeded()   // C10-1 ①：幂等 present（已显示 no-op）
+                    }
+                }
             } catch {
                 let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AgentVoice")
                 logger.error("AgentVoice 初始化失败: \(error.localizedDescription)")
+                // AgentVoice 初始化失败也执行启动清理（原独立 reset Task 语义保持）
+                await recorderUIManager.resetOnLaunch()
             }
         }
 
-        // Ensure no lingering recording state from previous runs
-        Task {
-            await recorderUIManager.resetOnLaunch()
-        }
+        // 启动清理已并入上方 AgentVoice 组装 Task（Task 10：恢复呈现须在清理完成后，时序确定性）
 
         AppShortcuts.updateAppShortcutParameters()
 

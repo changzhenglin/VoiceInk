@@ -168,8 +168,13 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                 await engine.toggleRecord(modeId: modeId)
             case .starting, .transcribing, .enhancing:
                 await cancelRecording()
-            case .idle:
-                if engine.assistantSession.canSendFollowUp {
+            case .idle, .previewing:   // D8 fold：previewing 等同 idle 分支
+                if engine.isPreviewLifecycleActive {
+                    // V1（Task 8，D5/D11/D23）：预览/撤销窗口中 PTT = 显式放弃当前结果并开始新录音——
+                    // 控制器重入转移（previewing/discardUndo + pttDown）负责 settle；面板保持进入录音态。
+                    SoundManager.shared.playStartSound()
+                    await engine.toggleRecord(modeId: modeId)
+                } else if engine.assistantSession.canSendFollowUp {
                     SoundManager.shared.playStartSound()
                     await engine.toggleRecord(
                         modeId: modeId,
@@ -194,6 +199,13 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         hideRecorderPanel()
         isRecorderPanelVisible = false
         engine.assistantSession.reset()
+    }
+
+    /// V1 Task 10（C10-1 ①）：幂等面板呈现——启动崩溃恢复预览呈现专用。
+    /// 与 toggleRecorderPanel 的区别：只呈现面板，不播开始音、不触发录音/结算语义；已显示 → no-op。
+    func presentRecorderPanelIfNeeded() {
+        guard !isRecorderPanelVisible else { return }
+        isRecorderPanelVisible = true   // didSet → showRecorderPanel()（既有呈现路径）
     }
 
     func resetOnLaunch() async {
@@ -239,7 +251,13 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             switch engine?.recordingState {
             case .starting, .recording, .transcribing, .enhancing:
                 await cancelRecording()
-            case .idle, .busy, nil:
+            case .previewing:
+                // I1 fix（final review）：取消族（menu-bar/Intent dismiss）预览态 = 显式取消 →
+                // 经 engine.cancelRecording 的 .previewing 分支 cancelSession settle 后面板收起
+                // （cancelRecording() = engine.cancelRecording + dismissRecorderPanel 既有形态）。
+                // 只关面板不结算会让控制器滞留预览相，不可见预览的快捷键可触发不可见注入。
+                await cancelRecording()
+            case .idle, .busy, nil:   // D8 fold：previewing 等同 idle 分支（I1 后 previewing 已独立）
                 await dismissRecorderPanel()
             }
         }

@@ -56,4 +56,26 @@ final class PromptTemplateTests: XCTestCase {
         XCTAssertFalse(prompt.contains("项目术语"))
         XCTAssertFalse(prompt.contains("代码规范"))
     }
+
+    // ── V1 盲测教训约束（spec §3.5 #6；plan Task 11 Step 1 主窗口 RED 骨架逐字照抄）──
+
+    func test_coding_template_contains_term_preservation_constraints() {
+        let prompt = PromptTemplates.build(
+            raw: "测试文本",
+            scene: SceneContext(bundleId: "com.apple.dt.Xcode", sceneType: .coding),
+            knowledge: .empty)
+        // 样本 6 教训：不确定术语保留原文
+        XCTAssertTrue(prompt.contains("不确定的术语保留原文"))
+        // 样本 8 教训：ASR 错词不得被润色放大
+        XCTAssertTrue(prompt.contains("疑似识别错误的词保留原样"))
+    }
+
+    func test_office_template_contains_tone_constraint() {
+        let prompt = PromptTemplates.build(
+            raw: "测试文本",
+            scene: SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting),
+            knowledge: .empty)
+        // 样本 10 教训：保持原语气不过度改写
+        XCTAssertTrue(prompt.contains("保持原语气"))
+    }
 }

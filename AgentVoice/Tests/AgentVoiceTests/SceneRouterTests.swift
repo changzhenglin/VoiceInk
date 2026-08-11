@@ -61,4 +61,29 @@ final class SceneRouterTests: XCTestCase {
         XCTAssertEqual(route.polishModel, "qwen-max")
         XCTAssertEqual(route.promptTemplate, "coding_intent")
     }
+
+    // ── V1 润色开关组合（spec §3.3；plan Task 9 Step 1 主窗口 RED 骨架逐字照抄，try 形态适配）──
+
+    func test_shouldPolish_with_switches_global_off() throws {
+        let router = try makeRouter()
+        XCTAssertFalse(router.shouldPolish(
+            text: String(repeating: "长", count: 80),
+            globalEnabled: false, disabledScenes: [], sceneType: "coding"))
+    }
+
+    func test_shouldPolish_with_switches_scene_disabled() throws {
+        let router = try makeRouter()
+        XCTAssertFalse(router.shouldPolish(
+            text: String(repeating: "长", count: 80),
+            globalEnabled: true, disabledScenes: ["coding"], sceneType: "coding"))
+        XCTAssertTrue(router.shouldPolish(
+            text: String(repeating: "长", count: 80),
+            globalEnabled: true, disabledScenes: ["coding"], sceneType: "office_writing"))
+    }
+
+    func test_shouldPolish_with_switches_short_text_still_skipped() throws {
+        let router = try makeRouter()
+        XCTAssertFalse(router.shouldPolish(
+            text: "短", globalEnabled: true, disabledScenes: [], sceneType: "coding"))
+    }
 }

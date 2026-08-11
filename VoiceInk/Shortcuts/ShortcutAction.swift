@@ -12,6 +12,10 @@ enum ShortcutAction: Hashable {
     case mode(UUID)
     case recorderPanelEscape
     case recorderPanelMode(Int)
+    // V1 预览专用动作（Task 8 B5；默认 ⌥⌘↩ / ⌥⌘R / ⌥⌘⌫，可配置 seam，Settings UI 归 Task 9）
+    case previewConfirm
+    case previewToggleRevert
+    case previewDiscard
 
     var userDefaultsKey: String {
         "Shortcut_\(storageName)"
@@ -50,6 +54,12 @@ enum ShortcutAction: Hashable {
             return "recorderPanelEscape"
         case .recorderPanelMode(let index):
             return "recorderPanelMode_\(index)"
+        case .previewConfirm:
+            return "previewConfirm"
+        case .previewToggleRevert:
+            return "previewToggleRevert"
+        case .previewDiscard:
+            return "previewDiscard"
         }
     }
 
@@ -85,6 +95,12 @@ enum ShortcutAction: Hashable {
             return String(localized: "Recorder Cancel")
         case .recorderPanelMode(let index):
             return String(format: String(localized: "Select Mode %@"), Self.displayNumber(forRecorderPanelIndex: index))
+        case .previewConfirm:
+            return String(localized: "Preview: Output to Cursor")
+        case .previewToggleRevert:
+            return String(localized: "Preview: Revert or Restore Text")
+        case .previewDiscard:
+            return String(localized: "Preview: Discard or Undo")
         }
     }
 
@@ -98,6 +114,13 @@ enum ShortcutAction: Hashable {
 
     static let recorderPanelStoredActions: [Self] = [
         .cancelRecorder
+    ]
+
+    /// V1 预览专用动作（Task 8 B5）：预览态作用域生效，持久化可配置（Settings UI 归 Task 9）
+    static let previewStoredActions: [Self] = [
+        .previewConfirm,
+        .previewToggleRevert,
+        .previewDiscard,
     ]
 
     static let legacyKeyboardShortcutActions: [Self] = [

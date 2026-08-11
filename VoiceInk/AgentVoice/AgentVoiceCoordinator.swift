@@ -1,183 +1,140 @@
 import Foundation
 import os.log
 import AppKit
-import Combine
 import UserNotifications
 import AgentVoice
 
-/// AgentVoice 分叉编排核心
+/// AgentVoice 薄壳（D′ fold：编排语义在包层 VoiceInputSessionController，
+/// 本类只做 UI 状态桥接 + 依赖组装透传）
 ///
-/// VoiceInkEngine.toggleRecord() 停止录音后调用 run(audioBuffer:)。
-/// 编排：detect → route → 选 ASR → 构造 pipeline → run → 结果处理。
-/// pipeline 每次构造（ASR 选择依赖 route，每次可能不同；构造成本 <1ms）。
+/// 回调绑定形态（plan L2148 适配）：包层控制器无 Combine publisher，
+/// onPreviewChanged/onPartial/onStatus 为 @Sendable 同步回调，且均从 MainActor 调用
+/// （控制器契约「公共入口预期 MainActor 调用」；Task 5b I2 fix 已封闭 observer/timer 线程）。
+/// 故用 MainActor.assumeIsolated 同步赋值/转发——保证 engine 停止分支
+/// `await endSession()` 返回后能立即同步读到 previewSession（Task { @MainActor } hop
+/// 会晚于该检查点执行，造成预览态误判，故不用）。
 @MainActor
 final class AgentVoiceCoordinator: ObservableObject {
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AgentVoiceCoordinator")
 
-    // ── 依赖（composition root 注入）──
-    private let sceneDetector: MacSceneDetector
-    private let router: SceneRouter
-    private let knowledgeStore: KnowledgeStore
-    private let whisperTranscriber: VoiceInkWhisperTranscriber
+    let controller: VoiceInputSessionController
     private let statusAdapter: AgentVoiceStatusAdapter
-    private let hubPort: Int
-    private let dashScopeAPIKeyProvider: () -> String?
 
-    // ── 懒构造的 ASR 实例 ──
-    private lazy var whisperASR: WhisperASR = WhisperASR(transcriber: whisperTranscriber)
-    private lazy var appleSpeechASR: AppleSpeechASR = AppleSpeechASR(locale: "zh-CN")
+    /// 预览状态转发给 UI（Task 8 消费）
+    @Published var previewSession: PreviewSession?
 
-    /// 暴露给测试断言状态映射（codex P1#10 fold）
+    /// 控制器相位转发给 UI（B1 裁决：preview==nil 窗口内 discardUndo/processing 呈现的唯一信号源；
+    /// 形态同 previewSession 的 assumeIsolated 同步桥，engine/UI 在 MainActor 读）
+    @Published var phase: AgentVoicePhase = .idle
+
+    /// partial → engine 回调（Task 7 安装）
+    var onPartialUpdate: (@MainActor (String) -> Void)?
+
+    /// B9：自上次相位变化以来控制器是否发过 onStatus——区分「带 onStatus 的结算」（confirm 成功/失败，
+    /// handleResult 已置 done/error，不得覆盖）与「不带 onStatus 的结算」（discard 系 settle，需复位 idle）
+    private var statusEmittedSincePhaseChange = false
+
+    /// 暴露给测试断言状态映射（codex P1#10 fold 保持）
     var statusAdapterForTest: AgentVoiceStatusAdapter { statusAdapter }
 
-    init(sceneDetector: MacSceneDetector,
-         router: SceneRouter,
-         knowledgeStore: KnowledgeStore,
-         whisperTranscriber: VoiceInkWhisperTranscriber,
-         statusAdapter: AgentVoiceStatusAdapter,
-         hubPort: Int,
-         dashScopeAPIKeyProvider: @escaping () -> String?) {
-        self.sceneDetector = sceneDetector
-        self.router = router
-        self.knowledgeStore = knowledgeStore
-        self.whisperTranscriber = whisperTranscriber
+    init(controller: VoiceInputSessionController, statusAdapter: AgentVoiceStatusAdapter) {
+        self.controller = controller
         self.statusAdapter = statusAdapter
-        self.hubPort = hubPort
-        self.dashScopeAPIKeyProvider = dashScopeAPIKeyProvider
+        bindController()
     }
 
-    /// 测试工厂
-    /// codex P0#3 fold：VoiceInputPolicy.Payload / DegradedPolicy 无 public init，
-    /// 改用 ConfigStore().loadDefault() 获取 bundled policy（public API）
-    static func makeForTest(dashScopeAPIKey: String?, routeASRProvider: String) -> AgentVoiceCoordinator {
-        let configStore = ConfigStore()
-        let policy: VoiceInputPolicy.Payload
-        do {
-            policy = try configStore.loadDefault().payload
-        } catch {
-            // bundled JSON 必定存在，fatalError 仅防意外
-            fatalError("ConfigStore.loadDefault() 失败: \(error)")
-        }
-        let engine = (try? StorageEngine(path: nil))!
-        return AgentVoiceCoordinator(
-            sceneDetector: MacSceneDetector(),
-            router: SceneRouter(policy: policy),
-            knowledgeStore: KnowledgeStore(engine: engine),
-            whisperTranscriber: VoiceInkWhisperTranscriber(
-                contextProvider: { nil },
-                modelLoader: { throw WhisperTranscriberError.modelUnavailable }),
-            statusAdapter: AgentVoiceStatusAdapter(),
-            hubPort: 9876,
-            dashScopeAPIKeyProvider: { dashScopeAPIKey })
-    }
-
-    // MARK: - ASR 选择（暴露给测试）
-
-    /// 根据 route + API Key 可用性 + 用户 ASR 模式偏好选择 ASR provider
-    /// 用户模式（Settings Picker，UserDefaults "agentVoiceASRMode"）：
-    ///   "auto"（默认）：按 route 决定——route=whisper → 本地；route=dashscope → 有 key 走云端，无 key fallback 本地
-    ///   "local"：强制本地（Apple Speech macOS 26+ → Whisper 兜底），忽略 route 与 key
-    ///   "cloud"：优先云端 DashScope（有 key），无 key fallback 本地（保证始终有 ASR）
-    /// asrMode 默认参数读 UserDefaults，测试可显式传参覆盖（避免全局状态污染）
-    func selectASR(routeASRProvider: String,
-                   asrMode: String = UserDefaults.standard.string(forKey: "agentVoiceASRMode") ?? "auto") -> any ASRProvider {
-        switch asrMode {
-        case "local":
-            return localASR()
-        case "cloud":
-            if let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty {
-                return DashScopeASR(apiKey: apiKey)
+    private func bindController() {
+        controller.onPreviewChanged = { [weak self] preview in
+            MainActor.assumeIsolated {
+                self?.previewSession = preview
             }
-            logger.warning("云端优先但无 DashScope API Key，fallback 到本地 ASR")
-            return localASR()
-        default:  // "auto"
-            if routeASRProvider == "whisper" {
-                return localASR()
+        }
+        controller.onPhaseChange = { [weak self] newPhase in
+            MainActor.assumeIsolated {
+                self?.handlePhaseChange(newPhase)
             }
-            // route 说 dashscope（或其他云端）
-            if let apiKey = dashScopeAPIKeyProvider(), !apiKey.isEmpty {
-                return DashScopeASR(apiKey: apiKey)
+        }
+        controller.onPartial = { [weak self] full in
+            MainActor.assumeIsolated {
+                self?.onPartialUpdate?(full)
             }
-            logger.warning("无 DashScope API Key，fallback 到本地 ASR")
-            return localASR()
+        }
+        controller.onStatus = { [weak self] result in
+            MainActor.assumeIsolated {
+                self?.handleResult(result)
+            }
         }
     }
 
-    /// 本地 ASR 选择：Apple Speech 优先（macOS 26+），Whisper 兜底
-    private func localASR() -> any ASRProvider {
-        if #available(macOS 26, *) {
-            return appleSpeechASR
-        }
-        return whisperASR
+    /// B1/B9：相位桥接 + 无 onStatus 结算路径的状态条复位（OOS-2 收口）。
+    ///
+    /// 控制器各 settle 路径 onStatus 发射事实（Task 8 核验）：
+    /// - confirm 成功/失败（含恢复逐条/错误重试）→ 发 onStatus（handleResult 置 done/error）→ 不覆盖
+    /// - discardPreview→discardUndo / undo 超时 settle / 全部丢弃 / recoverableError 相丢弃 → **不发** onStatus
+    /// 不发 onStatus 且相位回到 idle（或撤销超时呈下一条恢复）时，状态条滞留 .processing（OOS-2）→ 复位 .idle。
+    /// 判定用「上次相位变化以来是否发过 onStatus」区分两类结算，不误覆盖 confirm 成功后的 .done 短暂态。
+    private func handlePhaseChange(_ newPhase: AgentVoicePhase) {
+        let oldPhase = phase
+        phase = newPhase
+        defer { statusEmittedSincePhaseChange = false }
+
+        let settleTargets: Set<AgentVoicePhase> = [.idle, .recoveryPreview]
+        let settleSources: Set<AgentVoicePhase> = [.discardUndo, .recoveryPreview, .recoverableError]
+        guard settleTargets.contains(newPhase),
+            settleSources.contains(oldPhase),
+            !statusEmittedSincePhaseChange
+        else { return }
+        statusAdapter.update(.idle)
     }
 
-    // MARK: - 主入口
+    // MARK: - engine 接口（Task 7 消费）
 
-    /// 执行一次完整的 AgentVoice 语音输入会话
-    /// - Parameter audioBuffer: 录音期间累积的 PCM Data 块（裸 Int16 LE）
-    /// D4 fold：防重入标志（pipeline 执行期间忽略新 PTT）
-    /// 注：setter 为 internal（非 private(set)），供 @testable 测试模拟重入（codex P1#10）
-    internal(set) var isRunning = false
+    func beginSession() async { await controller.pttDown() }
+    func feedAudio(_ data: Data) { controller.enqueueAudio(data) }
+    func endSession() async { await controller.pttUp() }
+    func cancelSession() async { await controller.cancelRecording() }
 
-    func run(audioBuffer: [Data]) async {
-        // D4 fold：并发保护
-        guard !isRunning else {
-            logger.warning("AgentVoice pipeline 正在执行，忽略本次请求")
-            return
-        }
-        isRunning = true
-        defer { isRunning = false }
+    func confirmPreview() async { await controller.confirmPreview() }
+    func discardPreview() { controller.discardPreview() }
+    func togglePreviewRevert() { controller.togglePreviewRevert() }
 
-        statusAdapter.update(.processing)
+    // B6 透传（Task 6+7 携带项：plan Task 6 Interfaces 清单缺，Task 8 补齐）
+    /// discardUndo 窗口内撤销（D23：恢复原 phase 与草稿）
+    func undoDiscard() { controller.undoDiscard() }
+    /// 恢复队列全部丢弃（R1/D30：逐条 settle 回 idle；不提供全部输出）
+    func discardAllRecovered() { controller.discardAllRecovered() }
 
-        // ① Data → [AudioFrame]（D2 fold：使用 PCMUtils 共享转换）
-        let frames = audioBuffer.map { data -> AudioFrame in
-            let pcm = PCMUtils.dataToInt16(data)
-            return AudioFrame(pcm: pcm, timestamp: Date().timeIntervalSince1970)
-        }
-
-        // ② detect + route
-        let scene = await sceneDetector.detect()
-        let route = router.route(scene: scene)
-
-        // ③ 选 ASR
-        let asr = selectASR(routeASRProvider: route.asrProvider)
-
-        // ④ 构造 pipeline（每次新建，ASR 可能不同）
-        let injector = VoiceInkInjector()
-        let polishAdapter = HubPolishAdapter(hubPort: hubPort)
-        let pipeline = VoicePipeline(
-            asr: asr,
-            sceneDetector: sceneDetector,
-            router: router,
-            knowledgeStore: knowledgeStore,
-            polish: polishAdapter,
-            injector: injector)
-
-        // ⑤ 构建帧流
-        let stream = AsyncStream<AudioFrame> { continuation in
-            for frame in frames {
-                continuation.yield(frame)
-            }
-            continuation.finish()
-        }
-
-        logger.info("选 ASR: \(asr.providerId), scene: \(scene.bundleId ?? "nil")/\(scene.sceneType.rawValue)")
-
-        // ⑥ 执行 pipeline
-        let result = await pipeline.run(audioFrames: stream)
-
-        logger.info("pipeline 结果: state=\(result.state.rawValue) asr=\(result.asrProvider)")
-
-        // ⑦ 结果处理
-        handleResult(result)
+    func presentRecoveredSessions(_ records: [StreamingSessionRecord]) {
+        controller.presentRecoveredSessions(records)
     }
 
-    // MARK: - 结果处理
+    // MARK: - 流式 ASR 工厂（A2 fold：asrMode 三模式语义保留）
 
-    /// internal（非 private），暴露给 @testable 测试（codex P1#10 fold）
+    /// 流式 ASR 构造工厂——尊重用户 ASR 模式偏好（Settings Picker，UserDefaults "agentVoiceASRMode"）：
+    ///   "local"：返回 nil（跳过流式，直走控制器本地三级链）
+    ///   "cloud"/"auto"（默认）：key 门控——有 key 构造 DashScope；无 key 返回 nil
+    ///     （控制器 fallback 三级链接本地，等价旧 selectASR 的 fallback 语义）
+    /// 行为变化（A2 备案）：旧「auto + route=whisper → 本地」的 route hint 随 D′ ports
+    /// 形态消失（流式优先 + 三级 fallback 是设计意图），Task 13 验收核验。
+    static func streamingASRFactory(
+        modeProvider: @escaping @Sendable () -> String?,
+        keyProvider: @escaping @Sendable () -> String?
+    ) -> @Sendable () -> (any StreamingASR)? {
+        return {
+            let mode = modeProvider() ?? "auto"
+            guard mode != "local" else { return nil }
+            guard let key = keyProvider(), !key.isEmpty else { return nil }
+            return DashScopeASR(apiKey: key)
+        }
+    }
+
+    // MARK: - 状态映射（既有四态 UI 语义保持）
+
+    /// internal（非 private），暴露给 @testable 测试（A1 裁决：保留测试直调；
+    /// plan sketch 标 private，为保既有测试直调放宽——必要支撑类偏差，报告声明）
     func handleResult(_ result: VoiceInputResult) {
+        statusEmittedSincePhaseChange = true   // B9：onStatus 到达标记（区分带/不带 onStatus 的结算路径）
         logger.info("AgentVoice 结果: state=\(result.state.rawValue) traceId=\(result.traceId) asr=\(result.asrProvider) polished=\(result.polished)")
 
         switch result.state {
@@ -214,8 +171,10 @@ final class AgentVoiceCoordinator: ObservableObject {
             Self.postNotification(title: "AgentVoice", body: errorMessage)
 
         case .needsContext:
-            // 用户没说话，静默回 idle
+            // 用户没说话，回 idle + 短提示（I2 fix review round 1：plan L138-139 矩阵 EMPTY 格——
+            // 「没有听到内容」短提示；同 blocked 分支既有 UNUserNotificationCenter 机制，不新增 UI 表面）
             statusAdapter.update(.idle)
+            Self.postNotification(title: "AgentVoice", body: "没有听到内容，可再试一次")
         }
     }
 
