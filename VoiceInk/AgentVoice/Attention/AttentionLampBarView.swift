@@ -11,6 +11,9 @@ struct AttentionLampBarData: Equatable {
     var overflowAggregateLamp: Lamp = .none
     /// sessionKey → 等待时长（●黄 hover 文案消费 AttentionHoverWaitText 单源，§7）。
     var waitElapsed: [String: TimeInterval] = [:]
+    /// 14A-3 裁决卡②（老林批准）：sessionKey → 完整目录名标签（同名冲突后缀，
+    /// router.fullCwdLabels 单源；spec「1-2 字符短标识」冻结解除）。
+    var labels: [String: String] = [:]
     /// bar 隐藏判据（§3：无受管会话隐藏）。overflow 亦算存在。
     var isEmpty: Bool { slots.isEmpty && overflowCount == 0 }
 }

@@ -39,6 +39,7 @@ public final class AttentionEventRouter: @unchecked Sendable {
     private var sessionCwdLabels: [String: String] = [:]   // F4/C20：sessionKey → cwd basename 标签（契约安全）
     private var sessionCwdPaths: [String: String] = [:]    // C20：运行时全路径映射——永不持久化，仅 AX 导航宿主 seam 消费
     private var sessionLastEventAt: [String: Date] = [:]   // C18：投影用真实时间戳
+    private var sessionPids: [String: Int] = [:]           // 14A-3 裁决卡①：hook 投递进程号（探活证据；运行时，不持久化）
     private let lock = NSLock()
     public private(set) var claudeVersion = "2.1.220"
 
@@ -157,6 +158,11 @@ public final class AttentionEventRouter: @unchecked Sendable {
         if let rawCwd = payload["cwd"] as? String {
             sessionCwdPaths[event.nativeSessionId] = rawCwd  // C20：仅运行时映射（AX 导航），不持久化
         }
+        // 14A-3 裁决卡①（老林批准）：hook 投递携带的进程号（幽灵灯探活证据；
+        // 矩阵登记 attention_process_pid ephemeral；同 C20 运行时映射，不持久化）
+        if let pid = payload["attention_process_pid"] as? Int, pid > 0 {
+            sessionPids[event.nativeSessionId] = pid
+        }
         // C18：max() 防乱序到达令时间戳倒退（与 replayFromStore 口径一致）
         sessionLastEventAt[event.nativeSessionId] =
             max(sessionLastEventAt[event.nativeSessionId] ?? .distantPast, observedAt)
@@ -173,6 +179,10 @@ public final class AttentionEventRouter: @unchecked Sendable {
         var snapshot = snapshots[event.nativeSessionId]
             ?? AttentionStateSnapshot(sessionKey: event.nativeSessionId)
         snapshot = reducer.reduce(events: [event], state: snapshot)
+        // 14A-3 裁决卡①：新事件到达=存活证据 → archived 会话复活（误判自愈兜底；
+        // 投影层按 lifecycle 自动重新分槽）。sessionEnd 已被 reduce 置 closed，
+        // 不命中本分支（终态不被复活）。
+        if snapshot.lifecycle == .archived { snapshot.lifecycle = .managed }
         snapshots[event.nativeSessionId] = snapshot
 
         // C4：completed/failed supersede 同 session 过时 waiting 项
@@ -293,6 +303,59 @@ public final class AttentionEventRouter: @unchecked Sendable {
     public func lastEventAt(for sessionKey: String) -> Date? {
         lock.lock(); defer { lock.unlock() }
         return sessionLastEventAt[sessionKey]
+    }
+
+    // MARK: - 14A-3 裁决卡①：幽灵灯进程探活（老林批准）
+
+    /// pid 已知档 dead 阈值（控制器裁决）：进程死亡是强证据+复活自愈兜底，
+    /// 30min（work 档同族）；spec §6 L171 的 4h deadThreshold 保留为 pid 未知档
+    ///（StalenessPolicy.deadThreshold 消费，存量幽灵/脚本缺 pid 兜底）。
+    public static let pidDeadThreshold: TimeInterval = 30 * 60
+
+    /// 三要素 dead 判定归档（StalenessPolicy §6 L171 结构）：
+    /// - pid 已知：进程不活 ∧ 超 pidDeadThreshold 无事件 → archived
+    /// - pid 未知：超 deadThreshold(4h) 无事件 → archived（无存活证据兜底档）
+    /// archived 释放槽位（投影层 §4 消费）；来新事件复活为 managed（ingest 面）。
+    /// 返回本批归档的 sessionKey（诊断/日志面）。
+    public func archiveDeadSessions(now: Date, isProcessAlive: (Int) -> Bool) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var archivedKeys: [String] = []
+        for (key, snap) in snapshots {
+            guard snap.lifecycle == .managed || snap.lifecycle == .discovered else { continue }
+            let last = sessionLastEventAt[key] ?? .distantPast
+            let dead: Bool
+            if let pid = sessionPids[key] {
+                dead = !isProcessAlive(pid)
+                    && now.timeIntervalSince(last) >= Self.pidDeadThreshold
+            } else {
+                dead = now.timeIntervalSince(last) >= StalenessPolicy.deadThreshold
+            }
+            if dead {
+                snapshots[key]?.lifecycle = .archived
+                archivedKeys.append(key)
+            }
+        }
+        return archivedKeys.sorted()
+    }
+
+    // MARK: - 14A-3 裁决卡②：灯条完整目录名标签（老林批准）
+
+    /// 确定性全标签（basename + 同名冲突后缀）：sessionKey 字典序定序分配后缀
+    ///（防抖动，M3 修复同口径）；缺 cwd 会话不入面（调用方退化会话键前缀）。
+    /// spec「1-2 字符短标识」冻结经老林 2026-08-13 批准解除。
+    public func fullCwdLabels(sessionKeys: [String]) -> [String: String] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [String: String] = [:]
+        var taken = Set<String>()
+        for key in sessionKeys.sorted() {
+            guard let base = sessionCwdLabels[key] else { continue }
+            var candidate = base
+            var n = 2
+            while taken.contains(candidate) { candidate = "\(base)-\(n)"; n += 1 }
+            taken.insert(candidate)
+            out[key] = candidate
+        }
+        return out
     }
 
     /// internal 测试 seam（非公开契约）：委托 mutex 查 ownership 持有状态，

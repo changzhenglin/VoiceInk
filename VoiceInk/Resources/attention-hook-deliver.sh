@@ -31,11 +31,31 @@ EVENT_NAME=$(printf '%s' "$INPUT" | /usr/bin/python3 -c 'import sys,json;print(j
 PORT="${ATTENTION_PORT:-47821}"
 TOKEN="${ATTENTION_TOKEN:-}"
 PAYLOAD=$(printf '%s' "$INPUT" | /usr/bin/python3 -c '
-import sys, json, os
+import sys, json, os, subprocess
 d = json.load(sys.stdin)
 d.pop("transcript_content", None)
 d.pop("prompt", None)
 d["delivery_id"] = os.environ.get("DELIVERY_ID","")
+# 14A-3 裁决卡①（老林批准）：进程探活证据——沿 PPID 链上溯找 claude 进程记 pid。
+# 仅数字标记（零内容面，矩阵登记 attention_process_pid ephemeral）。
+# fail-honest：找不到不带字段（该会话落 pid 未知档判定）。
+pid = os.getppid()
+for _ in range(6):
+    if pid <= 1:
+        break
+    try:
+        name = subprocess.run(["ps","-o","comm=","-p",str(pid)],
+                              capture_output=True, text=True, timeout=2).stdout.strip().lower()
+    except Exception:
+        break
+    if "claude" in name:
+        d["attention_process_pid"] = pid
+        break
+    try:
+        pid = int(subprocess.run(["ps","-o","ppid=","-p",str(pid)],
+                                 capture_output=True, text=True, timeout=2).stdout.strip())
+    except Exception:
+        break
 print(json.dumps({"hook_event_name": d.get("hook_event_name",""), "payload": d}))
 ' 2>/dev/null)
 [ -z "$PAYLOAD" ] && exit 0

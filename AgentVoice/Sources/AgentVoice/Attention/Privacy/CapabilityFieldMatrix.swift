@@ -123,6 +123,9 @@ public struct CapabilityFieldMatrix: Sendable {
         // idle_prompt）；枚举标记字段非内容面，tool_name（I6）先例同型；老林 2026-08-12
         // 批准登记；sizeLimit 收紧至枚举尺度（官方两值均 ≤20 字节）
         row(.attentionIngest, "notification_type", eph: true, render: true, sizeLimit: 64),
+        // hook 投递进程号（14A-3 裁决卡①幽灵灯探活证据要素，老林 2026-08-13
+        // 随方案批准）：纯数字标记，ephemeral，零内容面；sizeLimit 收紧至数字尺度
+        row(.attentionIngest, "attention_process_pid", eph: true, sizeLimit: 16),
         row(.attentionIngest, "source",           eph: true, render: true),
         // cwd：§8.8「cwd 规范化标识」——原始绝对路径值走 redaction（路径模式命中即替换）
         row(.attentionIngest, "cwd",              eph: true, render: true, redaction: .redact),

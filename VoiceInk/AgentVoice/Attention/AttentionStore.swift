@@ -445,9 +445,11 @@ final class AttentionStore: ObservableObject {
         }
         let hookHealth: HookHealth = versionDrift ? .unhealthy : .healthy
         let projection = AttentionLampBarProjection()
-        let data = projection.project(from: snaps, hookHealth: hookHealth,
+        var data = projection.project(from: snaps, hookHealth: hookHealth,
                                       lastEventAt: { lastMap[$0] }, now: Date(),
                                       slotMap: &lampSlotMap)
+        // 14A-3 裁决卡②（老林批准）：灯上完整目录名标签（router 单源确定性分配）
+        data.labels = router.fullCwdLabels(sessionKeys: data.slots.map(\.sessionKey))
         persistLampSlotMapIfChanged()
         return data
     }

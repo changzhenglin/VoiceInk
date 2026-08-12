@@ -26,11 +26,11 @@ final class AttentionLampBarViewModel: ObservableObject {
         isVisible = !projected.isEmpty
     }
 
-    /// 短标识单源（§7）：sessionKey → 1-2 字符稳定短标识。最小实现=前缀；
-    /// 碰撞/钉住/worktree 短码归 DESIGN §4.2 完整面（14A gate 前 finishing）。
+    /// 灯上标识单源（14A-3 裁决卡②，老林批准）：完整目录名+同名冲突后缀
+    ///（router.fullCwdLabels 经 barData.labels 供给）；缺失退化会话键前缀
+    ///（罕见：cwd 未采集）。spec「1-2 字符短标识」冻结解除。
     func shortIdentifier(for sessionKey: String) -> String {
-        store?.shortLabel(forLampBar: sessionKey).map { String($0.prefix(2)) }
-            ?? String(sessionKey.prefix(2))
+        barData.labels[sessionKey] ?? String(sessionKey.prefix(8))
     }
 }
 
@@ -158,6 +158,13 @@ final class AttentionLampBarController: NSObject {
             }
         } else if let hosting = panel?.contentViewController as? NSHostingController<AttentionLampBarView> {
             hosting.rootView = makeBarView()
+            // 14A-3 裁决卡②：标签加长（完整目录名）→ 面板尺寸随数据更新
+            //（创建时 layoutNearTop 定尺寸，数据变化后须重算；宽度夹在屏宽内）
+            if let panel, let screen = NSScreen.main {
+                let size = hosting.view.fittingSize
+                panel.setContentSize(NSSize(width: min(size.width, screen.visibleFrame.width),
+                                            height: size.height))
+            }
         }
         panel?.orderFrontRegardless()
     }

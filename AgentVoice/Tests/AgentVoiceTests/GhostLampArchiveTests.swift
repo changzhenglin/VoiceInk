@@ -16,7 +16,7 @@ final class GhostLampArchiveTests: XCTestCase {
 
     @discardableResult
     private func post(_ router: AttentionEventRouter, _ hook: String, sid: String,
-                      at: Date, extra: [String: Any] = [:]) throws -> IngestResult {
+                      at: Date, extra: [String: Any] = [:]) throws -> AttentionEventRouter.IngestResult {
         var payload: [String: Any] = ["session_id": sid]
         for (k, v) in extra { payload[k] = v }
         let data = try JSONSerialization.data(withJSONObject: payload)

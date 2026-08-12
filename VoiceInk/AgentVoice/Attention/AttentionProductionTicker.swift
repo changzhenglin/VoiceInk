@@ -61,6 +61,13 @@ final class AttentionProductionTicker {
     @discardableResult
     func runTick(now: Date = Date()) -> AttentionEventRouter.ProductionTickReport {
         let report = router.tick(at: now)
+        // 14A-3 裁决卡①（老林批准）：幽灵灯探活——三要素 dead 判定（§6 L171）；
+        // kill(pid,0)=进程存在探测，EPERM=存在但无权限视为存活；
+        // 误判自愈=archived 会话来新事件复活（router ingest 面）。
+        router.archiveDeadSessions(now: now) { pid in
+            if kill(pid_t(pid), 0) == 0 { return true }
+            return errno == EPERM
+        }
         router.persistCurrentProjections()
         onTick?(report)
         return report
