@@ -4,7 +4,7 @@
     "owner": "老林（在场观察）+ 14A-3 观察窗",
     "phase": "14A-3",
     "automated_or_manual": "manual",
-    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（14A-3 产出，未建）",
+    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（已建，观察记录进行中）",
     "status": "PENDING",
     "measurement": "一眼测试：灯态一眼读对率；二问：当前在等什么/该做什么答对率；人工观察标签记录，不含 prompt/正文",
     "threshold": "3 个真实工作日×每天≥5次且 4/6/8 会话各有样本；一眼二问全对率≥80%"
@@ -84,7 +84,7 @@
     "owner": "老林（在场观察）+ 14A-3 观察窗",
     "phase": "14A-3",
     "automated_or_manual": "manual",
-    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（14A-3 产出，未建）",
+    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（已建，观察记录进行中）",
     "status": "PENDING",
     "measurement": "观察期 working 长任务中假 ?灰 出现率；分母/分子如实记录",
     "threshold": "假 ?灰 率≤5%"
