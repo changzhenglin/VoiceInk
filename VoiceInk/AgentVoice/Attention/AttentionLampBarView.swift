@@ -142,6 +142,10 @@ struct AttentionLampBarView: View {
         HStack(spacing: 10) {
             ForEach(Array(visibleSlots.enumerated()), id: \.element.sessionKey) { pair in
                 lampGlyph(pair.element, index: pair.offset)
+                    // Task 14A-2b（Step 4/§9 #5 AX 面）：glyph 显式独立 AX 元素——
+                    // 默认合并语义下子 identifier 被容器吞（AX 树实证），.ignore 让
+                    // 每灯以独立元素暴露 identifier+VO label。
+                    .accessibilityElement(children: .ignore)
                     .accessibilityIdentifier("attention.lamp.\(pair.offset)")
                     .accessibilityLabel(voiceOverLabel(for: pair.element))
             }
@@ -149,6 +153,7 @@ struct AttentionLampBarView: View {
             // 聚合色取 overflow 最高优先灯态（穷举 +N 形状通道归 14A gate）。
             if data.overflowCount > 0 {
                 overflowGlyph
+                    .accessibilityElement(children: .ignore)   // 同上：独立 AX 元素
                     .accessibilityIdentifier("attention.lamp.overflow")
                     .accessibilityLabel("还有 \(data.overflowCount) 个会话")
             }
@@ -156,8 +161,10 @@ struct AttentionLampBarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(barBackground)
-        .accessibilityIdentifier("attention.lampBar")
+        // 容器 AX 元素顺序（14A-2b 修）：先 .contain 建容器，再挂容器级 identifier
+        //（原序 identifier 在内层 → 泄漏到子 Text，容器本身无 identifier）。
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("attention.lampBar")
         // 键盘最小路径（I2 fix round 1）：bar 可聚焦 + ←→ 槽间 + Return 跳转 + Escape 两级。
         .focusable()
         .onKeyPress { press in handleKey(press) }

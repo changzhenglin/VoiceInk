@@ -112,6 +112,17 @@ public struct AttentionProjector: Sendable {
     /// ✓绿 TTL（spec §3 时效：5min；seen 半亮不延长）
     public static let completedTTL: TimeInterval = 5 * 60
 
+    /// Task 14A-2b E2E seam：completed TTL 测试覆写——生产恒 nil（语义=completedTTL）；
+    /// app E2E 模式（launch argument）设置，加速退灯转换的 UITests 可观察性。
+    /// 三消费点（本 struct G8/reducer timedTransition/store expireCompletedPresentation）
+    /// 统一读 effectiveCompletedTTL，覆写时语义一致。
+    public static var completedTTLOverride: TimeInterval?
+
+    /// 生效 TTL（生产=completedTTL；E2E 覆写见 completedTTLOverride 注记）。
+    public static var effectiveCompletedTTL: TimeInterval {
+        completedTTLOverride ?? completedTTL
+    }
+
     public init() {}
 
     /// G1-G10 穷举投影（pure：同输入恒同输出，零副作用）
@@ -199,7 +210,7 @@ public struct AttentionProjector: Sendable {
                 return gray("无法判断")
             }
             let age = input.now.timeIntervalSince(completedAt)
-            if age <= Self.completedTTL {
+            if age <= Self.effectiveCompletedTTL {
                 return ProjectionResult(lamp: .completedGreen, subreason: "已完成",
                                         dimmed: input.seen, hoverNote: "")
             }

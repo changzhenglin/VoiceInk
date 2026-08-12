@@ -50,6 +50,8 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
             "-AttentionLampBarP1Enabled", "YES",
             "-AttentionE2EMode", "YES",
             "-AttentionE2EPort", e2ePort,
+            // E2E tick 间隔 1s（生产 30s；测试 dump/timed-transition 可观察性预算）
+            "-AttentionE2ETickIntervalSeconds", "1",
         ]
         try? FileManager.default.removeItem(at: bridgeURL)
         try? FileManager.default.removeItem(at: projectionURL)
@@ -126,8 +128,11 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
 
     // MARK: - Step 4 逐项
 
-    /// ①completed 5min 退灯但 unseen 摘要/事实保留（测试 seam：TTL 覆写 3s，
+    /// ①completed TTL 退灯但 unseen 摘要/事实保留（测试 seam：TTL 覆写 3s，
     /// 生产 5min 语义不变——证据注记入 manifest）。
+    /// 退灯真源语义（AttentionProjector G8 后半+§9 #12「completed 5min→idle 槽不释放」）：
+    /// TTL 到期后 ✓绿（completedGreen）熄灭转 ◌绿（workingGreen「已完成·转空闲」），
+    /// 会话保留在槽/投影（事实/unseen 不丢）——非 bar 隐藏。
     @MainActor
     func testCompletedExitsLampButUnseenRetained() throws {
         app.launchArguments += ["-AttentionE2ECompletedTTLSeconds", "3"]
@@ -137,18 +142,21 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
         XCTAssertEqual(try postHook("Notification", sessionId: sid, deliveryId: "14a2-s4a-d2", token: token), 200)
         XCTAssertEqual(try postHook("Stop", sessionId: sid, deliveryId: "14a2-s4a-d3", token: token), 200)
 
-        let bar = app.otherElements["attention.lampBar"]
+        let bar = app.descendants(matching: .any)["attention.lampBar"]
         XCTAssertTrue(bar.waitForExistence(timeout: 10), "completed 前灯条应呈现")
 
-        // TTL 覆写 3s → completed 退灯
-        let gone = expectation(for: NSPredicate { _, _ in !bar.exists }, evaluatedWith: bar)
-        wait(for: [gone], timeout: 12)
-        XCTAssertFalse(bar.exists, "completed TTL 到期后灯条应退灯")
+        // TTL 覆写 3s + 2s tick 余量 → completedGreen 退灯转 workingGreen（投影 dump 口径）
+        XCTAssertTrue(waitProjection(timeout: 15) { p in
+            let lamps = (p["lamps"] as? [[String: Any]]) ?? []
+            guard let mine = lamps.first(where: { ($0["session_key"] as? String) == sid })
+            else { return false }
+            return (mine["lamp"] as? String) == "workingGreen"
+        }, "TTL 到期：completedGreen 应退灯转 workingGreen（已完成·转空闲，G8 后半真源语义）")
 
-        // unseen 保留：projection dump 仍列该会话（事实/摘要未随退灯丢失）
+        // unseen/事实保留：会话仍在投影账内（§9 #12 idle 槽不释放；unseen_sessions 口径）
         XCTAssertTrue(waitProjection { p in
             ((p["unseen_sessions"] as? [String]) ?? []).contains(sid)
-        }, "退灯后 unseen 摘要/事实应保留（projection dump 应仍列该会话）")
+        }, "退灯后会话事实/unseen 摘要应保留（projection dump 应仍列该会话）")
     }
 
     /// ②global Off 绝对安静且 store 继续（§2：master off 抑制全部表面，采集不停）。
@@ -163,7 +171,7 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
         XCTAssertEqual(try postHook("Notification", sessionId: sid, deliveryId: "14a2-s4b-d2", token: token), 200)
 
         // 绝对安静：bar 不呈现 + 无补偿决策
-        let bar = app.otherElements["attention.lampBar"]
+        let bar = app.descendants(matching: .any)["attention.lampBar"]
         XCTAssertFalse(bar.waitForExistence(timeout: 5), "global Off：灯条不得呈现")
         if let p = projection() {
             XCTAssertEqual(p["last_sound_compensation"] as? String, "none",
@@ -180,7 +188,7 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
         XCTAssertEqual(try postHook("SessionStart", sessionId: sid, deliveryId: "14a2-s4c-d1", token: token), 200)
         XCTAssertEqual(try postHook("Notification", sessionId: sid, deliveryId: "14a2-s4c-d2", token: token), 200)
 
-        let bar = app.otherElements["attention.lampBar"]
+        let bar = app.descendants(matching: .any)["attention.lampBar"]
         XCTAssertTrue(bar.waitForExistence(timeout: 10), "bar 应呈现")
         let frontAfter = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         XCTAssertEqual(frontAfter, frontBefore,
@@ -197,7 +205,7 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
         XCTAssertEqual(try postHook("SessionStart", sessionId: sid, deliveryId: "14a2-s4d-d1", token: token), 200)
         XCTAssertEqual(try postHook("Notification", sessionId: sid, deliveryId: "14a2-s4d-d2", token: token), 200)
 
-        let bar = app.otherElements["attention.lampBar"]
+        let bar = app.descendants(matching: .any)["attention.lampBar"]
         XCTAssertTrue(bar.waitForExistence(timeout: 10), "bar 应呈现")
 
         // bar 聚焦（点击 panel）→ Escape 两级恢复第二级
@@ -220,7 +228,7 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
             XCTAssertEqual(try postHook("Notification", sessionId: sid,
                                         deliveryId: "14a2-s4e-d\(i)b", token: token), 200)
         }
-        let overflow = app.otherElements["attention.lamp.overflow"]
+        let overflow = app.descendants(matching: .any)["attention.lamp.overflow"]
         XCTAssertTrue(overflow.waitForExistence(timeout: 12),
                       "9 会话：overflow +N 元素必现（不静默）")
 
@@ -242,11 +250,11 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
         XCTAssertEqual(try postHook("SessionStart", sessionId: sid, deliveryId: "14a2-s4f-d1", token: token), 200)
         XCTAssertEqual(try postHook("Notification", sessionId: sid, deliveryId: "14a2-s4f-d2", token: token), 200)
 
-        let bar = app.otherElements["attention.lampBar"]
+        let bar = app.descendants(matching: .any)["attention.lampBar"]
         XCTAssertTrue(bar.waitForExistence(timeout: 10), "bar 应呈现")
 
         // 无障碍标签面：灯元素 label 非空（VO 可读前提）
-        let lamp = app.otherElements["attention.lamp.0"]
+        let lamp = app.descendants(matching: .any)["attention.lamp.0"]
         XCTAssertTrue(lamp.waitForExistence(timeout: 5), "首灯应存在")
         XCTAssertFalse(lamp.label.isEmpty, "灯元素应有非空 accessibility label（VO 可读）")
 

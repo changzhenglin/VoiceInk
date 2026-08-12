@@ -13,11 +13,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MANIFEST="$PACKAGE_DIR/Evidence/attention-p1-gate-manifest.json"
 
-echo "=== [14A-1 gate] 段 1：包域测试（replay shadow + 故障矩阵 + manifest 结构）==="
+echo "=== [14A-1 gate] 段 1：包域测试（replay shadow + 故障矩阵 + manifest/env-matrix 结构）==="
 swift test --package-path "$PACKAGE_DIR" \
   --filter ReplayShadowHarnessTests \
   --filter AttentionFailureMatrixTests \
-  --filter GateManifestStructureTests
+  --filter GateManifestStructureTests \
+  --filter GateEnvMatrixStructureTests
 
 echo ""
 echo "=== [14A-1 gate] 段 2：manifest 状态硬校验（诚实纪律）==="
@@ -73,14 +74,35 @@ print(f"manifest 硬校验 PASS：13 项×8 键齐全；PASS 项均带 evidence�
       f"blocked_by_p2 恰 3 项（{', '.join(sorted(blocked_ids))}）；无静默跳过")
 PY
 
-# === [14A-2 placeholder] 工程段 B（前置=老林清除系统认证阻塞）===
-# 待实现后在此顺序追加：
-#   - VoiceInkUITests 灯条验收面（plan Step 4 逐项：completed 5min 退灯保留摘要/
-#     Off 绝对安静/非激活不抢焦点/previous-focus 恢复/8槽+N/VoiceOver/纯键盘/Reduce Motion）
-#   - P1 critical E2E 双场景（真实 hook deliver → 灯条/通知；断线重连/冷启动各一条）
-#   - 环境/降级矩阵 evidence + supported-host 矩阵
-#   - 最小通知/音频面（播放前提=drainedEntries 非空）+ settings preset/muted 真值
-# 本段 GREEN 后更新 manifest #4/#5/#6/#7/#8/#11/#12 未覆盖项状态。
+# === [14A-2 段] app 域编译门禁 + 运行时证据（Task 14A-2b 落地）===
+# 口径注记：app target 测试执行环境有破损先例（exit 65，Task 11 注记）——
+# 编译门禁为确定性面；运行时段失败=诚实 FAIL（任一失败 flag 不开，fail-closed 正确语义）。
+REPO_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+XCODEPROJ="$REPO_ROOT/VoiceInk.xcodeproj"
+DD_PATH="$REPO_ROOT/DerivedData/VoiceInk-ablatbkebselchdxgtnjjwyatixe"
+
+echo ""
+echo "=== [14A-2 gate] 段 3：app 域 build-for-testing 编译门禁 ==="
+xcodebuild build-for-testing -project "$XCODEPROJ" -scheme VoiceInk \
+  -configuration Debug CODE_SIGNING_ALLOWED=NO \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
+  -derivedDataPath "$DD_PATH" -disableAutomaticPackageResolution
+
+echo ""
+echo "=== [14A-2 gate] 段 4：app 单测运行（attention carryover 面 + in-process E2E 双场景）==="
+xcodebuild test-without-building -project "$XCODEPROJ" -scheme VoiceInk \
+  -configuration Debug -derivedDataPath "$DD_PATH" -disableAutomaticPackageResolution \
+  -only-testing:VoiceInkTests/AttentionTickConsumeGuardTests \
+  -only-testing:VoiceInkTests/AttentionP1E2EHarnessTests \
+  -destination 'platform=macOS'
+
+echo ""
+echo "=== [14A-2 gate] 段 5：VoiceInkUITests 灯条验收面（Step 4 逐项 + E2E bridge）==="
+echo "（环境前置：系统认证清除；阻塞时本段诚实 FAIL，P1 flag 保持 Off）"
+xcodebuild test-without-building -project "$XCODEPROJ" -scheme VoiceInk \
+  -configuration Debug -derivedDataPath "$DD_PATH" -disableAutomaticPackageResolution \
+  -only-testing:VoiceInkUITests \
+  -destination 'platform=macOS'
 
 # === [14A-3 placeholder] 观察段（老林在场，3 个工作日）===
 # 待 14A-2 GREEN 后追加：
@@ -89,4 +111,4 @@ PY
 #   - manifest 终版状态更新 → 本脚本全绿 → P1 flag 启用裁决呈报
 
 echo ""
-echo "=== [14A-1 gate] 包域段 GREEN（14A-2/3 段为 placeholder，P1 flag 保持 Off）==="
+echo "=== [gate] 14A-1/14A-2 段全 GREEN；14A-3 观察段（老林在场）仍为 placeholder，P1 flag 保持 Off ==="

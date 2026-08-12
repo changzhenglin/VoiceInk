@@ -17,7 +17,7 @@ final class AttentionLampBarViewModel: ObservableObject {
     }
 
     func refresh() {
-        guard p1RenderingEnabled, let store, store.enabled else {
+        guard p1RenderingEnabled, AttentionStore.globalOnEnabled, let store, store.enabled else {
             barData = AttentionLampBarData(); isVisible = false; return
         }
         let projected = store.lampBarData()
@@ -115,7 +115,8 @@ final class AttentionLampBarController: NSObject {
     }
 
     private func syncPanel() {
-        guard viewModel.p1RenderingEnabled, viewModel.isVisible, !suppressed else {
+        guard viewModel.p1RenderingEnabled, AttentionStore.globalOnEnabled,
+              viewModel.isVisible, !suppressed else {
             panel?.orderOut(nil); return
         }
         if panel == nil {

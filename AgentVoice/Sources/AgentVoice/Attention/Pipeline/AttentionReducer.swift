@@ -89,7 +89,7 @@ public struct AttentionReducer: Sendable {
                                 completedAt: Date?, at: Date) -> AttentionStateSnapshot {
         guard snapshot.activityFact == .completed, let completedAt else { return snapshot }
         let age = at.timeIntervalSince(completedAt)
-        guard age > AttentionProjector.completedTTL else { return snapshot }
+        guard age > AttentionProjector.effectiveCompletedTTL else { return snapshot }
         var s = snapshot
         s.activityFact = .idle
         return s

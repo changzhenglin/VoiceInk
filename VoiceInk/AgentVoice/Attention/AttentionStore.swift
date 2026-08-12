@@ -62,6 +62,10 @@ final class AttentionStore: ObservableObject {
     /// 不做 schema 迁移——interventionKey schema 迁移明确不消费）。
     private var lampSlotMap = SlotMap()
     private var lampSlotMapLoaded = false
+    /// Task 14A-2b E2E seam：槽位映射持久化开关（enableForE2E 置 false——E2E fresh DB
+    /// 对应 fresh map；共享 UserDefaults 域的历史实例 ghost 键会永占槽位致新会话全
+    /// overflow。生产路径恒 true：持久 DB↔快照齐全，closed/archived 正常释放不受影响）。
+    private var slotMapPersistenceEnabled = true
     /// 8A-M1（fix round 1）：上一次持久化的映射——脏标记比较，变化才写 UserDefaults。
     private var lastPersistedSlotMap = SlotMap()
     private static let lampSlotMapKey = "attentionLampSlotMap.v1"
@@ -172,8 +176,10 @@ final class AttentionStore: ObservableObject {
     /// **跳过 hooks 安装**（红线：settings.json 生产 hooks 零触碰），dbPath/port 注入
     ///（不共享生产 DB 路径 ~/Library/…/attention/events.db，不占生产端口 47821）。
     /// 菜单栏/面板 2s 投影刷新不属 E2E seam（灯条数据面走 lampBarData()，不建 refresh
-    /// timer——避免测试域 spawn 版本探测子进程）。
-    func enableForE2E(port: UInt16, dbPath: String) throws {
+    /// timer——避免测试域 spawn 版本探测子进程）。tickInterval 注入（生产恒 30s；
+    /// E2E 用短间隔加速 dump/状态可观察性，production enable() 不受影响）。
+    func enableForE2E(port: UInt16, dbPath: String,
+                      tickInterval: TimeInterval = AttentionProductionTicker.defaultInterval) throws {
         guard !enabled else { return }
         let token = Self.sharedAuthToken()
         // ① 存储 + router + replay + 保留调度（dbPath 注入）
@@ -198,9 +204,10 @@ final class AttentionStore: ObservableObject {
         // 对应 disableForTesting 也绝不 uninstall——「仅 uninstall 本实例所装 hooks」不变量）
         router = r; server = s; retentionScheduler = sched
         enabled = true
+        slotMapPersistenceEnabled = false   // E2E fresh DB ↔ fresh map（ghost 键隔离，见字段注记）
         consumeGeneration &+= 1
         let gen = consumeGeneration
-        let ticker = AttentionProductionTicker(router: r)
+        let ticker = AttentionProductionTicker(router: r, interval: tickInterval)
         ticker.onTick = { [weak self] report in
             Task { @MainActor [weak self] in
                 self?.consumeTickReport(report, expectedGeneration: gen)
@@ -223,6 +230,77 @@ final class AttentionStore: ObservableObject {
         enabled = false; sessions = []; pendingCount = 0; overflow = nil; versionDrift = false
         lastDrainedEntries = []; lastSoundCompensation = .none
         fullScreenOverride = nil
+        slotMapPersistenceEnabled = true   // E2E seam 态复位（生产语义恢复）
+    }
+
+    // MARK: - Task 14A-2b：E2E bridge seam（launch argument 驱动；红线=绝不触 settings.json hooks）
+
+    /// E2E bridge 模式（-AttentionE2EMode YES enableForE2E 成功时置 true）。
+    var e2eBridgeEnabled = false
+
+    /// global master 开关真值（Step 4 ②）：默认 true；launch argument `-AttentionGlobalOn NO`
+    /// 覆写（UserDefaults argument 域自动注册）。消费面=呈现层（bar gate+音频面）；
+    /// 管线采集不受影响（§2：Off 采集/store 继续）。
+    static var globalOnEnabled: Bool {
+        UserDefaults.standard.object(forKey: "AttentionGlobalOn") == nil
+            || UserDefaults.standard.bool(forKey: "AttentionGlobalOn")
+    }
+
+    /// E2E bridge 文件：token/port 写 `${TMPDIR}voiceink-attention-e2e-bridge.json`，
+    /// UITests runner 消费（合同=骨架 AttentionLampPresentationGateUITests 头注逐字）。
+    func writeE2EBridge(port: UInt16) {
+        let payload: [String: Any] = ["token": Self.sharedAuthToken(), "port": Int(port)]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        try? data.write(to: FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceink-attention-e2e-bridge.json"))
+    }
+
+    /// E2E projection dump：每 tick 写 `${TMPDIR}voiceink-attention-e2e-projection.json`
+    ///（UITests runner 轮询消费）。字段=骨架头注合同；只载 allowlist 级字段
+    ///（privacy：零 cwd/prompt/正文；session_key 为 E2E 合成值）。
+    /// unseen_sessions 口径（诚实注记）：lifecycle=.managed 全部会话（事实保留在 store，
+    /// 含 completed TTL 过期转 idle 保留的会话——§9 #12「idle 槽不释放」同律）。
+    private func writeE2EProjectionDumpIfNeeded() {
+        guard e2eBridgeEnabled else { return }
+        let barData = lampBarData()
+        let lamps: [[String: Any]] = barData.slots.enumerated().map { index, slot in
+            ["session_key": slot.sessionKey, "slot": index,
+             "lamp": Self.e2eLampName(slot.lamp), "privacy_masked": slot.privacyMasked]
+        }
+        var dump: [String: Any] = [
+            "generated_at_epoch": Date().timeIntervalSince1970,
+            "global_on": Self.globalOnEnabled,
+            "store_enabled": enabled,
+            "lamps": lamps,
+            "last_sound_compensation": Self.e2eCompensationName(lastSoundCompensation),
+            "unseen_sessions": (router?.currentSnapshots() ?? [])
+                .filter { $0.lifecycle == .managed }.map(\.sessionKey),
+        ]
+        if barData.overflowCount > 0 {
+            dump["overflow"] = ["hidden_count": barData.overflowCount]
+        }
+        guard let out = try? JSONSerialization.data(withJSONObject: dump) else { return }
+        try? out.write(to: FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceink-attention-e2e-projection.json"))
+    }
+
+    private static func e2eLampName(_ lamp: Lamp) -> String {
+        switch lamp {
+        case .workingGreen: return "workingGreen"
+        case .waitingYellow: return "waitingYellow"
+        case .failedRed: return "failedRed"
+        case .completedGreen: return "completedGreen"
+        case .unknownGray: return "unknownGray"
+        case .none: return "none"
+        }
+    }
+
+    private static func e2eCompensationName(_ decision: SoundCompensationDecision) -> String {
+        switch decision {
+        case .none: return "none"
+        case .compensate(reason: .floatUnpresentable): return "floatUnpresentable"
+        case .compensate(reason: .interventionQueued): return "interventionQueued"
+        }
     }
 
     // MARK: - Task 8B-2：tick 报告消费（呈现 seam；管线/呈现分界见 productionTicker 注释）
@@ -233,12 +311,18 @@ final class AttentionStore: ObservableObject {
     /// Task 14A-2：internal 化（骨架测试直驱）+ 8B2-M1/M2 守卫 + decideSound 真值接线。
     func consumeTickReport(_ report: AttentionEventRouter.ProductionTickReport,
                            expectedGeneration: UInt64? = nil) {
+        // Task 14A-2b：E2E projection dump 每 tick 写（非 E2E 模式零开销；所有退出路径均写，
+        // 含 guard 早退——runner 轮询口径最终一致）。
+        defer { writeE2EProjectionDumpIfNeeded() }
         // 8B2-M2：enabled/代数守卫——disable() 后在飞 tick Task 不得再改写 seam 态；
         // re-enable 后旧代数的在飞 tick 同样失效（代数不匹配）。直接驱动
         //（测试 seam）不带代数 → 跳过代数检查，仅过 enabled gate。
         guard enabled else { return }
         if let expectedGeneration, expectedGeneration != consumeGeneration { return }
-        guard UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled) else {
+        // flag gate + global master gate（Step 4 ②）：任一 off → 呈现面静默（seam 清空），
+        // 管线 tick 不停。global Off 时 store 采集继续（deliver 仍 accepted，§2 Off 语义）。
+        guard UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled),
+              Self.globalOnEnabled else {
             lastDrainedEntries = []
             lastSoundCompensation = .none
             return
@@ -379,6 +463,7 @@ final class AttentionStore: ObservableObject {
     /// 空间记忆恢复（§4 重启不重置；clean-start——stale 发现⑤：M1 无 slot 映射，
     /// 首次运行为空 map 全新建，无 legacy 漂移）。
     private func restoreLampSlotMapIfNeeded() {
+        guard slotMapPersistenceEnabled else { lampSlotMapLoaded = true; return }
         guard !lampSlotMapLoaded else { return }
         lampSlotMapLoaded = true
         if let data = UserDefaults.standard.data(forKey: Self.lampSlotMapKey),
@@ -391,6 +476,7 @@ final class AttentionStore: ObservableObject {
     /// 8A-M1（fix round 1）：脏标记持久化——仅映射变化才写 UserDefaults，
     /// 免每 2s tick 无条件写。
     private func persistLampSlotMapIfChanged() {
+        guard slotMapPersistenceEnabled else { return }
         guard lampSlotMap != lastPersistedSlotMap else { return }
         if let data = try? JSONEncoder().encode(lampSlotMap) {
             UserDefaults.standard.set(data, forKey: Self.lampSlotMapKey)

@@ -301,7 +301,7 @@ extension AttentionEventStore {
     /// 非 completed kind 零触碰。TTL 常量引用 `AttentionProjector.completedTTL`
     /// 单一真源。C17：读路径禁 try!，磁盘/损坏/关闭态降级空集（同 loadPersistedItems 模式）。
     public func expireCompletedPresentation(at: Date) -> [AttentionItem] {
-        let cutoff = at.addingTimeInterval(-AttentionProjector.completedTTL)
+        let cutoff = at.addingTimeInterval(-AttentionProjector.effectiveCompletedTTL)
         do {
             let rows = try dbQueue.read { db in
                 try Row.fetchAll(db, sql: """
