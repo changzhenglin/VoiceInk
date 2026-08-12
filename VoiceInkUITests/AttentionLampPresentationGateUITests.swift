@@ -72,8 +72,7 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         }
-        XCTFail("E2E bridge 未建：app 未在 \(timeout)s 内写 \(bridgeURL.name)" +
-                "（实施方交付 E2E seam；或系统认证/环境阻塞——先清环境再复跑）")
+        XCTFail("E2E bridge 未建：app 未在时限（\(timeout) 秒）内写 \(bridgeURL.lastPathComponent)——实施方交付 E2E seam，或系统认证/环境阻塞，先清环境再复跑")
         return ""
     }
 
@@ -206,8 +205,7 @@ final class AttentionLampPresentationGateUITests: XCTestCase {
         app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         RunLoop.current.run(until: Date().addingTimeInterval(1.5))
         XCTAssertFalse(bar.exists, "Escape 后 bar 应确定性隐藏（previous-focus 恢复）")
-        XCTAssertNotEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-                          app.bundleIdentifier,
+        XCTAssertNotEqual(NSWorkspace.shared.frontmostApplication?.localizedName, "VoiceInk",
                           "Escape 恢复后焦点不得滞留 VoiceInk")
     }
 

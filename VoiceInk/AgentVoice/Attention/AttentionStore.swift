@@ -50,6 +50,12 @@ final class AttentionStore: ObservableObject {
     /// 最近一次 tick 的音频补偿决策（#10：全屏检测 → decideSound 路由结果）。
     /// 播放表面归 14A 穷举面（本批只接决策路由，不建通知 UI）。
     private(set) var lastSoundCompensation: SoundCompensationDecision = .none
+    /// Task 14A-2：全屏态注入 seam——nil=走 AttentionFullScreenDetector 真值
+    ///（生产路径不变）；非 nil=测试注入（骨架直驱补偿路由，不依赖系统全屏态）。
+    var fullScreenOverride: Bool?
+    /// Task 14A-2（8B2-M2）：consume 代数——enable/disable 每次迁移推进；
+    /// ticker 在 enable 时捕获当时代数，disable/re-enable 后在飞的旧 tick 不得改写 seam。
+    private var consumeGeneration: UInt64 = 0
 
     // MARK: - Task 8A：v4 灯条生产表面（behind versioned flag，裁决 A/B）
     /// 稳定 session_key→slot 空间记忆（§4；裁决 5 持久落点=UserDefaults additive，
@@ -126,9 +132,13 @@ final class AttentionStore: ObservableObject {
         // Task 8B-2 #9b：生产 tick 驱动器——管线无条件运行（flag 只门控呈现消费面，
         // 不门控 tick：store 采集/租约/摘要属管线非呈现）。放在 enable 全链成功后
         // 启动（任一前置步骤失败回滚时 ticker 不产生，无悬挂定时器）。
+        consumeGeneration &+= 1   // Task 14A-2（8B2-M2）：enable 迁移推进代数
+        let gen = consumeGeneration
         let ticker = AttentionProductionTicker(router: r)
         ticker.onTick = { [weak self] report in
-            Task { @MainActor [weak self] in self?.consumeTickReport(report) }
+            Task { @MainActor [weak self] in
+                self?.consumeTickReport(report, expectedGeneration: gen)
+            }
         }
         ticker.start()
         productionTicker = ticker
@@ -136,6 +146,7 @@ final class AttentionStore: ObservableObject {
 
     /// enable 逆操作：timer/scheduler/server/hooks/投影状态全清（幂等）
     func disable() {
+        consumeGeneration &+= 1   // Task 14A-2（8B2-M2）：disable 迁移推进代数，在飞旧 tick 失效
         timer?.invalidate(); timer = nil
         productionTicker?.stop(); productionTicker = nil   // Task 8B-2：tick 驱动器幂等停止
         retentionScheduler?.stop(); retentionScheduler = nil
@@ -147,26 +158,110 @@ final class AttentionStore: ObservableObject {
         lastDrainedEntries = []; lastSoundCompensation = .none   // 8B-2 seam 态不跨开关
     }
 
+    // MARK: - Task 14A-2：测试 seam（骨架合同；红线=绝不触碰 settings.json 生产 hooks）
+
+    /// 测试专用 enable：只置 seam 态（enabled=true），不起 server/ticker/hooks/DB。
+    /// 消费面守卫测试（AttentionTickConsumeGuardTests）直驱 consumeTickReport 用。
+    func enableForTesting() {
+        guard !enabled else { return }
+        consumeGeneration &+= 1
+        enabled = true
+    }
+
+    /// 测试专用 E2E enable：事务链同生产 enable()（①store→②server→ticker），
+    /// **跳过 hooks 安装**（红线：settings.json 生产 hooks 零触碰），dbPath/port 注入
+    ///（不共享生产 DB 路径 ~/Library/…/attention/events.db，不占生产端口 47821）。
+    /// 菜单栏/面板 2s 投影刷新不属 E2E seam（灯条数据面走 lampBarData()，不建 refresh
+    /// timer——避免测试域 spawn 版本探测子进程）。
+    func enableForE2E(port: UInt16, dbPath: String) throws {
+        guard !enabled else { return }
+        let token = Self.sharedAuthToken()
+        // ① 存储 + router + replay + 保留调度（dbPath 注入）
+        let store = try AttentionEventStore(path: dbPath)
+        store.onPersistError = { error in
+            Logger(subsystem: "com.voiceink.attention", category: "persist")
+                .error("attention persist error (e2e): \(String(describing: error), privacy: .public)")
+        }
+        let r = AttentionEventRouter(store: store)
+        r.replayFromStore()   // F6：启动重建（重连/冷启动 replay 语义的 app 层链路）
+        let sched = AttentionRetentionScheduler(store: store)
+        sched.start()
+        // ② server 启动 + 验证（port 注入；失败回滚 ①）
+        let s = AttentionHTTPServer(router: r, port: port, authToken: token)
+        do {
+            try s.start()
+        } catch {
+            sched.stop()
+            throw error
+        }
+        // ③ hooks 安装——**跳过**（生产 enable() 的第三步；E2E 实例从不安装 hooks，
+        // 对应 disableForTesting 也绝不 uninstall——「仅 uninstall 本实例所装 hooks」不变量）
+        router = r; server = s; retentionScheduler = sched
+        enabled = true
+        consumeGeneration &+= 1
+        let gen = consumeGeneration
+        let ticker = AttentionProductionTicker(router: r)
+        ticker.onTick = { [weak self] report in
+            Task { @MainActor [weak self] in
+                self?.consumeTickReport(report, expectedGeneration: gen)
+            }
+        }
+        ticker.start()
+        productionTicker = ticker
+    }
+
+    /// 测试专用 teardown：清 seam 态与全部运行组件，**绝不触碰 settings.json hooks**——
+    /// 生产 disable() 的 HookInstaller.uninstall 路径不得在未装 hooks 的实例执行
+    ///（enableForTesting/enableForE2E 均跳过安装；不变量=仅 uninstall 本实例所装 hooks）。
+    func disableForTesting() {
+        consumeGeneration &+= 1
+        timer?.invalidate(); timer = nil
+        productionTicker?.stop(); productionTicker = nil
+        retentionScheduler?.stop(); retentionScheduler = nil
+        server?.stop()
+        router = nil; server = nil
+        enabled = false; sessions = []; pendingCount = 0; overflow = nil; versionDrift = false
+        lastDrainedEntries = []; lastSoundCompensation = .none
+        fullScreenOverride = nil
+    }
+
     // MARK: - Task 8B-2：tick 报告消费（呈现 seam；管线/呈现分界见 productionTicker 注释）
 
     /// tick 报告呈现消费——**flag gate 语义**：off → 呈现面静默（seam 清空），
     /// 但管线 tick 不停（驱动器侧不读本 flag：store 采集/租约/摘要属管线非呈现）。
     /// 穷举呈现面（通知 UI/面板消费/播放表面）归 14A；本面只暴露条目与补偿决策。
-    private func consumeTickReport(_ report: AttentionEventRouter.ProductionTickReport) {
+    /// Task 14A-2：internal 化（骨架测试直驱）+ 8B2-M1/M2 守卫 + decideSound 真值接线。
+    func consumeTickReport(_ report: AttentionEventRouter.ProductionTickReport,
+                           expectedGeneration: UInt64? = nil) {
+        // 8B2-M2：enabled/代数守卫——disable() 后在飞 tick Task 不得再改写 seam 态；
+        // re-enable 后旧代数的在飞 tick 同样失效（代数不匹配）。直接驱动
+        //（测试 seam）不带代数 → 跳过代数检查，仅过 enabled gate。
+        guard enabled else { return }
+        if let expectedGeneration, expectedGeneration != consumeGeneration { return }
         guard UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled) else {
             lastDrainedEntries = []
             lastSoundCompensation = .none
             return
         }
         lastDrainedEntries = report.drainedEntries
+        // 8B2-M1：播放/通知呈现前提 = drainedEntries 非空——空 drain tick 无呈现诉求，
+        // 即使补偿条件成立也不补偿（不得逐 tick 即播）。
+        guard !report.drainedEntries.isEmpty else {
+            lastSoundCompensation = .none
+            return
+        }
         // #10：全屏检测 → 音频补偿路由。fail-closed：检测不可用按非全屏处理
-        //（detector 内部语义），不错误静默可呈现路径。输入口径：drain 交付=呈现
-        // 诉求（floatAllowed=true）；preset/mute 的 settings 注册归 14A 环境面
-        //（本批红线出 scope），此处按 spec §2 L31 可发声档 .strong + 未 mute
-        // 接通路由，用户设置面落地后替换；interventionQueued 归 #3c（defer V2）。
-        let fullScreen = AttentionFullScreenDetector.frontmostAppIsFullScreen()
+        //（detector 内部语义），不错误静默可呈现路径。fullScreenOverride 非 nil 时
+        // 走测试注入（生产路径 nil 不变）。decideSound 真值接线（裁决 5）：
+        // preset/muted 读 UserDefaults 真值（AppDefaults.registerDefaults 注册默认
+        // strong/未 mute = 原硬编码值语义平移）；interventionQueued 归 #3c（defer V2）。
+        let fullScreen = fullScreenOverride ?? AttentionFullScreenDetector.frontmostAppIsFullScreen()
+        let presetRaw = UserDefaults.standard.string(forKey: AttentionPresentationKeys.reminderPreset)
+            ?? ReminderPreset.strong.rawValue
+        let preset = ReminderPreset(rawValue: presetRaw) ?? .strong
+        let muted = UserDefaults.standard.bool(forKey: AttentionPresentationKeys.reminderMuted)
         lastSoundCompensation = NotificationSoundRouter().decideSound(
-            preset: .strong, muted: false, floatAllowed: true,
+            preset: preset, muted: muted, floatAllowed: true,
             systemCanPresentFloat: !fullScreen, interventionQueued: false,
             isCompleted: false, explicitOff: false)
     }
