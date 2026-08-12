@@ -34,7 +34,7 @@
     "owner": "14A-2 implementer + 老林（真机）",
     "phase": "14A-2",
     "automated_or_manual": "semi-automated",
-    "evidence_path": "（未产出）最小通知/音频面 + 真机通知到达证据归 14A-2；包层 drain 机制既有证据 AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift",
+    "evidence_path": "最小音频面机制 14A-2 已建并验证：VoiceInkTests/AttentionTickConsumeGuardTests.swift（drainedEntries 非空播放前提/silent·muted 抑制/全屏补偿决策，gate 段 4 GREEN）+ 包层 drain 机制 AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift；真机通知送达证据归 14A-3",
     "status": "PENDING",
     "measurement": "新●黄/▲红 收纳：聚合短计（drain 摘要）+ 通知双达；通知到达需真机证据（包层只证 drain at-most-once 机制，不证通知渠道送达）",
     "threshold": "聚合短计与通知双达；播放前提=drainedEntries 非空（事件驱动，不逐 tick 播）"
@@ -44,7 +44,7 @@
     "owner": "14A-2 implementer + 老林（VO 人工）",
     "phase": "14A-2",
     "automated_or_manual": "uitests+manual",
-    "evidence_path": "（未产出）VoiceInkUITests 灯条无障碍面归 14A-2（前置=系统认证阻塞清除）",
+    "evidence_path": "VoiceInkUITests/AttentionLampPresentationGateUITests.swift 自动化子集 GREEN（2026-08-12 gate 段 5 实跑）：⌘⇧V 纯键盘路径 + 灯元素 AX label 非空（VO 可读前提）+ 非激活不抢焦点；VoiceOver/Reduce Motion/关颜色 manual 三路径归 14A-3 在场窗口（EVIDENCE_REQUIRED）",
     "status": "PENDING",
     "measurement": "关颜色（色觉多样）/VoiceOver 全程可读/纯键盘全流程三路径验收",
     "threshold": "三路径全流程通过；灯条非激活不抢焦点"
@@ -54,7 +54,7 @@
     "owner": "14A-2 implementer（automated 计时）+ 老林（真机抽查）",
     "phase": "14A-1/14A-2",
     "automated_or_manual": "automated+manual-spot",
-    "evidence_path": "（未产出）automated 计时测试待 14A-2 建（包层 seam：store mutation→投影）；真机抽查记录归 14A-3",
+    "evidence_path": "观察 seam 14A-2 已建：projection dump 每 tick 写盘（lamps/activity_fact 可观察）+ E2E tick 间隔注入（VoiceInk.swift -AttentionE2ETickIntervalSeconds）；量化 p95 计时测量归 14A-3 真机抽查",
     "status": "EVIDENCE_REQUIRED",
     "measurement": "I5 回复信号→●黄转◌绿时延，自 store mutation 起计（spec §9 #6 口径）；机制链已就位（UAS userPromptRelated 信号 reducer 接线 Task 8B #5），量化证据未产出",
     "threshold": "p95≤2s（store 变更起至 UI 投影可见）"
@@ -64,7 +64,7 @@
     "owner": "老林（真机）+ 14A-2 implementer",
     "phase": "14A-2",
     "automated_or_manual": "manual",
-    "evidence_path": "（未产出）五场景真机演练 + supported-host 矩阵归 14A-2",
+    "evidence_path": "supported-host 矩阵已入库：AgentVoice/Evidence/attention-env-matrix.json（5 终端行，measurement=support 档位，GateEnvMatrixStructureTests 结构校验 GREEN）；五场景真机演练未跑，归 14A-3/真机在场",
     "status": "PENDING",
     "measurement": "跳转失败降级五场景（最小化/跨 Space/跨屏/窗口不存在/AX 无权）+ ⨯/复制定位 + 灯态不变",
     "threshold": "五场景全降级不崩溃；supported-host 矩阵与实际 evidence 入库"
@@ -74,7 +74,7 @@
     "owner": "14A-2 implementer + 老林（真机）",
     "phase": "14A-2",
     "automated_or_manual": "semi-automated",
-    "evidence_path": "（真机证据未产出）detector/全屏补偿生产接线已就位（8B-2 app 层接线 commit 8309549）；真机验证归 14A-2",
+    "evidence_path": "detector/全屏补偿生产接线已就位（8B-2 app 层接线 commit 8309549）+ 14A-2 测试 seam 验证：fullScreenOverride 注入 + drainedEntries 非空前提全屏补偿决策（AttentionTickConsumeGuardTests GREEN）；真机送达证据归 14A-3",
     "status": "EVIDENCE_REQUIRED",
     "measurement": "全屏时灯条 bar 隐藏 + 高优先事件经通知/声音第二通道送达；detector 在位（半自动），送达真机证据缺",
     "threshold": "全屏隐藏且高优先双通道达；零静默丢失"
@@ -96,7 +96,7 @@
     "automated_or_manual": "automated",
     "evidence_path": "P1 部分映射：AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift（completed 静默/TTL 内不转）; AgentVoice/Tests/AgentVoiceTests/ReplayShadowHarnessTests.swift（receipt 冷启动不重播=场景 5）; AgentVoice/Tests/AgentVoiceTests/ChannelReceiptTests.swift（at-most-once）",
     "status": "blocked_by_p2",
-    "measurement": "P1 梯度五项（completed 静默/Off 抑制/补偿条件/声音不影响灯/receipt 冷启动不重播）多数已被前序测试覆盖（见 evidence_path 映射）；Off 抑制/补偿条件/声音不影响灯三项的专门断言面归 14A-2 最小音频面；V2 梯度部分依赖 P2 Task 10-13，当前不得消费",
+    "measurement": "P1 梯度五项（completed 静默/Off 抑制/补偿条件/声音不影响灯/receipt 冷启动不重播）多数已被前序测试覆盖（见 evidence_path 映射）；Off 抑制/补偿条件/声音不影响灯三项专门断言面 14A-2 已落地（AttentionTickConsumeGuardTests + gate 段 5 globalOff 绝对安静用例 GREEN）；V2 梯度部分依赖 P2 Task 10-13，当前不得消费",
     "threshold": "P1 五项全绿 + V2 部分待 P2 门"
   },
   {
@@ -106,7 +106,7 @@
     "automated_or_manual": "uitests",
     "evidence_path": "（未产出）P1 键盘面 UITests 归 14A-2（前置=系统认证阻塞清除）；FocusRestorationCoordinator 生产 seam 已就位（Sources/AgentVoice/Attention/Presentation/FocusRestorationCoordinator.swift）",
     "status": "blocked_by_p2",
-    "measurement": "P1 部分：灯条非激活不抢焦点 + previous-focus 恢复 + 键盘回归（UITests 未运行，环境阻塞）；V2 交互面依赖 P2 intervention UI",
+    "measurement": "P1 部分 GREEN（2026-08-12 gate 段 5 实跑）：灯条非激活不抢焦点 + previous-focus 恢复（bar 可见期本地 Escape 捕获→确定性隐藏，AttentionLampBarController installHotkeyMonitor）+ 键盘回归 ⌘⇧V；V2 交互面依赖 P2 intervention UI",
     "threshold": "焦点不劫持/恢复正确；V2 待 P2"
   },
   {
@@ -114,9 +114,9 @@
     "owner": "14A-1 implementer（已覆盖映射）+ 14A-2（kill 集成）",
     "phase": "14A-1/14A-2",
     "automated_or_manual": "automated",
-    "evidence_path": "已覆盖：AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift（completed 5min→idle timed 转移）; AgentVoice/Tests/AgentVoiceTests/LampSlotAllocatorTests.swift（closed/archived 才释放 + 第 9 个不顶替）; AgentVoice/Tests/AgentVoiceTests/AttentionProjectorTests.swift（testG6FailedYieldsRed failed 即时红）",
+    "evidence_path": "已覆盖：AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift（completed 5min→idle timed 转移）; AgentVoice/Tests/AgentVoiceTests/LampSlotAllocatorTests.swift（closed/archived 才释放 + 第 9 个不顶替）; AgentVoice/Tests/AgentVoiceTests/AttentionProjectorTests.swift（testG6FailedYieldsRed failed 即时红）; 14A-2 E2E TTL 覆写退灯实证（AttentionLampPresentationGateUITests.testCompletedExitsLampButUnseenRetained GREEN）",
     "status": "EVIDENCE_REQUIRED",
-    "measurement": "四项中三项有自动化证据（timed 转移/槽释放条件/不顶替/failed 即时红=4 断言面）；kill→stale→archived 释放的集成场景（真实进程 kill）未覆盖，归 14A-2 集成面",
+    "measurement": "四项中三项有自动化证据（timed 转移/槽释放条件/不顶替/failed 即时红=4 断言面）+ E2E TTL 覆写退灯实证（14A-2 gate 段 5）；kill→stale→archived 释放的集成场景（真实进程 kill）未覆盖（14A-2 scope 未含，后续集成面另行处理）",
     "threshold": "completed 5min→idle；kill→stale→archived 释放；第 9 个不顶替；failed 即时收红"
   },
   {
