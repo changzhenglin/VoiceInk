@@ -46,7 +46,7 @@ final class HookInstaller {
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             settings = existing
         }
-        // merge 保护：我方管理的 6 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
+        // merge 保护：我方管理的 8 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
         // 不相关键（PreCompact 等其他插件 hooks）不在安装/卸载范围，不阻塞。
         if let hooks = settings["hooks"] as? [String: Any] {
             let foreign = hooks.keys.filter { Self.managedEventNames.contains($0) && !isOurs(hooks[$0]) }

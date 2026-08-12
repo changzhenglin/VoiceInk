@@ -23,19 +23,21 @@ public struct ClaudeCodeAdapter: Sendable {
         if sid == Self.zeroUUID { throw AdapterError.zeroUUIDSession }
 
         let kind: EventKind
+        var subtype: NotificationSubtype?
         switch hookEventName {
         case "Stop":          kind = .completed          // ADJ-5：单轮完成，非会话结束，非终态（C1）
         case "Notification":
-            // spec 灯条 spec 映射表子类分流（14A-3 修复批 A，缺陷①假等待闭合）：
-            // permission_prompt → waiting_user（等权限）；idle_prompt → 仅 liveness/idle
-            // 事实不改灯态（spec 明文）；未知/缺失 → 保守 waiting_user（北极星「不漏
-            // 等待」方向）。证据基线=官方 hooks reference 两值；受控探针值域复核 follow-up。
-            // （替代 B-OBS-3 全量保守归类——该占位致回合结束 60s idle 全会话假●黄）
-            switch payload["notification_type"] as? String {
-            case "permission_prompt": kind = .waitingUser
-            case "idle_prompt":       kind = .connectionFact
-            default:                  kind = .waitingUser
-            }
+            // spec §6 转移矩阵 L163-167 单源合同：NotificationSubtype.reducedKind
+            //（四值：permission_prompt/agent_needs_input→waitingUser；idle_prompt→
+            //  connectionFact 不改灯态；agent_completed→completed）。未知/缺失 →
+            //  保守 waitingUser（北极星「不漏等待」方向；值域实证=官方 hooks
+            //  reference 两值，受控探针复核 follow-up）。
+            // （review fix I-1：消除与 reducedKind 的平行 switch 分叉；
+            //   替代 B-OBS-3 全量保守归类——该占位致回合结束 60s idle 假●黄）
+            let s = (payload["notification_type"] as? String)
+                .flatMap(NotificationSubtype.init)
+            subtype = s
+            kind = s?.reducedKind ?? .waitingUser
         case "StopFailure":   kind = .failed             // 可恢复，非终态逆转
         case "PreToolUse":
             // I5（spec §6 L142）：删除 permission_requested 产出分支——CC 面
@@ -91,7 +93,8 @@ public struct ClaudeCodeAdapter: Sendable {
             sourceLevel: "experimental_fragile", sourceClaudeVersion: claudeVersion,
             hookEventName: hookEventName,          // C8：TrustDetail/导出
             cwdLabel: cwdLabel, cwdRef: cwdRef,    // C20：F4 短标识/导航数据源
-            activitySignal: signal)                // Task 8B #5：UAS/PostToolUse 信号面
+            activitySignal: signal,                // Task 8B #5：UAS/PostToolUse 信号面
+            notificationSubtype: subtype)          // review fix I-1：子类入事件（下游 hover 子原因面）
     }
 
     /// C6：canonical payload 内容指纹——`JSONSerialization` + `.sortedKeys` 递归排序键的
@@ -151,12 +154,10 @@ extension ClaudeCodeAdapter {
         case "Stop": return .completed
         case "StopFailure": return .failed
         case "Notification":
-            // 与 parse 同构的子类分流（valueHints 消费 notification_type 打标值）
-            switch valueHints["notification_type"] as? String {
-            case "permission_prompt": return .waitingUser
-            case "idle_prompt":       return .connectionFact
-            default:                  return .waitingUser
-            }
+            // 与 parse 同构：单源合同 NotificationSubtype.reducedKind（review fix I-1）
+            let subtype = (valueHints["notification_type"] as? String)
+                .flatMap(NotificationSubtype.init)
+            return subtype?.reducedKind ?? .waitingUser
         case "SessionStart": return .connectionFact
         case "SessionEnd": return .sessionEnd
         // Task 8B #5：UAS/PostToolUse 消费面（归约层 connectionFact；

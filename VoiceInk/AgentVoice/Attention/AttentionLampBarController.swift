@@ -144,16 +144,18 @@ final class AttentionLampBarController: NSObject {
             p.hasShadow = false
             // I1（fix round 1）：移除 .fullScreenAuxiliary——全屏 bar 隐藏（spec Step 4）。
             p.collectionBehavior = [.canJoinAllSpaces]
+            panel = p
+            layoutNearTop()
             // 14A-3 修复批 C（缺陷⑤）：可拖动换位（nonactivating 拖动不抢焦点）+
-            // 位置跨启动持久化（AttentionLampBarPlacement seam；默认位置语义不变）。
+            // 位置跨启动持久化。review fix I-2：observer 必须在首次 layoutNearTop
+            // 之后注册——didMove 对程序性 setFrameOrigin 同样触发，先注册会把默认
+            // 布局坐标误写入 UserDefaults（污染「无保存→默认」语义）。
             p.isMovableByWindowBackground = true
             placementObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didMoveNotification, object: p, queue: .main) { note in
                 guard let win = note.object as? NSWindow else { return }
                 AttentionLampBarPlacement.save(x: win.frame.origin.x, y: win.frame.origin.y)
             }
-            panel = p
-            layoutNearTop()
         } else if let hosting = panel?.contentViewController as? NSHostingController<AttentionLampBarView> {
             hosting.rootView = makeBarView()
         }
@@ -179,8 +181,9 @@ final class AttentionLampBarController: NSObject {
         let size = panel.contentViewController?.view.fittingSize
             ?? NSSize(width: 200, height: 40)
         panel.setContentSize(size)
-        // 14A-3 修复批 C：有用户保存位置则恢复（拖动后跨启动保持），否则默认顶部居中
-        if let saved = AttentionLampBarPlacement.load() {
+        // 14A-3 修复批 C：有用户保存位置则恢复（拖动后跨启动保持），否则默认顶部
+        // 居中；review fix I-2：restoredOrigin 含当前屏幕可见区校验（离屏回退默认）。
+        if let saved = AttentionLampBarPlacement.restoredOrigin(visibleFrame: screen.visibleFrame) {
             panel.setFrameOrigin(saved)
             return
         }

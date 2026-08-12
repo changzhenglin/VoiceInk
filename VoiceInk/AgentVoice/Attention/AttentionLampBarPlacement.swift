@@ -21,6 +21,14 @@ enum AttentionLampBarPlacement {
                        y: UserDefaults.standard.double(forKey: originYKey))
     }
 
+    /// review fix I-2：恢复位置 + 当前屏幕可见区校验——保存的坐标落在当前
+    /// visibleFrame 外（拔外接屏等场景）→ 返回 nil 回退默认布局（防离屏不可
+    /// 恢复，用户无法自救）。纯函数（visibleFrame 注入，可测试）。
+    static func restoredOrigin(visibleFrame: CGRect) -> CGPoint? {
+        guard let p = load() else { return nil }
+        return visibleFrame.contains(p) ? p : nil
+    }
+
     static func clear() {
         UserDefaults.standard.removeObject(forKey: originXKey)
         UserDefaults.standard.removeObject(forKey: originYKey)
