@@ -89,6 +89,16 @@ final class AttentionLampBarController: NSObject {
                 Task { @MainActor in self.toggleBarVisibility() }
                 return nil   // 消费 ⌘⇧V
             }
+            // previous-focus 恢复（14A-2 修复）：bar 可见期本地 Escape 捕获。
+            // nonactivatingPanel 点击不成为 key window（14A-2b RED 实证）→ SwiftUI
+            // .onKeyPress 收不到 Escape；本地 monitor 进程级拦截（与 ⌘⇧V 同构）。
+            // 消费后事件不再派发，与 .onKeyPress 路径天然互斥（两路同归
+            // handleBarEscape，幂等）。精确宿主 previousFocus 捕获归完整焦点管理。
+            if event.keyCode == 53, AttentionStore.globalOnEnabled,
+               viewModel.isVisible, !suppressed {
+                Task { @MainActor in self.handleBarEscape() }
+                return nil   // 消费 Escape
+            }
             return event
         }
     }
