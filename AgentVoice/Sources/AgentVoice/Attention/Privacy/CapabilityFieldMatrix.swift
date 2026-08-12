@@ -119,6 +119,10 @@ public struct CapabilityFieldMatrix: Sendable {
         //    落盘=allowlist 后；通知展示=最小摘要）——
         // 证据：2.1.226 controlled 观察（field-lists.json）
         row(.attentionIngest, "tool_name",        eph: true, render: true),
+        // Notification 子类标记（spec 灯条 spec 映射表分流依据：permission_prompt/
+        // idle_prompt）；枚举标记字段非内容面，tool_name（I6）先例同型；老林 2026-08-12
+        // 批准登记；sizeLimit 收紧至枚举尺度（官方两值均 ≤20 字节）
+        row(.attentionIngest, "notification_type", eph: true, render: true, sizeLimit: 64),
         row(.attentionIngest, "source",           eph: true, render: true),
         // cwd：§8.8「cwd 规范化标识」——原始绝对路径值走 redaction（路径模式命中即替换）
         row(.attentionIngest, "cwd",              eph: true, render: true, redaction: .redact),

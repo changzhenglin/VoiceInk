@@ -94,16 +94,34 @@ final class CapabilityFieldMatrixTests: XCTestCase {
     }
 
     func testUnreviewedObservedFieldsStayReadOnly() {
-        // incidental/未批准字段（effort、notification_type、task_id、file_path 等）
+        // incidental/未批准字段（effort、task_id、file_path 等）
         // 虽被 Task 0 观察到，仍未审查 → 矩阵无行 → 全 sink false
+        //（notification_type 2026-08-12 老林批准升级登记，正面断言见
+        //  testNotificationTypeRegisteredScopeLimited）
         let m = CapabilityFieldMatrix.current
-        for field in ["effort", "notification_type", "task_id", "task_subject",
+        for field in ["effort", "task_id", "task_subject",
                       "file_path", "old_cwd", "new_cwd", "background_tasks",
                       "session_crons", "tool_use_id", "duration_ms_x"] {
             for sink in PrivacySink.allCases {
                 XCTAssertFalse(m.allows(field: field, sink: sink), "\(field)/\(sink)")
             }
         }
+    }
+
+    func testNotificationTypeRegisteredScopeLimited() {
+        // 14A-3 修复批 A（老林 2026-08-12 批准，spec 灯条 spec 映射表分流依据）：
+        // notification_type 登记授权面=eph+render 封顶（枚举标记字段，tool_name
+        // 先例同型）；persist/export/telemetry/retain 全关——登记不扩散。
+        let m = CapabilityFieldMatrix.current
+        guard let row = m.row(capability: .attentionIngest, field: "notification_type") else {
+            return XCTFail("notification_type 应已登记（批准在案）")
+        }
+        XCTAssertTrue(row.ephemeral)
+        XCTAssertTrue(row.render)
+        XCTAssertFalse(row.persist, "登记不扩散：不得 persist")
+        XCTAssertFalse(row.export, "登记不扩散：不得 export")
+        XCTAssertFalse(row.telemetry, "登记不扩散：不得 telemetry")
+        XCTAssertFalse(row.retain, "登记不扩散：不得 retain")
     }
 
     func testUnknownFieldBlockedForEverySource() {

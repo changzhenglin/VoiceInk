@@ -25,7 +25,17 @@ public struct ClaudeCodeAdapter: Sendable {
         let kind: EventKind
         switch hookEventName {
         case "Stop":          kind = .completed          // ADJ-5：单轮完成，非会话结束，非终态（C1）
-        case "Notification":  kind = .waitingUser        // 保守归类（B-OBS-3），不硬猜子类型
+        case "Notification":
+            // spec 灯条 spec 映射表子类分流（14A-3 修复批 A，缺陷①假等待闭合）：
+            // permission_prompt → waiting_user（等权限）；idle_prompt → 仅 liveness/idle
+            // 事实不改灯态（spec 明文）；未知/缺失 → 保守 waiting_user（北极星「不漏
+            // 等待」方向）。证据基线=官方 hooks reference 两值；受控探针值域复核 follow-up。
+            // （替代 B-OBS-3 全量保守归类——该占位致回合结束 60s idle 全会话假●黄）
+            switch payload["notification_type"] as? String {
+            case "permission_prompt": kind = .waitingUser
+            case "idle_prompt":       kind = .connectionFact
+            default:                  kind = .waitingUser
+            }
         case "StopFailure":   kind = .failed             // 可恢复，非终态逆转
         case "PreToolUse":
             // I5（spec §6 L142）：删除 permission_requested 产出分支——CC 面
@@ -140,7 +150,13 @@ extension ClaudeCodeAdapter {
             return .toolInFlight
         case "Stop": return .completed
         case "StopFailure": return .failed
-        case "Notification": return .waitingUser   // 泛型保守归类（四子类归约见 NotificationSubtype.reducedKind）
+        case "Notification":
+            // 与 parse 同构的子类分流（valueHints 消费 notification_type 打标值）
+            switch valueHints["notification_type"] as? String {
+            case "permission_prompt": return .waitingUser
+            case "idle_prompt":       return .connectionFact
+            default:                  return .waitingUser
+            }
         case "SessionStart": return .connectionFact
         case "SessionEnd": return .sessionEnd
         // Task 8B #5：UAS/PostToolUse 消费面（归约层 connectionFact；

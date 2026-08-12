@@ -18,7 +18,11 @@ final class HookInstaller {
     private let token: String
     /// 我方管理的事件键（install 写入 / uninstall 清理范围）；
     /// 不相关键（PreCompact 等其他插件的 hooks）不在安装/卸载范围，不阻塞安装。
-    private static let managedEventNames = ["Stop", "Notification", "PreToolUse", "StopFailure", "SessionStart", "SessionEnd"]
+    /// 14A-3 修复批 B（老林批准）：补 UserPromptSubmit（回复信号，spec I5 明文：
+    /// 用户应答 → waiting 解除 ●黄→◌绿；此前缺位致 waiting 项永不解除——14A-3
+    /// 首夜观察实证）+ PostToolUse（工具结束 lease 解除）。消费面 Task 8B #5 已建。
+    /// internal：修复批测试面可见（@testable）。
+    static let managedEventNames = ["Stop", "Notification", "PreToolUse", "PostToolUse", "StopFailure", "SessionStart", "SessionEnd", "UserPromptSubmit"]
 
     init(settingsPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/settings.json").path,

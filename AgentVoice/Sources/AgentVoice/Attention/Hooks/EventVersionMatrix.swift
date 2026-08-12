@@ -119,7 +119,7 @@ public enum EventVersionMatrix {
     /// adapter 当前消费面（代码事实，与 ClaudeCodeAdapter.parse 一致；测试逐事件核对）
     public static let adapterConsumedKinds: Set<HookEventKind> = [
         .stop, .stopFailure, .notification, .preToolUse, .sessionStart, .sessionEnd,
-        .userPromptSubmit, .postToolUse,   // Task 8B #5：parse 级消费接线（settings 注册仍缺位）
+        .userPromptSubmit, .postToolUse,   // Task 8B #5：parse 级消费接线；settings 安装面 14A-3 修复批 B 补齐（HookInstaller.managedEventNames）
     ]
 
     // MARK: - 静态表（代码内 single source）
