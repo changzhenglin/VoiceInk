@@ -156,13 +156,16 @@ final class CapabilityFieldMatrixTests: XCTestCase {
         XCTAssertEqual(event2?.value(forField: "session_id"), "s-1")
     }
 
-    func testAbsolutePathInCwdRedactedNotDropped() {
-        // cwd 行 redaction=.redact：绝对路径命中 → 替换 [REDACTED]（规范化标识 posture）
+    func testAbsolutePathInCwdBasenameNotDropped() {
+        // cwd 行 redaction=.basename（14A-3 修复批，老林批准）：只保留最后一段
+        // 作显示标签；目录结构整体不保留（隐私 posture 等同 redact）。
+        // 替代旧 .redact 整体替换——该行为致灯条/面板标签全 REDACTED（14A-3 首夜实证）
         let event = try? FieldAllowlist.sanitize(
             source: .officialHook,
             data: Data(#"{"session_id":"s-1","cwd":"/Users/someone/projects/demo"}"#.utf8))
-        XCTAssertEqual(event?.value(forField: "cwd"), "[REDACTED]")
-        XCTAssertFalse(event?.containsValueSubstring("someone") ?? true)
+        XCTAssertEqual(event?.value(forField: "cwd"), "demo")
+        XCTAssertFalse(event?.containsValueSubstring("someone") ?? true,
+                       "目录结构零保留（上级路径零泄漏）")
     }
 
     func testPromptMarkerInAllowedValueDowngraded() {

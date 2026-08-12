@@ -24,6 +24,10 @@ public enum PrivacyCapability: String, CaseIterable, Sendable, Equatable {
 public enum RedactionMode: String, Sendable, Equatable {
     case none     // 命中敏感模式 → 字段级降级（丢弃该字段）
     case redact   // 敏感片段替换 [REDACTED]；替换后仍命中 → 字段级降级
+    /// 14A-3 修复批（老林实证灯显 REDACTED）：只保留路径最后一段（显示标签
+    /// 数据源 F4/C20），目录结构整体不保留——隐私面等同 redact（结构零泄漏）；
+    /// basename 自身命中敏感标记 → 字段级降级（fail-closed）。
+    case basename
 }
 
 /// capability-field×sink 矩阵行（plan Task 4 Interfaces 形状）
@@ -127,8 +131,9 @@ public struct CapabilityFieldMatrix: Sendable {
         // 随方案批准）：纯数字标记，ephemeral，零内容面；sizeLimit 收紧至数字尺度
         row(.attentionIngest, "attention_process_pid", eph: true, sizeLimit: 16),
         row(.attentionIngest, "source",           eph: true, render: true),
-        // cwd：§8.8「cwd 规范化标识」——原始绝对路径值走 redaction（路径模式命中即替换）
-        row(.attentionIngest, "cwd",              eph: true, render: true, redaction: .redact),
+        // cwd：§8.8「cwd 规范化标识」——basename 模式（14A-3 修复批：只保留最后
+        // 一段作显示标签；此前 .redact 整体替换致灯条/面板标签全 REDACTED）
+        row(.attentionIngest, "cwd",              eph: true, render: true, redaction: .basename),
         row(.attentionIngest, "reason",           eph: true, render: true, persist: true),
         row(.attentionIngest, "stop_hook_active", eph: true, render: true, persist: true),
         row(.attentionIngest, "duration_ms",      eph: true, render: true, persist: true),

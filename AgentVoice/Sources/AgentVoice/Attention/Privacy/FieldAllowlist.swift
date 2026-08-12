@@ -328,6 +328,14 @@ public enum FieldAllowlist {
                         downgraded.append(key); return
                     }
                     upsert(key, .string(redacted))
+                case .basename:
+                    // 14A-3 修复批：只保留路径最后一段（目录结构整体不保留，
+                    // 隐私面等同 redact）；basename 自身仍敏感 → 字段级降级
+                    let last = s.split(separator: "/").last.map(String.init) ?? s
+                    guard !SensitivePatternScanner.hasSensitive(in: last) else {
+                        downgraded.append(key); return
+                    }
+                    upsert(key, .string(last))
                 case .none:
                     downgraded.append(key)              // 字段级降级 blocked/read-only
                 }
