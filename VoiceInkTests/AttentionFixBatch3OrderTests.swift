@@ -126,24 +126,6 @@ final class AttentionFixBatch3OrderTests: XCTestCase {
         XCTAssertEqual(AttentionLampLabelText.compose(position: 3, label: nil), "3 未命名")
     }
 
-    // MARK: - 5. hover 卡人话（UUID 退役；等待时长消费既有单源）
-
-    func testHoverTextWaitingYellow() {
-        let lines = AttentionHoverCardText.lines(position: 1, label: "AgentOS",
-                                                 lamp: .waitingYellow, waitElapsed: 180)
-        XCTAssertEqual(lines, ["1 · AgentOS", "等待 3 分钟", "点击跳到该窗口"],
-                       "首行身份人话+次行等待时长（AttentionHoverWaitText 单源）+末行操作提示")
-    }
-
-    func testHoverTextWorkingNoWaitLine() {
-        let lines = AttentionHoverCardText.lines(position: 2, label: "voice-coding",
-                                                 lamp: .workingGreen, waitElapsed: nil)
-        XCTAssertEqual(lines, ["2 · voice-coding", "点击跳到该窗口"])
-    }
-
-    func testHoverTextRedactedFallback() {
-        let lines = AttentionHoverCardText.lines(position: 4, label: SensitivePatternScanner.redactionMarker,
-                                                 lamp: .unknownGray, waitElapsed: nil)
-        XCTAssertEqual(lines, ["4 · 未命名", "点击跳到该窗口"])
-    }
+    // MARK: - 5. hover 卡（语义取代声明：修复批四老林设计裁决——hover=看不见的信息，
+    // 身份线移除。原批三 3 例身份行钉死由 AttentionFixBatch4AppTests hover 新布局取代。）
 }
