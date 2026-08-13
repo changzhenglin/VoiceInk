@@ -99,4 +99,35 @@ final class AttentionFixBatch5DeliveryTests: XCTestCase {
         XCTAssertFalse(keys.contains("00000000-0000-0000-0000-000000000000"), "zero-UUID 不得建快照")
         XCTAssertTrue(keys.contains(sidA), "合法事件不受 identity 拒绝影响")
     }
+
+    /// C1-7（fix round 4）：异步 ingest 失败留痕——worker 不得静默吞 rejected：
+    /// malformed payload 拒绝落 incident；duplicate/accepted 正常幂等不落痕。
+    ///（根因实证：测试窗多进程 DB 争用爆发丢失零痕迹，24 条无声消失。）
+    func testIngestAsyncFailureTraceability() throws {
+        let router = try makeRouter()
+        let before = router.store.incidentCountForTesting()
+        // malformed JSON → rejected(.malformedEvent) → incident 留痕
+        guard case .enqueued = router.ingestAsync(hookEventName: "Stop",
+                                                  payloadJson: "not-json{{{",
+                                                  observedAt: Date()) else { return XCTFail() }
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.store.incidentCountForTesting(), before + 1,
+                       "rejected 必须落 incident（fail-closed 留痕）")
+        // zero-UUID identity 拒绝：ingest 内部已留痕（单条不双录）
+        guard case .enqueued = router.ingestAsync(hookEventName: "Stop",
+                                                  payloadJson: #"{"session_id":"00000000-0000-0000-0000-000000000000"}"#,
+                                                  observedAt: Date()) else { return XCTFail() }
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.store.incidentCountForTesting(), before + 2,
+                       "identity 拒绝由 ingest 内部留痕，worker 不双录")
+        // 合法事件 + duplicate 不增 incident（正常幂等）
+        let payload = #"{"session_id":"\#(sidA)","seq":1}"#
+        guard case .enqueued = router.ingestAsync(hookEventName: "Stop",
+                                                  payloadJson: payload, observedAt: Date()) else { return XCTFail() }
+        guard case .enqueued = router.ingestAsync(hookEventName: "Stop",
+                                                  payloadJson: payload, observedAt: Date()) else { return XCTFail() }
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.store.incidentCountForTesting(), before + 2,
+                       "accepted/duplicate 不落痕")
+    }
 }

@@ -96,7 +96,27 @@ public final class AttentionEventRouter: @unchecked Sendable {
         guard !pendingIngests.isEmpty else { queueLock.unlock(); return }
         let item = pendingIngests.removeFirst()
         queueLock.unlock()
-        _ = ingest(hookEventName: item.hook, payloadJson: item.json, observedAt: item.observedAt)
+        let result = ingest(hookEventName: item.hook, payloadJson: item.json, observedAt: item.observedAt)
+        noteIngestOutcome(result)
+    }
+
+    /// 修复批五 fix round 4：异步 ingest 失败留痕——worker 原 `_ = ingest(...)`
+    /// 静默吞 store 写失败（实证：测试窗多进程 DB 争用（journal_mode=delete）爆发
+    /// 丢失零痕迹，24 条事件无声消失）。fail-closed 纪律：rejected 落 incident
+    ///（recvCapacity/malformed 等）；identity/sessionConflict 由 ingest 内部已留痕
+    /// 不重复记录；duplicate=正常幂等不留痕。
+    func noteIngestOutcome(_ result: IngestResult) {
+        switch result {
+        case .accepted, .duplicate:
+            break
+        case .rejected(let code):
+            switch code {
+            case .identity, .sessionConflict:
+                break   // ingest 内部已 persistIncident，避免双录
+            default:
+                store.persistIncident(code: code, sid: nil, at: Date())
+            }
+        }
     }
 
     /// 排空等待：轮询 pending + 串行队列 sync 栅栏确认在途 drain 完成，超时 false

@@ -251,8 +251,16 @@ public final class AttentionEventStore: @unchecked Sendable {
                     arguments: [code.rawValue, sid, at])
             }
         } catch {
-            // C17：写失败降级不 crash
+            // C17：写失败降级不 crash（注：DB 争用时 incident 自身亦可能写失败——
+            // 留痕尽力而为，fix round 4 实证注记）
         }
+    }
+
+    /// 修复批五 fix round 4 测试 seam：incident 行数（异步 ingest 失败留痕验证用）。
+    public func incidentCountForTesting() -> Int {
+        (try? dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM incidents")
+        }) ?? -1
     }
 
     /// 脱敏 seam：禁止键递归剥离（M1.0 证据工具 redactor 语义，平台中立）
