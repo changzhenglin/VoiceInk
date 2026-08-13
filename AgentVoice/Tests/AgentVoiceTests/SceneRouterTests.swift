@@ -86,4 +86,36 @@ final class SceneRouterTests: XCTestCase {
         XCTAssertFalse(router.shouldPolish(
             text: "短", globalEnabled: true, disabledScenes: [], sceneType: "coding"))
     }
+
+    // ── Task 4：废除字数门槛（增量开=非空即润；增量关=V1 原语义）──
+
+    func test_incremental_enabled_gate_is_nonempty_not_fifty_chars() throws {
+        let router = try makeRouter()
+        // 增量开：非空即过（短句也润色——spec 决策 6 废除 50 字门槛）
+        XCTAssertTrue(router.shouldPolish(text: "短句。", globalEnabled: true,
+                                          disabledScenes: [], sceneType: "office_writing",
+                                          incrementalEnabled: true))
+        // 空白不过（非空即润的反面）
+        XCTAssertFalse(router.shouldPolish(text: "   ", globalEnabled: true,
+                                           disabledScenes: [], sceneType: "office_writing",
+                                           incrementalEnabled: true))
+        // 全局开关与场景开关仍优先（增量不绕过用户控制面）
+        XCTAssertFalse(router.shouldPolish(text: "短句。", globalEnabled: false,
+                                           disabledScenes: [], sceneType: "office_writing",
+                                           incrementalEnabled: true))
+        XCTAssertFalse(router.shouldPolish(text: "短句。", globalEnabled: true,
+                                           disabledScenes: ["office_writing"],
+                                           sceneType: "office_writing", incrementalEnabled: true))
+    }
+
+    func test_incremental_disabled_gate_keeps_v1_fifty_chars() throws {
+        let router = try makeRouter()
+        // 增量关 = V1 原语义：<50 字不润色
+        XCTAssertFalse(router.shouldPolish(text: String(repeating: "字", count: 49),
+                                           globalEnabled: true, disabledScenes: [],
+                                           sceneType: "office_writing", incrementalEnabled: false))
+        XCTAssertTrue(router.shouldPolish(text: String(repeating: "字", count: 50),
+                                          globalEnabled: true, disabledScenes: [],
+                                          sceneType: "office_writing", incrementalEnabled: false))
+    }
 }
