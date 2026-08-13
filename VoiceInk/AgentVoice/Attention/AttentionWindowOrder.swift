@@ -121,7 +121,12 @@ final class ProcessTtyResolver {
                          encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard p.terminationStatus == 0, !out.isEmpty, out != "??", out != "-" else { return nil }
-        return out.hasPrefix("/") ? out : "/dev/tty" + out
+        // 修复批四 bug 修（老林实证缺陷②根因）：macOS ps -o tty= 输出形态两可能——
+        // 短形 `s000` 或全形 `ttys000`（版本/环境差异，实测本機返全形）。
+        // 此前一律 "/dev/tty"+out 致全形输入双前缀 /dev/ttyttys000 → 跳转全灭。
+        if out.hasPrefix("/dev/") { return out }
+        if out.hasPrefix("ttys") { return "/dev/" + out }
+        return "/dev/tty" + out
     }
 }
 

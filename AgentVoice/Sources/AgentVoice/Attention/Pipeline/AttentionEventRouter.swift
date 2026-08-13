@@ -222,6 +222,24 @@ public final class AttentionEventRouter: @unchecked Sendable {
         if event.activitySignal == .toolCompleted {
             leaseTracker.completeToolInFlight(sessionKey: event.nativeSessionId)
         }
+        // 修复批四问题 3 根治（与 reducer 解除转移同根因同治）：tool 活动证据
+        //（toolInFlight / toolCompleted）→ 该会话未决 waiting/failed items 闭合
+        //（superseded）。实证：26 条僵尸 waiting item 永挂 new 污染 pending 计数与
+        // attention 轴。completed items 不入本面（§8.7 摘要队列前提保留；sessionEnd
+        // 才 resolved——supersedeOpenItems 分 kind 语义既有）。
+        if event.kind == .toolInFlight || event.activitySignal == .toolCompleted {
+            for idx in items.indices
+            where items[idx].sessionKey == event.nativeSessionId
+                && (items[idx].kind == .waitingUser
+                    || items[idx].kind == .waitingPermission
+                    || items[idx].kind == .failed) {
+                let updated = policy.supersedeOpenItems([items[idx]], at: observedAt)[0]
+                if updated != items[idx] {
+                    items[idx] = updated
+                    store.persistItem(updated)   // C5：闭合状态持久化
+                }
+            }
+        }
         // 携带项 A（ADJ-2 闭合）：sessionEnd 成功入库后释放 mutex ownership——
         // 修 owner 表只增不减的泄漏，同 session 结束后重新声明无冲突残留
         if event.kind == .sessionEnd {

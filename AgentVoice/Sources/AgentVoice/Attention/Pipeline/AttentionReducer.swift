@@ -46,11 +46,19 @@ public struct AttentionReducer: Sendable {
         case .connectionFact:
             if e.activitySignal == .userPromptRelated {
                 applyUserPromptSignal(e, to: &s)   // I5：相关用户输入解除 waiting/failed → working
+            } else if e.activitySignal == .toolCompleted {
+                applyToolActivitySignal(e, to: &s) // 修复批四问题3：tool 完成=活动证据，解除 waiting（PreToolUse 缺口兜底）
             } else {
                 applyConnection(e, to: &s)  // 连接事实不碰 activity_fact
             }
         case .toolInFlight:
-            break   // I5（spec §6 L160）：tool lease overlay 归 ToolLeaseTracker，归约层不产注意力事实
+            // 修复批四问题 3 根治（老林「务必弄对」裁决，spec §6 转移矩阵扩展呈报在案）：
+            // tool 执行中=会话不在等待——权限弹窗批准后恢复信号是 tool 事件而非 UAS，
+            // 原矩阵仅 userPromptRelated 解除 waiting → 灯永久停留「等待你输入」
+            //（实证：三会话 21/39/14 个 tool 事件后 fact 仍 waitingUser）。
+            // I5 原语义「toolInFlight 不产 waiting 注意力事实」保留——本路径只做
+            // 解除转移（working+dismiss），不产 intervention 面。
+            applyToolActivitySignal(e, to: &s)
         case .auditCorrection:
             break   // 审计事件不碰五轴；证据引用统一由 switch 后 append（SR-1：修重复 append）
         }
@@ -68,6 +76,24 @@ public struct AttentionReducer: Sendable {
         s.attention = .none            // dismiss：waiting/failed 解除后不残留高注意级
         s.lifecycle = .managed
         s.watermarkObservedAt = e.observedAt
+    }
+
+    /// 修复批四问题 3 根治（老林「灯色与窗口任务执行完全对不上」实证裁决）：
+    /// tool 执行中/完成 = 会话正在活动、不在等待。解除面与 I5 同语义
+    ///（waiting/failed/completed/idle/unknown → working + attention dismiss），
+    /// 但触发源是 tool 事件（PreToolUse toolInFlight / PostToolUse toolCompleted）
+    /// 而非 UAS——权限弹窗批准后恢复信号是 tool 流，原矩阵仅 UAS 解除致灯永久
+    /// 停留「等待你输入」。已 working 不重复触碰；closed 不复活（C10 守卫顶部已拦）。
+    private func applyToolActivitySignal(_ e: NormalizedAgentEvent, to s: inout AttentionStateSnapshot) {
+        switch s.activityFact {
+        case .waitingUser, .waitingPermission, .waitingExternal, .failed, .completed, .idle, .unknown:
+            s.activityFact = .working
+            s.attention = .none            // dismiss：解除后不残留高注意级
+            s.lifecycle = .managed
+            s.watermarkObservedAt = e.observedAt
+        case .working:
+            break                          // 已 working，不重复转移
+        }
     }
 
     public func applyConnection(_ e: NormalizedAgentEvent, to s: inout AttentionStateSnapshot) {

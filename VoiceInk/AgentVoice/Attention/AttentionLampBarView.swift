@@ -260,27 +260,32 @@ struct AttentionLampBarView: View {
 
     @ViewBuilder
     private func lampGlyph(_ slot: LampSlotSummary, index: Int) -> some View {
-        VStack(spacing: 2) {
-            lampShape(slot.lamp)
-                .frame(width: 14, height: 14)
-            // 裁决卡③：灯下「序号 目录名」（序号=显示位置；REDACTED/缺失→「N 未命名」）。
-            // I-2（review 修复轮）：编号单源=slot.position（displayNumber helper 钉死），
-            // privacy 遮罩过滤后 index 重编号不得覆盖槽位序（与菜单图例/VO 同源）。
-            Text(AttentionLampLabelText.compose(
-                position: AttentionLampBarModel.displayNumber(position: slot.position,
-                                                              fallbackIndex: index),
-                label: slot.displayLabel))
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        // 修复批四（老林实证缺陷②）：点击跳转用 Button（plain）而非 onTapGesture——
+        // isMovableByWindowBackground 面板内 Button 是真实控件，鼠标事件可靠送达
+        //（SwiftUI 手势在可拖动面板内有被拖拽判定吞掉的失效面）。
+        Button {
+            onNavigate(slot.sessionKey)
+        } label: {
+            VStack(spacing: 2) {
+                lampShape(slot.lamp)
+                    .frame(width: 14, height: 14)
+                // 裁决卡③：灯下「序号 目录名」（序号=显示位置；REDACTED/缺失→「N 未命名」）。
+                // I-2（review 修复轮）：编号单源=slot.position（displayNumber helper 钉死），
+                // privacy 遮罩过滤后 index 重编号不得覆盖槽位序（与菜单图例/VO 同源）。
+                Text(AttentionLampLabelText.compose(
+                    position: AttentionLampBarModel.displayNumber(position: slot.position,
+                                                                  fallbackIndex: index),
+                    label: slot.displayLabel))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(2)
         }
-        .padding(2)
+        .buttonStyle(.plain)
         .background(focusedIndex == index
                     ? Color.accentColor.opacity(0.25) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
-        // 修复批四（老林实证缺陷②）：点击跳转接线——hover 承诺「点击跳到该窗口」的
-        // 真实交付面（nonactivatingPanel 短按无位移触发 tap，拖动换位不冲突）。
-        .onTapGesture { onNavigate(slot.sessionKey) }
         // hover 卡最小面（I2 fix round 1）：消费 AttentionHoverWaitText 单源，勿另造文案。
         .onHover { hovering in
             hoveredKey = hovering ? slot.sessionKey
@@ -297,19 +302,27 @@ struct AttentionLampBarView: View {
     /// hover 卡（修复批四，老林裁决）：一眼看不见的信息——身份线移除（编号/目录名灯下
     /// 已有，重复零价值）；首行状态原因（●黄两因分辨唯一通道）/次行等待时长（仅 ●黄）/
     /// 末行动作提示。reasonLine 缺失（旧式构造摘要）→「状态未知」兜底（fail-closed）。
+    /// 修复批四缺陷②补强：hover 卡整体可点击跳转（老林点「点击跳到该窗口」文案区
+    /// 无响应实证——popover 内容层原无手势面）。
     private func hoverCard(for slot: LampSlotSummary, index: Int) -> some View {
         let lines = AttentionHoverCardText.lines(
             reason: slot.reasonLine ?? "状态未知",
             lamp: slot.lamp, waitElapsed: data.waitElapsed[slot.sessionKey])
-        return VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { pair in
-                Text(pair.element)
-                    .font(.system(size: pair.offset == 0 ? 11 : 10,
-                                  weight: pair.offset == 0 ? .medium : .regular))
-                    .foregroundStyle(pair.offset == 0 ? Color.primary : Color.secondary)
+        return Button {
+            hoveredKey = nil
+            onNavigate(slot.sessionKey)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { pair in
+                    Text(pair.element)
+                        .font(.system(size: pair.offset == 0 ? 11 : 10,
+                                      weight: pair.offset == 0 ? .medium : .regular))
+                        .foregroundStyle(pair.offset == 0 ? Color.primary : Color.secondary)
+                }
             }
+            .padding(8)
         }
-        .padding(8)
+        .buttonStyle(.plain)
     }
 
     /// 8+N 折叠灯（聚合色=overflow 最高优先灯态；穷举 +N 形状归 14A）。

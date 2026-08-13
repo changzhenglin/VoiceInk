@@ -488,12 +488,15 @@ final class AttentionStore: ObservableObject {
                                       slotMap: &lampSlotMap, order: order)
         // 14A-3 裁决卡②（老林批准）：灯上完整目录名标签（router 单源确定性分配）
         data.labels = router.fullCwdLabels(sessionKeys: data.slots.map(\.sessionKey))
-        // 裁决卡③：displayLabel 后置附着（VO/hover/灯下「序号 目录名」人话面消费）
+        // 裁决卡③：displayLabel 后置附着（VO/hover/灯下「序号 目录名」人话面消费）。
+        // 修复批四 bug 修：重建摘要必须透传 reasonLine——此前漏带致 hover 全落
+        // 「状态未知」兜底（老林目视实证批四缺陷①）。
         data.slots = data.slots.map { s in
             LampSlotSummary(sessionKey: s.sessionKey, lamp: s.lamp,
                             privacyMasked: s.privacyMasked,
                             displayLabel: data.labels[s.sessionKey],
-                            position: s.position)
+                            position: s.position,
+                            reasonLine: s.reasonLine)
         }
         persistLampSlotMapIfChanged()
         return data
