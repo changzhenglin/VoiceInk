@@ -73,8 +73,13 @@ final class AttentionStore: ObservableObject {
     private static let lampSlotMapKey = "attentionLampSlotMap.v1"
     /// 裁决卡③：iTerm2 窗口顺序锚定生产组合（懒建——flag off / E2E / 无 iTerm2 零开销；
     /// tty 缓存常驻实例内，进程生命期 tty 不变）。
-    private lazy var itermOrderSource = ItermWindowOrderSource()
+    /// 修复批四 I-1：上游包 TTL 缓存（2s 对齐 tick：同周期双 timer 重复调用全消+
+    /// NSAppleScript 免重编译；M-3 瞬态失败沿用最近成功序，灯序不抖振）。
+    private lazy var itermOrderSource: TerminalWindowOrderSource =
+        CachedTerminalOrderSource(upstream: ItermWindowOrderSource(), ttl: 2.0)
     private lazy var ttyResolver = ProcessTtyResolver()
+    /// 修复批四（老林实证缺陷②）：点击跳转 tty 精准面（选中对应标签页，免 AX 权限）。
+    private lazy var sessionNavigator = ItermSessionNavigator()
 
     init() {}
 
@@ -372,8 +377,11 @@ final class AttentionStore: ObservableObject {
         let now = Date()
         // 裁决卡③：菜单列表编号=灯条显示序号（同源图例，不另立排序口径）。
         // flag off → 灯条静默，列表不编号（零额外投影开销）。
+        // M-2（review 修复轮）：门控对齐 controller 三门控——globalOn/enabled 静默时
+        // 编号亦不呈现（编号无所指），顺序链路零空转（「静默零开销」注释语义兑现）。
         var lampNumber: [String: Int] = [:]
-        if UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled) {
+        if UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled),
+           Self.globalOnEnabled, enabled {
             for s in lampBarData().slots {
                 if let n = s.position { lampNumber[s.sessionKey] = n }
             }
@@ -461,14 +469,18 @@ final class AttentionStore: ObservableObject {
         // 裁决卡③：iTerm2 窗口顺序锚定——session→claude pid（裁决卡①证据）→tty（ps 反查）
         // →iTerm2 窗口/标签页序（AppleScript）。空 rank（iTerm2 不可用/无 pid/tty 未映射）
         // → order=nil/尾随，fail-closed 退回既有字典序，永不报错。
+        // 修复批四 I-1：无任何会话带 pid 证据时短路跳过顺序源查询（零开销）。
         let keys = snaps.map(\.sessionKey)
-        let resolver = AttentionLampOrderResolver(
-            orderSource: itermOrderSource,
-            pidOf: { router.sessionPid(for: $0) },
-            ttyOfPid: { self.ttyResolver.tty(of: $0) })
-        let ranks = resolver.ranks(sessionKeys: keys)
-        let order: [String]? = ranks.isEmpty ? nil
-            : keys.filter { ranks[$0] != nil }.sorted { ranks[$0]! < ranks[$1]! }
+        var order: [String]? = nil
+        if keys.contains(where: { router.sessionPid(for: $0) != nil }) {
+            let resolver = AttentionLampOrderResolver(
+                orderSource: itermOrderSource,
+                pidOf: { router.sessionPid(for: $0) },
+                ttyOfPid: { self.ttyResolver.tty(of: $0) })
+            let ranks = resolver.ranks(sessionKeys: keys)
+            order = ranks.isEmpty ? nil
+                : keys.filter { ranks[$0] != nil }.sorted { ranks[$0]! < ranks[$1]! }
+        }
         let hookHealth: HookHealth = versionDrift ? .unhealthy : .healthy
         let projection = AttentionLampBarProjection()
         var data = projection.project(from: snaps, hookHealth: hookHealth,
@@ -487,10 +499,16 @@ final class AttentionStore: ObservableObject {
         return data
     }
 
-    /// Return/点灯跳转（§7 点灯=跳原窗口，复用 AXNavigator；I2 fix round 1）。
-    /// 跳转失败降级（灯态不变+⨯+toast+复制定位）由 AXNavigator.degradation 提供值面，
-    /// 渲染归灯条视图；最小面只触发跳转。
+    /// Return/点灯跳转（§7 点灯=跳原窗口；I2 fix round 1）。
+    /// 修复批四（老林实证缺陷②）：tty 精准路径优先——session→pid→tty→iTerm2 选中
+    /// 对应标签页（免 AX 权限；单窗口多标签页布局精准到 tab）。失败降级既有 AXNavigator
+    ///（AX 在位=窗口标题匹配；无权限=激活终端兜底）。跳转失败降级值面归 AXNavigator。
     func navigateLampBarSession(_ sessionKey: String) {
+        if let pid = router?.sessionPid(for: sessionKey),
+           let tty = ttyResolver.tty(of: pid),
+           sessionNavigator.navigate(tty: tty) {
+            return
+        }
         let cwd = router?.cwdPath(for: sessionKey)
         _ = AXNavigator().navigate(sessionKey: sessionKey, cwd: cwd)
     }

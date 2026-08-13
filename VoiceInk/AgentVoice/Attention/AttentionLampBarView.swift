@@ -106,12 +106,20 @@ struct AttentionLampBarProjection: Sendable {
         }
         // 裁决卡③：显示序=槽位序（分槽按输入序）；携带 position 呈现元数据
         //（VO/hover/灯下序号消费；displayLabel 由调用方后置附着）。
+        // 修复批四：reasonLine=状态原因单源产出（hover 增值面消费；老林裁决）。
+        let snapByKey = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.sessionKey, $0) })
+        let reasonModel = AttentionLampBarModel()
         data.slots = placed.sorted { $0.slot < $1.slot }.enumerated().map { pair in
             let s = pair.element.summary
+            let snap = snapByKey[s.sessionKey]
             return LampSlotSummary(sessionKey: s.sessionKey, lamp: s.lamp,
                                     privacyMasked: s.privacyMasked,
                                     displayLabel: nil,
-                                    position: pair.offset + 1)
+                                    position: pair.offset + 1,
+                                    reasonLine: snap.map {
+                                        reasonModel.activityReason(activityFact: $0.activityFact,
+                                                                   connection: $0.connection)
+                                    })
         }
         return data
     }
@@ -256,8 +264,12 @@ struct AttentionLampBarView: View {
             lampShape(slot.lamp)
                 .frame(width: 14, height: 14)
             // 裁决卡③：灯下「序号 目录名」（序号=显示位置；REDACTED/缺失→「N 未命名」）。
-            Text(AttentionLampLabelText.compose(position: index + 1,
-                                                label: slot.displayLabel))
+            // I-2（review 修复轮）：编号单源=slot.position（displayNumber helper 钉死），
+            // privacy 遮罩过滤后 index 重编号不得覆盖槽位序（与菜单图例/VO 同源）。
+            Text(AttentionLampLabelText.compose(
+                position: AttentionLampBarModel.displayNumber(position: slot.position,
+                                                              fallbackIndex: index),
+                label: slot.displayLabel))
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -266,6 +278,9 @@ struct AttentionLampBarView: View {
         .background(focusedIndex == index
                     ? Color.accentColor.opacity(0.25) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
+        // 修复批四（老林实证缺陷②）：点击跳转接线——hover 承诺「点击跳到该窗口」的
+        // 真实交付面（nonactivatingPanel 短按无位移触发 tap，拖动换位不冲突）。
+        .onTapGesture { onNavigate(slot.sessionKey) }
         // hover 卡最小面（I2 fix round 1）：消费 AttentionHoverWaitText 单源，勿另造文案。
         .onHover { hovering in
             hoveredKey = hovering ? slot.sessionKey
@@ -279,11 +294,12 @@ struct AttentionLampBarView: View {
         }
     }
 
-    /// hover 卡（裁决卡③人话面）：首行「N · 目录名」/次行等待时长（仅 ●黄，
-    /// AttentionHoverWaitText 单源）/末行操作提示——AttentionHoverCardText 行序钉死。
+    /// hover 卡（修复批四，老林裁决）：一眼看不见的信息——身份线移除（编号/目录名灯下
+    /// 已有，重复零价值）；首行状态原因（●黄两因分辨唯一通道）/次行等待时长（仅 ●黄）/
+    /// 末行动作提示。reasonLine 缺失（旧式构造摘要）→「状态未知」兜底（fail-closed）。
     private func hoverCard(for slot: LampSlotSummary, index: Int) -> some View {
         let lines = AttentionHoverCardText.lines(
-            position: index + 1, label: slot.displayLabel,
+            reason: slot.reasonLine ?? "状态未知",
             lamp: slot.lamp, waitElapsed: data.waitElapsed[slot.sessionKey])
         return VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(lines.enumerated()), id: \.offset) { pair in

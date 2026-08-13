@@ -85,6 +85,8 @@ final class ItermWindowOrderSource: TerminalWindowOrderSource {
             guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &posRef) == .success,
                   let posRef else { return nil }
             var point = CGPoint.zero
+            // review 修复轮注记：CF 桥接强转恒成功（编译器实证 as? 恒真无守护价值）；
+            // AX 契约真实校验=AXValueGetValue 类型不符返回 false——fail-closed 无崩溃面。
             guard AXValueGetValue(posRef as! AXValue, .cgPoint, &point) else { return nil }
             positioned.append((i, point.x, point.y))
         }
@@ -94,6 +96,8 @@ final class ItermWindowOrderSource: TerminalWindowOrderSource {
 
 /// 进程 tty 反查（ps -o tty=；缓存：tty 在进程生命期不变）。
 /// 输出规范化至 /dev/ttysXXX（ps 短形 sXXX → /dev/tty + sXXX）；无 tty/进程死 → nil。
+/// M-4 known hole（review 修复轮记录）：缓存按 pid 常驻无失效——pid 复用（wrap）命中
+/// 旧 tty 时灯序错位（不崩）；低概率，幽灵探活最终归档死会话兜底，不加强制驱逐。
 final class ProcessTtyResolver {
     private var cache: [Int: String?] = [:]
 
@@ -144,33 +148,118 @@ struct AttentionLampOrderResolver {
 }
 
 /// 灯下标签合成（裁决卡③：序号+目录名；REDACTED/缺失 →「N 未命名」）。
-/// 判定据=SensitivePatternScanner.redactionMarker 常量（禁硬编码字面量）。
+/// 判定据=AttentionLampBarModel.isUnlabeled 包内单源（M-5：禁双处重复判定）。
 enum AttentionLampLabelText {
     static func compose(position: Int, label: String?) -> String {
-        guard let label, label != SensitivePatternScanner.redactionMarker else {
+        guard !AttentionLampBarModel.isUnlabeled(label) else {
             return "\(position) 未命名"
         }
-        return "\(position) \(label)"
+        return "\(position) \(label!)"
     }
 }
 
-/// hover 卡人话文案（裁决卡③：UUID 退役）。
-/// 首行身份「N · 目录名」/次行等待时长（仅 ●黄，消费 AttentionHoverWaitText 单源）/
-/// 末行操作提示。行序与行数由测试钉死。
+/// hover 卡增值文案（修复批四，老林裁决：hover=一眼看不见的信息——身份线移除，
+/// 编号/目录名灯下已有，重复零价值）。
+/// 首行状态原因（activityReason 单源：●黄两因「等待输入/权限确认」颜色不可区分，
+/// 原因文字是唯一分辨通道）/次行等待时长（仅 ●黄，AttentionHoverWaitText 单源）/
+/// 末行动作提示。行序与行数由测试钉死。
 enum AttentionHoverCardText {
-    static func lines(position: Int, label: String?, lamp: Lamp,
-                      waitElapsed: TimeInterval?) -> [String] {
-        let identity: String
-        if let label, label != SensitivePatternScanner.redactionMarker {
-            identity = "\(position) · \(label)"
-        } else {
-            identity = "\(position) · 未命名"
-        }
-        var out = [identity]
+    static func lines(reason: String, lamp: Lamp, waitElapsed: TimeInterval?) -> [String] {
+        var out = [reason]
         if lamp == .waitingYellow, let waitElapsed {
             out.append(AttentionHoverWaitText.waitingHoverLine(waitElapsed))
         }
         out.append("点击跳到该窗口")
         return out
+    }
+}
+
+/// 顺序源 TTL 缓存（review 修复轮 I-1/M-3）：
+/// - TTL 内重复调用复用结果（同周期 store.refresh 与 controller tick 双 timer 全消，
+///   NSAppleScript 免重复编译执行）；ttl 与 tick 周期对齐（生产 2s）
+/// - 上游失败沿用最近成功序（M-3：瞬态失败灯序不抖振，持久化不 churn）
+/// - 从未成功 → nil（调用方退回既有排序，fail-closed）
+final class CachedTerminalOrderSource: TerminalWindowOrderSource {
+    private let upstream: TerminalWindowOrderSource
+    private let ttl: TimeInterval
+    private let clock: () -> Date
+    private var lastSuccess: [String]?
+    private var lastQueryAt: Date?
+
+    init(upstream: TerminalWindowOrderSource, ttl: TimeInterval,
+         clock: @escaping () -> Date = Date.init) {
+        self.upstream = upstream
+        self.ttl = ttl
+        self.clock = clock
+    }
+
+    func orderedTtys() -> [String]? {
+        let now = clock()
+        if let lastQueryAt, now.timeIntervalSince(lastQueryAt) < ttl {
+            return lastSuccess
+        }
+        lastQueryAt = now
+        if let fresh = upstream.orderedTtys() {
+            lastSuccess = fresh
+            return fresh
+        }
+        return lastSuccess
+    }
+}
+
+// MARK: - 修复批四：点击跳转精准面（老林实证缺陷②：hover 承诺点击跳转但未接线）
+
+/// 终端会话选择 seam（测试注入 fake；生产实现=ItermSessionSelectSource）。
+protocol TerminalSessionSelectSource {
+    /// 选中 tty 对应的 iTerm2 标签页并前置窗口。成功 true。
+    func selectSession(tty: String) -> Bool
+}
+
+/// 生产实现：AppleScript 定位 tty 所属标签页 → select tab + 前置窗口 + activate。
+/// 不依赖 AX 辅助功能权限（与 AXNavigator 平行新路径；首次触发系统自动化授权弹窗）。
+final class ItermSessionSelectSource: TerminalSessionSelectSource {
+    func selectSession(tty: String) -> Bool {
+        // tty 已由 ItermSessionNavigator.validTTY allowlist 校验（防注入），可安全内插
+        let script = """
+        tell application "iTerm2"
+          repeat with w in windows
+            repeat with t in tabs of w
+              repeat with s in sessions of t
+                if tty of s is "\(tty)" then
+                  select t
+                  set index of w to 1
+                  activate
+                  return "ok"
+                end if
+              end repeat
+            end repeat
+          end repeat
+          return ""
+        end tell
+        """
+        var error: NSDictionary?
+        guard let result = NSAppleScript(source: script)?.executeAndReturnError(&error),
+              error == nil else { return false }
+        return result.stringValue == "ok"
+    }
+}
+
+/// 点击跳转 navigator：tty allowlist 校验（防脚本注入）+ 委托选择面。
+struct ItermSessionNavigator {
+    let select: TerminalSessionSelectSource
+
+    init(select: TerminalSessionSelectSource = ItermSessionSelectSource()) {
+        self.select = select
+    }
+
+    /// tty allowlist：仅接受 ps 规范化输出形状 /dev/ttysXXX（数字后缀）。
+    /// tty 将内插进 AppleScript 文本——allowlist 外一律拒绝，不到达选择面。
+    static func validTTY(_ tty: String) -> Bool {
+        tty.range(of: #"^/dev/ttys[0-9]+$"#, options: .regularExpression) != nil
+    }
+
+    func navigate(tty: String) -> Bool {
+        guard Self.validTTY(tty) else { return false }
+        return select.selectSession(tty: tty)
     }
 }

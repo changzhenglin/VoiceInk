@@ -11,14 +11,19 @@ public struct LampSlotSummary: Equatable, Sendable {
     /// 在位 → VO/hover 人话文案（UUID 退役）；nil = 既有 sessionKey 语义回退（fail-closed）。
     public let displayLabel: String?
     public let position: Int?
+    /// 修复批四（老林 hover 增值裁决）：状态原因行（activityReason 单源产出）。
+    /// hover 首行消费——一眼看灯色后回答「为什么」；nil = 旧式构造摘要兜底「状态未知」。
+    public let reasonLine: String?
 
     public init(sessionKey: String, lamp: Lamp, privacyMasked: Bool,
-                displayLabel: String? = nil, position: Int? = nil) {
+                displayLabel: String? = nil, position: Int? = nil,
+                reasonLine: String? = nil) {
         self.sessionKey = sessionKey
         self.lamp = lamp
         self.privacyMasked = privacyMasked
         self.displayLabel = displayLabel
         self.position = position
+        self.reasonLine = reasonLine
     }
 }
 
@@ -40,9 +45,11 @@ public struct AttentionLampBarModel: Sendable {
 
     /// 单灯 VoiceOver 文案（§7 文案表单源）：身份 + 灯态语义。
     /// 裁决卡③人话化：position+displayLabel 在位 →「灯 N，目录名，状态语义」（UUID 退役）；
-    /// 缺失 → 既有 sessionKey 语义回退（fail-closed，旧调用方/降级路径零破坏）。
+    /// 涂黑/缺失标签 →「灯 N，未命名，状态语义」（M-1：视觉/无障碍一致，isUnlabeled 单源）；
+    /// 无 position → 既有 sessionKey 语义回退（fail-closed，旧调用方/降级路径零破坏）。
     private func voiceOverText(for slot: LampSlotSummary) -> String {
-        if let position = slot.position, let label = slot.displayLabel {
+        if let position = slot.position {
+            let label = Self.isUnlabeled(slot.displayLabel) ? "未命名" : slot.displayLabel!
             return "灯 \(position)，\(label)，\(lampDescription(slot.lamp))"
         }
         return "\(slot.sessionKey)：\(lampDescription(slot.lamp))"
@@ -57,6 +64,36 @@ public struct AttentionLampBarModel: Sendable {
         case .failedRed: return "失败"
         case .unknownGray: return "状态未知"
         case .none: return "灯灭"
+        }
+    }
+
+    // MARK: - 修复批四（review 修复轮 M-1/M-5/I-2 + 老林 hover 增值裁决）
+
+    /// 未命名判定单源（M-5 合并双处重复；M-1 VO 消费）：缺失或遗留涂黑标记同判。
+    /// 消费面=VO/灯下标签/hover 三处，禁各自硬编码。
+    public static func isUnlabeled(_ label: String?) -> Bool {
+        label == nil || label == SensitivePatternScanner.redactionMarker
+    }
+
+    /// 显示编号单源（I-2：privacy 遮罩过滤后 index 重编号不得覆盖槽位 position）。
+    /// position 在位优先（与菜单图例/VO 同源）；旧式构造摘要无 position → index+1 兜底。
+    public static func displayNumber(position: Int?, fallbackIndex: Int) -> Int {
+        position ?? (fallbackIndex + 1)
+    }
+
+    /// 状态原因单源（hover 增值面，老林裁决：一眼看灯色后 hover 给「为什么」）。
+    /// activityFact 级细分——●黄两因（等待输入/权限确认）颜色不可区分，原因文字是唯一
+    /// 分辨通道。与 M1 reasonText 语义同词表（M1 面零触不迁移，双源风险 known hole）。
+    public func activityReason(activityFact: ActivityFact, connection: ConnectionState) -> String {
+        switch activityFact {
+        case .waitingUser: return "等待你输入"
+        case .waitingPermission: return "需要权限确认"
+        case .failed: return "失败"
+        case .completed: return "刚完成"
+        case .working: return "工作中"
+        case .idle: return "空闲"
+        case .waitingExternal: return "等外部"
+        case .unknown: return connection == .disconnected ? "已断开" : "未知"
         }
     }
 }
