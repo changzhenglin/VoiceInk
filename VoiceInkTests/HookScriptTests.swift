@@ -16,8 +16,10 @@ final class HookScriptTests: XCTestCase {
                 .prefix(while: { $0 != "voice-coding" }).joined(separator: "/")
             src = try String(contentsOfFile: repoRoot + "/voice-coding/VoiceInk/Resources/attention-hook-deliver.sh")
         }
-        XCTAssertTrue(src.contains("--retry 2"))
-        XCTAssertTrue(src.contains("--max-time 5"))
+        // 修复批五 B1 语义更新（旧断言 --retry 2/--max-time 5 由新预算取代）：
+        // 详细预算断言归 testDeliveryScriptExtendedBudgetAndResultLog
+        XCTAssertTrue(src.contains("--retry 3"))
+        XCTAssertTrue(src.contains("--max-time 8"))
         XCTAssertTrue(src.contains("Authorization: Bearer"))
         XCTAssertTrue(src.contains("127.0.0.1"))
         XCTAssertFalse(src.contains("https://"), "投递只走 localhost")

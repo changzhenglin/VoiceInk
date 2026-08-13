@@ -1,5 +1,6 @@
 #!/bin/bash
-# Voice Coding M1 hook 投递脚本（ADJ-3：--retry 2 --max-time 5）
+# Voice Coding M1 hook 投递脚本（ADJ-3 原 --retry 2 --max-time 5；
+# 修复批五 B1：--retry 3 --retry-delay 1 --max-time 8，总预算 ≤32s < hook 60s 超时）
 # stdin = Claude Code hook JSON；环境变量 ATTENTION_PORT/ATTENTION_TOKEN 由安装器写入 hooks command
 set -u
 # F7：python3 依赖探测——缺失则静默退出（不阻塞 Claude Code），
@@ -22,7 +23,8 @@ mkdir -p "$LOG_DIR" 2>/dev/null
 printf '%s\n' "$INPUT" | /usr/bin/python3 -c '
 import sys, json, time, os
 d = json.load(sys.stdin)
-print(json.dumps({"hook_event_name": d.get("hook_event_name",""),
+print(json.dumps({"record": "fire",
+                  "hook_event_name": d.get("hook_event_name",""),
                   "session_id": d.get("session_id",""),
                   "delivery_id": os.environ.get("DELIVERY_ID",""),
                   "ts": time.time()}, ensure_ascii=False))
@@ -59,8 +61,21 @@ for _ in range(6):
 print(json.dumps({"hook_event_name": d.get("hook_event_name",""), "payload": d}))
 ' 2>/dev/null)
 [ -z "$PAYLOAD" ] && exit 0
-curl -s --retry 2 --max-time 5 -X POST "http://127.0.0.1:${PORT}/ingest" \
+# 修复批五 B1：预算加大（服务端已入队即应答，正常一发即成；预算为拥塞尾况兜底）
+HTTP_CODE=$(curl -s --retry 3 --retry-delay 1 --max-time 8 \
+  -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${PORT}/ingest" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  -d "$PAYLOAD" >/dev/null 2>&1
+  -d "$PAYLOAD" 2>/dev/null)
+CURL_EXIT=$?
+# 修复批五 B2：投递结果回写 shadow-log（delivery_id/http_code/curl_exit，零内容面）——
+# 修复效力 ground truth：fire vs result vs DB 三方 join 精确到事件级量化残余丢失
+/usr/bin/python3 -c '
+import json, time, os, sys
+print(json.dumps({"record": "result",
+                  "delivery_id": os.environ.get("DELIVERY_ID",""),
+                  "http_code": sys.argv[1],
+                  "curl_exit": int(sys.argv[2]) if sys.argv[2].lstrip("-").isdigit() else -1,
+                  "ts": time.time()}, ensure_ascii=False))
+' "$HTTP_CODE" "$CURL_EXIT" >> "$LOG_DIR/shadow-log.jsonl" 2>/dev/null || true
 exit 0  # 投递失败不阻塞 Claude Code（丢失计数在 VoiceInk 侧）

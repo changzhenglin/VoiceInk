@@ -135,14 +135,20 @@ final class AttentionHTTPServer {
         // 原始 hook payload 先过 FieldAllowlist.sanitize，仅 privacyClass==.ok 以允许字段
         // 再编码进入既有 ingest 链；blocked/unknown/超限在门处即拒（.rejected(.privacyGate)
         // → 422）。transcript/prompt/tool input-output 真实内容不入库（red-line privacy）。
-        let result = router.ingestPrivacyGated(hookEventName: hook, payloadData: payloadData,
-                                               observedAt: Date())
-        switch result {
-        case .accepted: respond(conn, status: "200", body: #"{"status":"accepted"}"#)
-        case .duplicate: respond(conn, status: "200", body: #"{"status":"duplicate"}"#)
-        case .rejected(let code):
-            respond(conn, status: "422",
-                    body: #"{"status":"rejected","code":"\#(code.rawValue)"}"#)
+        // 修复批五（delivery-loss 根治 A 面）：sanitize 保持同步（422 语义不变），
+        // ingest 主体转串行队列后台消费——连接生命周期不再包锁等待，
+        // 5s deadline 只约束读+入队（微秒级），高并发尾事件不再静默丢。
+        guard let sanitized = try? FieldAllowlist.sanitize(source: .officialHook, data: payloadData),
+              sanitized.privacyClass == .ok,
+              let sanitizedJson = String(data: sanitized.reencodedAllowedFields(),
+                                        encoding: .utf8) else {
+            return respond(conn, status: "422",
+                           body: #"{"status":"rejected","code":"E-PRIVACY-GATE"}"#)
+        }
+        switch router.ingestAsync(hookEventName: hook, payloadJson: sanitizedJson,
+                                  observedAt: Date()) {
+        case .enqueued: respond(conn, status: "200", body: #"{"status":"queued"}"#)
+        case .queueFull: respond(conn, status: "503", body: #"{"status":"queue_full"}"#)
         }
     }
 

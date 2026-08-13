@@ -43,11 +43,80 @@ public final class AttentionEventRouter: @unchecked Sendable {
     private let lock = NSLock()
     public private(set) var claudeVersion = "2.1.220"
 
-    public init(store: AttentionEventStore) {
+    public convenience init(store: AttentionEventStore) {
+        self.init(store: store, ingestQueueCapacity: 256)
+    }
+
+    /// 修复批五（delivery-loss-diag-2026-08-13.md 根治）：容量注入 seam
+    ///（默认 256=生产背压上限；既有调用点经 convenience init 零破坏）。
+    public init(store: AttentionEventStore, ingestQueueCapacity: Int) {
+        self.ingestQueueCapacity = ingestQueueCapacity
         self.store = store
         self.generationCoordinator = GenerationCoordinator(store: store)
         // Task 8B #9a：同库附着摘要队列表（IF NOT EXISTS additive；失败降级 nil）
         self.summaryStore = try? UnseenSummaryStore(store: store)
+    }
+
+    // MARK: - 修复批五：ingest 异步入队面（delivery-loss 根治 A 面）
+
+    /// 入队结果：.enqueued=已入串行队列后台消费；.queueFull=背压（HTTP 层映射 503，
+    /// 投递脚本 curl --retry 覆盖瞬时满）。
+    public enum EnqueueResult {
+        case enqueued
+        case queueFull
+    }
+
+    /// 修复批五（delivery-loss-diag-2026-08-13.md 根治）：ingest 与请求生命周期解耦——
+    /// HTTP 层入队即应答，串行 worker 后台消费（锁等待不再占用请求 5s deadline 预算）。
+    /// 根因：高并发下请求排队等 router 单锁，队尾超预算被静默丢（shadow-log 实证
+    /// 丢 47%/PreToolUse 78%，负载成正比）。串行 FIFO 同时消除并发锁竞争乱序（A4）。
+    private let ingestQueueCapacity: Int
+    private let ingestWorker = DispatchQueue(label: "agentos.attention.ingest.worker")
+    private let queueLock = NSLock()
+    private var pendingIngests: [(hook: String, json: String, observedAt: Date)] = []
+
+    /// 异步入队（HTTP 受理面调用；observedAt=受理时刻捕获，保持原时序语义）。
+    /// 零改 reducer/状态机：worker 复用既有同步 ingest 全链（privacy 门由 HTTP 层
+    /// 同步前置保留 422 语义，本面消费已 sanitize 的 json）。
+    public func ingestAsync(hookEventName: String, payloadJson: String,
+                            observedAt: Date) -> EnqueueResult {
+        queueLock.lock()
+        guard pendingIngests.count < ingestQueueCapacity else {
+            queueLock.unlock()
+            return .queueFull
+        }
+        pendingIngests.append((hookEventName, payloadJson, observedAt))
+        queueLock.unlock()
+        ingestWorker.async { [weak self] in self?.drainOneIngest() }
+        return .enqueued
+    }
+
+    private func drainOneIngest() {
+        queueLock.lock()
+        guard !pendingIngests.isEmpty else { queueLock.unlock(); return }
+        let item = pendingIngests.removeFirst()
+        queueLock.unlock()
+        _ = ingest(hookEventName: item.hook, payloadJson: item.json, observedAt: item.observedAt)
+    }
+
+    /// 排空等待（测试确定性 seam；生产无消费方）：轮询 pending +
+    /// 串行队列 sync 栅栏确认在途 drain 完成。超时 false（fail-honest）。
+    public func waitForIngestQueueDrain(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            queueLock.lock()
+            let empty = pendingIngests.isEmpty
+            queueLock.unlock()
+            if empty {
+                _ = ingestWorker.sync { true }   // 栅栏：在途 drainOne 必然先行完成
+                queueLock.lock()
+                let stillEmpty = pendingIngests.isEmpty
+                queueLock.unlock()
+                if stillEmpty { return true }
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return false
     }
 
     /// F6+C5：app 重启后重建——快照从事件重放；items 以持久化版为准（用户操作不丢）
