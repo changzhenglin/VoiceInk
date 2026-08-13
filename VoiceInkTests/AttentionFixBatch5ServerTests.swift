@@ -122,4 +122,29 @@ final class AttentionFixBatch5ServerTests: XCTestCase {
         XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
         XCTAssertEqual(router.currentSnapshots().count, 1, "大 payload 事件应入库")
     }
+
+    /// C2-4（批五 fix round 3，review F1 守卫）：stop 后不再接受投递——
+    /// listener cancel + stopped 标志双闸；停机后事件不入库。
+    /// 诚实注记：已准入在途 handler 的竞态窗由 connLock 内「检查+入队」原子闭合，
+    /// 该窄窗时序不可单测确定性构造——本例覆盖 stop 后新连接面（确定性）。
+    func testStopRejectsNewDeliveries() throws {
+        let port: UInt16 = 47896
+        let (server, router) = try makeServer(port: port)
+        try server.start()
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let sid = "ffffffff-0000-0000-0000-000000000000"
+        let resp1 = postIngest(port: port, sessionId: sid)
+        XCTAssertTrue(resp1?.contains("200") ?? false, "stop 前应 200")
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.currentSnapshots().count, 1)
+
+        server.stop()
+        Thread.sleep(forTimeInterval: 0.3)
+        let resp2 = postIngest(port: port, sessionId: sid)
+        XCTAssertFalse(resp2?.contains("200") ?? false,
+                       "stop 后不应再 200 受投（got \(resp2 ?? "连接失败/无响应")）")
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 2))
+        XCTAssertEqual(router.currentSnapshots().count, 1, "stop 后无新事件入库")
+    }
 }

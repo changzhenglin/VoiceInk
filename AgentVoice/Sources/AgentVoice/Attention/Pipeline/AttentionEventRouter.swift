@@ -99,8 +99,12 @@ public final class AttentionEventRouter: @unchecked Sendable {
         _ = ingest(hookEventName: item.hook, payloadJson: item.json, observedAt: item.observedAt)
     }
 
-    /// 排空等待（测试确定性 seam；生产无消费方）：轮询 pending +
-    /// 串行队列 sync 栅栏确认在途 drain 完成。超时 false（fail-honest）。
+    /// 排空等待：轮询 pending + 串行队列 sync 栅栏确认在途 drain 完成，超时 false
+    ///（fail-honest）。消费方：测试确定性 seam + 生产/测试双 disable 面优雅关停
+    ///（AttentionStore.disable/disableForTesting，fix round 1 起）。
+    /// 注记（review F3）：sync 栅栏本身不受 timeout 约束——若在途 drain 正等
+    /// router 主锁（如与长 tick/replay 重叠），实际等待可超 timeout 软上限；
+    /// 已核验无死锁环（disable 调用线程不持主锁；queueLock 与主锁无嵌套环）。
     public func waitForIngestQueueDrain(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

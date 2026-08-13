@@ -1,6 +1,7 @@
 #!/bin/bash
 # Voice Coding M1 hook 投递脚本（ADJ-3 原 --retry 2 --max-time 5；
-# 修复批五 B1：--retry 3 --retry-delay 1 --max-time 8，总预算 ≤32s < hook 60s 超时）
+# 修复批五 B1：--retry 3 --retry-delay 1 --max-time 8，
+# 最坏总预算 = 首发 8s + 3 重试×8s + 3 间隔×1s = 35s < hook 60s 超时）
 # stdin = Claude Code hook JSON；环境变量 ATTENTION_PORT/ATTENTION_TOKEN 由安装器写入 hooks command
 set -u
 # F7：python3 依赖探测——缺失则静默退出（不阻塞 Claude Code），

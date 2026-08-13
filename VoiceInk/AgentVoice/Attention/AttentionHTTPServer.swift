@@ -14,12 +14,19 @@ final class AttentionHTTPServer {
     /// 修复批五 fix round 2：64KB→FieldAllowlist.maxBodyBytes（1MiB）单源对齐——
     /// PostToolUse 携 tool_response/Write 携文件全文常超 64KB 被 413 静默拒
     ///（B2 result 行实证）；privacy 门自身上限即 1MiB（禁止集字段解码边界跳过
-    /// 不 materialize），两限一致；内存上限 16 并发×1MiB 有界。
+    /// 不 materialize），两限一致。内存注记（fix round 3 F6 更正）：receive chunk
+    /// 最大 1MiB 且超限检查在 append 后——单连接缓冲水位瞬时峰值 ≈2MiB，
+    /// 最坏 16 并发 ≈32MiB（菜单栏 app 可忽略）。
     private let maxBody = FieldAllowlist.maxBodyBytes
     private let maxConcurrent = 16
     private var activeConnections = 0
     private var admittedConns: Set<ObjectIdentifier> = []  // I1：幂等递减记账
     private let connLock = NSLock()
+    /// 修复批五 fix round 3（review F1 根治）：停机标志——stop() 置位后，
+    /// process() 的「检查+入队」在同一把 connLock 内完成 → stop() 返回后
+    /// 确定性无新入队（已准入在途 handler 的 drain 竞态窗闭合），
+    /// disable 优雅排空「先断新入再排空在途」语义由或然转必然。
+    private var stopped = false
     private let requestDeadline: TimeInterval = 5   // C14：每请求 deadline
 
     init(router: AttentionEventRouter, port: UInt16 = 47821, authToken: String) {
@@ -52,7 +59,14 @@ final class AttentionHTTPServer {
         throw ServerError.bindFailed
     }
 
-    func stop() { listener?.cancel() }
+    func stop() {
+        // 修复批五 fix round 3（review F1）：先在锁内置停机标志再 cancel listener——
+        // 与 process() 的锁内「检查+入队」互斥，stop() 返回后无新入队（确定性）。
+        connLock.lock()
+        stopped = true
+        connLock.unlock()
+        listener?.cancel()
+    }
 
     /// C14：连接准入——超并发上限返 503，防慢客户端无限持有
     private func admit(_ conn: NWConnection) {
@@ -149,8 +163,17 @@ final class AttentionHTTPServer {
             return respond(conn, status: "422",
                            body: #"{"status":"rejected","code":"E-PRIVACY-GATE"}"#)
         }
-        switch router.ingestAsync(hookEventName: hook, payloadJson: sanitizedJson,
-                                  observedAt: Date()) {
+        // 修复批五 fix round 3（review F1）：停机检查与入队同锁原子——
+        // stop() 返回后此处必拒（已准入在途 handler 不再漏入队）。
+        connLock.lock()
+        if stopped {
+            connLock.unlock()
+            return close(conn)   // 停机后不受新事件；连接直接闭合（无消费方等响应）
+        }
+        let enqueueResult = router.ingestAsync(hookEventName: hook, payloadJson: sanitizedJson,
+                                               observedAt: Date())
+        connLock.unlock()
+        switch enqueueResult {
         case .enqueued: respond(conn, status: "200", body: #"{"status":"queued"}"#)
         case .queueFull: respond(conn, status: "503", body: #"{"status":"queue_full"}"#)
         }
