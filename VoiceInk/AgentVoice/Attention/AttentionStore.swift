@@ -166,6 +166,9 @@ final class AttentionStore: ObservableObject {
         productionTicker?.stop(); productionTicker = nil   // Task 8B-2：tick 驱动器幂等停止
         retentionScheduler?.stop(); retentionScheduler = nil
         server?.stop()
+        // 修复批五（异步 ingest 优雅关停）：先停 server 断新入，再排空在途队列——
+        // 关停瞬间刚到达的事件不因 teardown 丢失（生产=关开关竞态窗；测试=disable 前落盘）。
+        router?.waitForIngestQueueDrain(timeout: 2)
         HookInstaller(token: Self.sharedAuthToken()).uninstall()
         router = nil; server = nil
         // Task 14 review M4①：versionDrift 一并重置（上一轮 enable 的 drift 残留不跨开关）
@@ -237,6 +240,9 @@ final class AttentionStore: ObservableObject {
         productionTicker?.stop(); productionTicker = nil
         retentionScheduler?.stop(); retentionScheduler = nil
         server?.stop()
+        // 修复批五（异步 ingest 优雅关停）：排空在途队列再 teardown——
+        // 保证已受理事件落盘（E2E 冷启动 replay 前置依赖；生产 disable 同语义）。
+        router?.waitForIngestQueueDrain(timeout: 2)
         router = nil; server = nil
         enabled = false; sessions = []; pendingCount = 0; overflow = nil; versionDrift = false
         lastDrainedEntries = []; lastSoundCompensation = .none
