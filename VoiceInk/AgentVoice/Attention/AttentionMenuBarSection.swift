@@ -16,6 +16,11 @@ struct AttentionMenuBarSection: View {
                         AttentionDetailPanelController.shared.open(sessionId: s.id)
                     } label: {
                         HStack {
+                            // 裁决卡③（老林裁决；M1 面 additive-only 例外授权，零删改既有行）：
+                            // 灯条图例编号——与灯显示序号同源，列表行↔灯一一对应。
+                            Text(s.displayNumber.map(String.init) ?? "·")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
                             Image(systemName: symbol(for: s))      // 形状通道
                             Text(s.shortLabel)
                             Spacer()

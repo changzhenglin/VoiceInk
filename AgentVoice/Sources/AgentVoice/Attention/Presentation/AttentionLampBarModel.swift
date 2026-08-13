@@ -7,11 +7,18 @@ public struct LampSlotSummary: Equatable, Sendable {
     public let lamp: Lamp
     /// privacy-blocked 遮罩（§3 L92）：true = 标识遮罩并排除出 VoiceOver/通知/计数。
     public let privacyMasked: Bool
+    /// 14A-3 裁决卡③（老林裁决）：呈现元数据——显示标签（目录名）与显示序号。
+    /// 在位 → VO/hover 人话文案（UUID 退役）；nil = 既有 sessionKey 语义回退（fail-closed）。
+    public let displayLabel: String?
+    public let position: Int?
 
-    public init(sessionKey: String, lamp: Lamp, privacyMasked: Bool) {
+    public init(sessionKey: String, lamp: Lamp, privacyMasked: Bool,
+                displayLabel: String? = nil, position: Int? = nil) {
         self.sessionKey = sessionKey
         self.lamp = lamp
         self.privacyMasked = privacyMasked
+        self.displayLabel = displayLabel
+        self.position = position
     }
 }
 
@@ -32,8 +39,13 @@ public struct AttentionLampBarModel: Sendable {
     }
 
     /// 单灯 VoiceOver 文案（§7 文案表单源）：身份 + 灯态语义。
+    /// 裁决卡③人话化：position+displayLabel 在位 →「灯 N，目录名，状态语义」（UUID 退役）；
+    /// 缺失 → 既有 sessionKey 语义回退（fail-closed，旧调用方/降级路径零破坏）。
     private func voiceOverText(for slot: LampSlotSummary) -> String {
-        "\(slot.sessionKey)：\(lampDescription(slot.lamp))"
+        if let position = slot.position, let label = slot.displayLabel {
+            return "灯 \(position)，\(label)，\(lampDescription(slot.lamp))"
+        }
+        return "\(slot.sessionKey)：\(lampDescription(slot.lamp))"
     }
 
     /// 灯态语义描述（附录 A 五灯单源；VO/hover/通知共用同一字符串）。

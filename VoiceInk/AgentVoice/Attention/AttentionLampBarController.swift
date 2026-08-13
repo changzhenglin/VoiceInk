@@ -25,13 +25,6 @@ final class AttentionLampBarViewModel: ObservableObject {
         // bar 隐藏 = 无受管会话（spec §3；overflow 亦算存在）。
         isVisible = !projected.isEmpty
     }
-
-    /// 灯上标识单源（14A-3 裁决卡②，老林批准）：完整目录名+同名冲突后缀
-    ///（router.fullCwdLabels 经 barData.labels 供给）；缺失退化会话键前缀
-    ///（罕见：cwd 未采集）。spec「1-2 字符短标识」冻结解除。
-    func shortIdentifier(for sessionKey: String) -> String {
-        barData.labels[sessionKey] ?? String(sessionKey.prefix(8))
-    }
 }
 
 /// v4 灯条悬浮窗控制器（spec §3 悬浮灯条；behind versioned flag）。
@@ -172,9 +165,6 @@ final class AttentionLampBarController: NSObject {
     private func makeBarView() -> AttentionLampBarView {
         AttentionLampBarView(
             data: viewModel.barData,
-            shortIdentifier: { [weak self] key in
-                self?.viewModel.shortIdentifier(for: key) ?? String(key.prefix(2))
-            },
             onNavigate: { [weak self] key in
                 Task { @MainActor in self?.handleNavigate(key) }
             },

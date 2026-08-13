@@ -304,6 +304,12 @@ public final class AttentionEventRouter: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return sessionLastEventAt[sessionKey]
     }
+    /// 14A-3 裁决卡③：会话 claude 进程号只读访问器（裁决卡① pid 证据的供给面）。
+    /// 消费面=app 层 tty 反查（ps -o tty）→ iTerm2 窗口顺序锚定；nil=pid 未知档。
+    public func sessionPid(for sessionKey: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return sessionPids[sessionKey]
+    }
 
     // MARK: - 14A-3 裁决卡①：幽灵灯进程探活（老林批准）
 

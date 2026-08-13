@@ -33,11 +33,16 @@ struct AttentionLampBarProjection: Sendable {
     private let allocator = LampSlotAllocator()
 
     /// 由快照投影出 bar 数据（槽位摘要按槽位升序 + 8+N 折叠 + 等待时长）。
+    /// 裁决卡③：`order`=iTerm2 窗口序排位（rank 序，未排位尾随字典序——fail-closed
+    /// 确定性）；nil=既有字典序（降级路径零回退）。槽位摘要携带 position 呈现元数据
+    ///（显示序号=槽位序 1 起）；displayLabel 由调用方按分槽结果后置附着
+    ///（fullCwdLabels 冲突后缀语义以槽位键集为域，先分槽后取标签）。
     func project(from snapshots: [AttentionStateSnapshot],
                  hookHealth: HookHealth,
                  lastEventAt: (String) -> Date?,
                  now: Date,
-                 slotMap: inout SlotMap) -> AttentionLampBarData {
+                 slotMap: inout SlotMap,
+                 order: [String]? = nil) -> AttentionLampBarData {
         // C1（fix round 1）：先释放 closed/archived（§4 释放条件；槽位真实复用）。
         // router snapshots 字典只增不减，closed 会话须先释放——否则其槽位永久占用，
         // 活跃会话被挤出 overflow。
@@ -45,13 +50,28 @@ struct AttentionLampBarProjection: Sendable {
             _ = allocator.release(sessionKey: snap.sessionKey,
                                   lifecycle: snap.lifecycle, from: &slotMap)
         }
+        // 裁决卡③：输入序=iTerm2 排位序（order 在位）；未排位/无 order → 字典序兜底。
+        let orderedSnapshots: [AttentionStateSnapshot]
+        if let order {
+            var rankOf: [String: Int] = [:]
+            for (i, k) in order.enumerated() { rankOf[k] = i }
+            orderedSnapshots = snapshots.sorted { a, b in
+                switch (rankOf[a.sessionKey], rankOf[b.sessionKey]) {
+                case let (ra?, rb?): return ra < rb
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return a.sessionKey < b.sessionKey
+                }
+            }
+        } else {
+            orderedSnapshots = snapshots.sorted { $0.sessionKey < $1.sessionKey }
+        }
         var data = AttentionLampBarData()
         var placed: [(slot: Int, summary: LampSlotSummary)] = []
         // C1（fix round 1）：仅对受管（.managed）会话分槽。discovered 未受管（G1 NoLamp）
         // 不占槽；closed/archived 已释放不重分。避免闭会话按字典序先占满 0-7 槽、
         // 活跃会话全得 overflow → bar 永久「8 暗点 + +N」零活跃灯（违 §4/G1）。
-        for snap in snapshots.sorted(by: { $0.sessionKey < $1.sessionKey })
-        where snap.lifecycle == .managed {
+        for snap in orderedSnapshots where snap.lifecycle == .managed {
             let input = ProjectionInput(
                 lifecycle: snap.lifecycle,
                 activity: snap.activityFact,
@@ -84,7 +104,15 @@ struct AttentionLampBarProjection: Sendable {
                 }
             }
         }
-        data.slots = placed.sorted { $0.slot < $1.slot }.map(\.summary)
+        // 裁决卡③：显示序=槽位序（分槽按输入序）；携带 position 呈现元数据
+        //（VO/hover/灯下序号消费；displayLabel 由调用方后置附着）。
+        data.slots = placed.sorted { $0.slot < $1.slot }.enumerated().map { pair in
+            let s = pair.element.summary
+            return LampSlotSummary(sessionKey: s.sessionKey, lamp: s.lamp,
+                                    privacyMasked: s.privacyMasked,
+                                    displayLabel: nil,
+                                    position: pair.offset + 1)
+        }
         return data
     }
 
@@ -123,8 +151,6 @@ enum AttentionHoverWaitText {
 /// privacy 遮罩排除 VO/计数；Reduce Motion/Contrast 即时替换不闪烁（spec §3/§7）。
 struct AttentionLampBarView: View {
     let data: AttentionLampBarData
-    /// 短标识单源（§7：hover/面板/VoiceOver 同一字符串）；sessionKey → 1-2 字符。
-    let shortIdentifier: (String) -> String
     /// Return 跳转（复用 AXNavigator；§7 点灯=跳原窗口）。
     let onNavigate: (String) -> Void
     /// Escape 第二级（bar → previousFocus；FocusRestorationCoordinator 裁决归控制器）。
@@ -229,7 +255,9 @@ struct AttentionLampBarView: View {
         VStack(spacing: 2) {
             lampShape(slot.lamp)
                 .frame(width: 14, height: 14)
-            Text(shortIdentifier(slot.sessionKey))
+            // 裁决卡③：灯下「序号 目录名」（序号=显示位置；REDACTED/缺失→「N 未命名」）。
+            Text(AttentionLampLabelText.compose(position: index + 1,
+                                                label: slot.displayLabel))
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -247,20 +275,22 @@ struct AttentionLampBarView: View {
             get: { hoveredKey == slot.sessionKey },
             set: { if !$0, hoveredKey == slot.sessionKey { hoveredKey = nil } }
         )) {
-            hoverCard(for: slot)
+            hoverCard(for: slot, index: index)
         }
     }
 
-    /// hover 卡（§7 hover/键盘焦点同组件最小面）：身份+灯态语义（包内单源）+ ●黄等待时长。
-    private func hoverCard(for slot: LampSlotSummary) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(model.voiceOverItems([slot]).first ?? shortIdentifier(slot.sessionKey))
-                .font(.system(size: 11, weight: .medium))
-            if slot.lamp == .waitingYellow,
-               let elapsed = data.waitElapsed[slot.sessionKey] {
-                Text(AttentionHoverWaitText.waitingHoverLine(elapsed))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+    /// hover 卡（裁决卡③人话面）：首行「N · 目录名」/次行等待时长（仅 ●黄，
+    /// AttentionHoverWaitText 单源）/末行操作提示——AttentionHoverCardText 行序钉死。
+    private func hoverCard(for slot: LampSlotSummary, index: Int) -> some View {
+        let lines = AttentionHoverCardText.lines(
+            position: index + 1, label: slot.displayLabel,
+            lamp: slot.lamp, waitElapsed: data.waitElapsed[slot.sessionKey])
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { pair in
+                Text(pair.element)
+                    .font(.system(size: pair.offset == 0 ? 11 : 10,
+                                  weight: pair.offset == 0 ? .medium : .regular))
+                    .foregroundStyle(pair.offset == 0 ? Color.primary : Color.secondary)
             }
         }
         .padding(8)
@@ -306,9 +336,10 @@ struct AttentionLampBarView: View {
     }
 
     /// VoiceOver 标签（8A-M3 fix round 1：消费包内 AttentionLampBarModel 单源口径——
-    /// 身份+灯态语义，不分叉；model.voiceOverItems 单项）。
+    /// 裁决卡③人话化：model 携 displayLabel/position →「灯 N，目录名，状态语义」；
+    /// 缺失降级=既有 sessionKey 语义（fail-closed，包内模型自含回退）。
     private func voiceOverLabel(for slot: LampSlotSummary) -> String {
-        model.voiceOverItems([slot]).first ?? shortIdentifier(slot.sessionKey)
+        model.voiceOverItems([slot]).first ?? slot.sessionKey
     }
 }
 

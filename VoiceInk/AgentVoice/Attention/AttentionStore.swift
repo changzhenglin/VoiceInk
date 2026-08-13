@@ -13,6 +13,8 @@ struct SessionDisplay: Identifiable, Equatable {
     let attention: AttentionLevel
     let lastEventAt: Date     // C18：事件真实时间戳，不是刷新时间
     let sourceLevel: String
+    /// 裁决卡③：灯条显示序号（与灯同源的图例编号；nil=该会话无灯位/flag off）。
+    let displayNumber: Int?
 }
 
 struct OverflowInfo: Equatable {
@@ -69,6 +71,10 @@ final class AttentionStore: ObservableObject {
     /// 8A-M1（fix round 1）：上一次持久化的映射——脏标记比较，变化才写 UserDefaults。
     private var lastPersistedSlotMap = SlotMap()
     private static let lampSlotMapKey = "attentionLampSlotMap.v1"
+    /// 裁决卡③：iTerm2 窗口顺序锚定生产组合（懒建——flag off / E2E / 无 iTerm2 零开销；
+    /// tty 缓存常驻实例内，进程生命期 tty 不变）。
+    private lazy var itermOrderSource = ItermWindowOrderSource()
+    private lazy var ttyResolver = ProcessTtyResolver()
 
     init() {}
 
@@ -364,6 +370,14 @@ final class AttentionStore: ObservableObject {
         let snaps = router.currentSnapshots()
         let items = router.currentItems()
         let now = Date()
+        // 裁决卡③：菜单列表编号=灯条显示序号（同源图例，不另立排序口径）。
+        // flag off → 灯条静默，列表不编号（零额外投影开销）。
+        var lampNumber: [String: Int] = [:]
+        if UserDefaults.standard.bool(forKey: AttentionPresentationKeys.lampBarP1Enabled) {
+            for s in lampBarData().slots {
+                if let n = s.position { lampNumber[s.sessionKey] = n }
+            }
+        }
         var displays: [SessionDisplay] = []
         // M3 修复（Task 14 review 携带）：currentSnapshots() 源自语义上无序的存储迭代——
         // 投影前按 sessionKey 字典序定序，shortLabel 同名后缀分配随之确定（消除抖动）；
@@ -381,7 +395,8 @@ final class AttentionStore: ObservableObject {
                 connection: s.connection,
                 attention: s.attention,
                 lastEventAt: last ?? now,   // C18：真实时间戳（缺失退化刷新时间）
-                sourceLevel: "experimental_fragile"))
+                sourceLevel: "experimental_fragile",
+                displayNumber: lampNumber[s.sessionKey]))
         }
         // C18：显式 rank 排序（不靠 rawValue 字典序——medium<none 字典序陷阱）
         displays.sort { Self.priorityRank($0.attention) > Self.priorityRank($1.attention) }
@@ -443,13 +458,31 @@ final class AttentionStore: ObservableObject {
         for s in snaps {
             if let t = router.lastEventAt(for: s.sessionKey) { lastMap[s.sessionKey] = t }
         }
+        // 裁决卡③：iTerm2 窗口顺序锚定——session→claude pid（裁决卡①证据）→tty（ps 反查）
+        // →iTerm2 窗口/标签页序（AppleScript）。空 rank（iTerm2 不可用/无 pid/tty 未映射）
+        // → order=nil/尾随，fail-closed 退回既有字典序，永不报错。
+        let keys = snaps.map(\.sessionKey)
+        let resolver = AttentionLampOrderResolver(
+            orderSource: itermOrderSource,
+            pidOf: { router.sessionPid(for: $0) },
+            ttyOfPid: { self.ttyResolver.tty(of: $0) })
+        let ranks = resolver.ranks(sessionKeys: keys)
+        let order: [String]? = ranks.isEmpty ? nil
+            : keys.filter { ranks[$0] != nil }.sorted { ranks[$0]! < ranks[$1]! }
         let hookHealth: HookHealth = versionDrift ? .unhealthy : .healthy
         let projection = AttentionLampBarProjection()
         var data = projection.project(from: snaps, hookHealth: hookHealth,
                                       lastEventAt: { lastMap[$0] }, now: Date(),
-                                      slotMap: &lampSlotMap)
+                                      slotMap: &lampSlotMap, order: order)
         // 14A-3 裁决卡②（老林批准）：灯上完整目录名标签（router 单源确定性分配）
         data.labels = router.fullCwdLabels(sessionKeys: data.slots.map(\.sessionKey))
+        // 裁决卡③：displayLabel 后置附着（VO/hover/灯下「序号 目录名」人话面消费）
+        data.slots = data.slots.map { s in
+            LampSlotSummary(sessionKey: s.sessionKey, lamp: s.lamp,
+                            privacyMasked: s.privacyMasked,
+                            displayLabel: data.labels[s.sessionKey],
+                            position: s.position)
+        }
         persistLampSlotMapIfChanged()
         return data
     }
