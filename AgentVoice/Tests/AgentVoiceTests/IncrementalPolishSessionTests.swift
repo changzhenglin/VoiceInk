@@ -157,3 +157,85 @@ final class IncrementalPolishSessionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(counter.count, 2)   // 完成再发一次
     }
 }
+
+// Task 3：熔断与 cancel 语义 characterization（fold 定性 codex P3-2——行为已在 Task 2 落地，
+// 本批是行为钉住：先写测试、直接 PASS 即合格；未来实现被改动致失败=行为契约被破坏）
+@MainActor
+extension IncrementalPolishSessionTests {
+
+    func test_circuit_break_after_three_consecutive_failures() async {
+        let port = FakePolishPort()
+        port.failTexts = ["坏一。", "坏二。", "坏三。"]
+        let session = makeSession(port: port, maxInFlight: 1)   // 串行确保连续语义
+        session.dispatch(newSentences: ["坏一。", "坏二。", "坏三。", "无辜句。"])
+        for _ in 0..<200 { if session.snapshot().allDone { break }; await Task.yield() }
+        let snap = session.snapshot()
+        // 三连败触发熔断：第四句未派发、直接按原文（failed 态）
+        XCTAssertEqual(snap.sentences[3].state, .failed)
+        XCTAssertEqual(snap.assembledText, "坏一。坏二。坏三。无辜句。")
+        XCTAssertEqual(port.dispatchedCount, 3)   // 第四句从未派发
+    }
+
+    func test_success_resets_consecutive_failure_counter() async {
+        let port = FakePolishPort()
+        port.failTexts = ["坏一。", "坏二。"]
+        port.results["好句。"] = PolishOutcome(finalText: "好。", polished: true,
+                                               polishProviderId: "fake", concern: nil)
+        let session = makeSession(port: port, maxInFlight: 1)
+        session.dispatch(newSentences: ["坏一。", "坏二。", "好句。", "再来一句。"])
+        for _ in 0..<200 { if session.snapshot().allDone { break }; await Task.yield() }
+        // 坏一坏二连败后被好句重置：再来一句仍会派发（未熔断）
+        XCTAssertEqual(port.dispatchedCount, 4)
+    }
+
+    func test_cancel_invalidates_inflight_continuations() async {
+        let port = FakePolishPort()
+        port.hang("慢句。")
+        let session = makeSession(port: port)
+        session.dispatch(newSentences: ["慢句。"])
+        session.cancel()
+        port.results["慢句。"] = PolishOutcome(finalText: "慢。", polished: true,
+                                               polishProviderId: "fake", concern: nil)
+        port.resume("慢句。")
+        for _ in 0..<50 { await Task.yield() }
+        // cancel 后在飞续体作废：状态停留在 polishing（快照仅内部使用，UI 已随会话切换消失）
+        XCTAssertEqual(session.snapshot().sentences[0].state, .polishing)
+    }
+
+    // ── fold 新增（codex P2-2：并发交错完成不误熔断——生产并发语义，maxInFlight>1）──
+
+    func test_halt_not_triggered_while_success_still_inflight() async {
+        let port = FakePolishPort()
+        port.failTexts = ["坏一。", "坏二。"]
+        port.hang("慢成功句。")
+        port.results["慢成功句。"] = PolishOutcome(finalText: "慢成。", polished: true,
+                                                polishProviderId: "fake", concern: nil)
+        let session = makeSession(port: port, maxInFlight: 3)
+        session.dispatch(newSentences: ["坏一。", "坏二。", "慢成功句。", "无辜句。"])
+        // 两个快失败先返回（consecutiveFailures=2），慢成功仍在飞 → 不得 halt
+        for _ in 0..<100 {
+            let s = session.snapshot()
+            if case .failed = s.sentences[1].state { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(session.snapshot().sentences[3].state, .pending)   // 排队中未被转 failed
+        port.resume("慢成功句。")   // 慢成功返回 → 计数重置，链路判定为可用
+        for _ in 0..<200 { if session.snapshot().allDone { break }; await Task.yield() }
+        XCTAssertEqual(session.snapshot().sentences[2].state, .polished("慢成。"))
+        // 第四句未配 results：默认 outcome（finalText==input, polished=false）→ failed，但它是被派发过的
+        XCTAssertEqual(session.snapshot().sentences[3].state, .failed)
+        XCTAssertEqual(port.dispatchedCount, 4)   // 第四句正常派发（未熔断）
+    }
+
+    func test_halt_triggers_when_all_inflight_drained_as_failures() async {
+        let port = FakePolishPort()
+        port.failTexts = ["坏一。", "坏二。"]
+        port.hang("坏三。")
+        let session = makeSession(port: port, maxInFlight: 3)
+        session.dispatch(newSentences: ["坏一。", "坏二。", "坏三。", "无辜句。"])
+        port.resume("坏三。")   // 第三个失败返回，全部在飞耗尽 → halt 评估生效
+        for _ in 0..<200 { if session.snapshot().allDone { break }; await Task.yield() }
+        XCTAssertEqual(session.snapshot().sentences[3].state, .failed)   // 第四句未派发，按原文
+        XCTAssertEqual(port.dispatchedCount, 3)
+    }
+}

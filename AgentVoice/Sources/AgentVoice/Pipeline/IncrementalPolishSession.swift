@@ -128,8 +128,8 @@ public final class IncrementalPolishSession {
                 self.sentences[index].state = .failed
                 self.consecutiveFailures += 1
             }
-            self.pumpQueue()
-            self.evaluateHalt()   // fold（P2-2）：熔断评估与完成统计解耦，见下
+            self.evaluateHalt()   // fold（P2-2）：halt 仅在无在飞时生效；先于 pump 评估——阈值时刻不偷派新句
+            if self.inFlight == 0 { self.pumpQueue() }   // plan 冻结测试语义：整批空闲后波浪式补位（在飞未耗尽不提升排队句）
             self.notify()
         }
     }
