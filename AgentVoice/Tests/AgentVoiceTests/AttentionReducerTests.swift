@@ -73,10 +73,13 @@ final class AttentionReducerTests: XCTestCase {
     }
 
     func testToolInFlightDoesNotProduceAttentionFact() {
-        // I5（spec §6 L160）：tool_in_flight lease overlay 不产注意力事实（归约层）
+        // I5（spec §6 L160）原语义：tool_in_flight 不产 waiting 注意力事实。
+        // 修复批四问题 3 语义取代（老林「务必弄对」裁决）：tool 活动=会话不在等待，
+        // 解除转移 waiting/completed/idle/unknown → working（不产 intervention 面语义保留）。
+        // 本例从 unknown 起步：tool 执行中 → working（原断言停留 unknown 已取代）。
         let s = reducer.reduce(events: [ev(.toolInFlight)],
                                state: AttentionStateSnapshot(sessionKey: "k"))
-        XCTAssertEqual(s.activityFact, .unknown)
-        XCTAssertEqual(s.attention, .none)
+        XCTAssertEqual(s.activityFact, .working)
+        XCTAssertEqual(s.attention, AttentionLevel.none)
     }
 }
