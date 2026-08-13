@@ -77,4 +77,49 @@ final class AttentionFixBatch5ServerTests: XCTestCase {
         let resp = postIngest(port: port, sessionId: "dddddddd-0000-0000-0000-000000000000")
         XCTAssertTrue(resp?.contains("503") ?? false, "队列满应 503，got \(resp ?? "nil")")
     }
+
+    /// C2-3（批五 fix round 2）：大 payload 不再 413——PostToolUse 携 tool_response/
+    /// Write 携文件全文常超旧 64KB 上限被静默拒（B2 result 行实证 413 存在）；
+    /// maxBody 对齐 FieldAllowlist.maxBodyBytes=1MiB（privacy 门自身上限，两限一致）。
+    func testLargePayloadAcceptedWithinPrivacyLimit() throws {
+        let port: UInt16 = 47895
+        let (server, router) = try makeServer(port: port)
+        try server.start()
+        defer { server.stop() }
+        Thread.sleep(forTimeInterval: 0.3)
+
+        // 100KB 填充模拟大 tool_response（>旧 64KB 上限，<1MiB privacy 门限；
+        // tool_response 属禁止集=解码边界跳过不 materialize，privacy 门放行事件本体）
+        let padding = String(repeating: "x", count: 100 * 1024)
+        let sid = "eeeeeeee-0000-0000-0000-000000000000"
+        let body = #"{"hook_event_name":"PostToolUse","payload":{"session_id":"\#(sid)","tool_response":"\#(padding)"}}"#
+        let req = "POST /ingest HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                  "Authorization: Bearer test-token\r\n" +
+                  "Content-Type: application/json\r\n" +
+                  "Content-Length: \(body.utf8.count)\r\n\r\n" + body
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return XCTFail("socket") }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port.bigEndian)
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let ok = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard ok == 0 else { return XCTFail("connect") }
+        let bytes = Array(req.utf8)
+        _ = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
+        var tv = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var buf = [UInt8](repeating: 0, count: 1024)
+        let n = read(fd, &buf, buf.count)
+        let resp = n > 0 ? String(bytes: buf[0..<n], encoding: .utf8) : nil
+        XCTAssertTrue(resp?.contains("200") ?? false,
+                      "100KB payload 应 200 入队（旧 64KB 上限会 413），got \(resp ?? "nil")")
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.currentSnapshots().count, 1, "大 payload 事件应入库")
+    }
 }

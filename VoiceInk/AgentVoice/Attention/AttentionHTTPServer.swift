@@ -11,7 +11,11 @@ final class AttentionHTTPServer {
     private let authToken: String     // C2：由 AttentionStore 注入的全局唯一 token
     private var listener: NWListener?
     private(set) var authRejectCount = 0
-    private let maxBody = 65536
+    /// 修复批五 fix round 2：64KB→FieldAllowlist.maxBodyBytes（1MiB）单源对齐——
+    /// PostToolUse 携 tool_response/Write 携文件全文常超 64KB 被 413 静默拒
+    ///（B2 result 行实证）；privacy 门自身上限即 1MiB（禁止集字段解码边界跳过
+    /// 不 materialize），两限一致；内存上限 16 并发×1MiB 有界。
+    private let maxBody = FieldAllowlist.maxBodyBytes
     private let maxConcurrent = 16
     private var activeConnections = 0
     private var admittedConns: Set<ObjectIdentifier> = []  // I1：幂等递减记账
