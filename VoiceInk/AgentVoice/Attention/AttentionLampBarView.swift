@@ -264,6 +264,11 @@ struct AttentionLampBarView: View {
         // 修复批四（老林实证缺陷②）：点击跳转用 Button（plain）而非 onTapGesture——
         // isMovableByWindowBackground 面板内 Button 是真实控件，鼠标事件可靠送达
         //（SwiftUI 手势在可拖动面板内有被拖拽判定吞掉的失效面）。
+        // 修复批六后续（老林实证「基本点不中」）根因三叠加：
+        // ①◌绿空心环/✓钩/?问号透明像素多，.plain 按钮命中只认不透明内容 →
+        //   点圆心落空 → 面板 isMovableByWindowBackground 转拖拽，点击不成立；
+        // ②14×14 灯标命中区过小；③修复=contentShape 整格可点+padding 扩命中格
+        //   （视觉零变化；hover 卡 popover 显示在灯条下方不遮灯面，保留观察）。
         Button {
             onNavigate(slot.sessionKey)
         } label: {
@@ -281,7 +286,8 @@ struct AttentionLampBarView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .padding(2)
+            .padding(4)
+            .contentShape(Rectangle())   // 整格命中（含透明像素）——根因①对策
         }
         .buttonStyle(.plain)
         .background(focusedIndex == index
