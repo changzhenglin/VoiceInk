@@ -156,7 +156,7 @@ enum AttentionHoverWaitText {
 }
 
 /// v4 注意力悬浮灯条视图（裁决 A app 层；穷举 UI/AX/E2E 验收归 Task 14A gate）。
-/// 五灯颜色+形状双通道 + 灯下短标识单源 + 8+N 折叠 + hover 卡 + 键盘最小路径；
+/// 五灯颜色+形状双通道 + 灯下短标识单源 + 8+N 折叠 + 系统气泡提示 + 键盘最小路径；
 /// privacy 遮罩排除 VO/计数；Reduce Motion/Contrast 即时替换不闪烁（spec §3/§7）。
 struct AttentionLampBarView: View {
     let data: AttentionLampBarData
@@ -169,8 +169,6 @@ struct AttentionLampBarView: View {
 
     /// 键盘焦点槽位序（nil = bar 级，未聚焦具体灯）。
     @State private var focusedIndex: Int?
-    /// hover 槽位 sessionKey（hover 卡驱动）。
-    @State private var hoveredKey: String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -199,6 +197,12 @@ struct AttentionLampBarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(barBackground)
+        // 交互层重做（老林 2026-08-14 裁 A 案）：拖动区光标反馈——bar 整体悬停
+        // 显示抓取手（isMovableByWindowBackground 空白处可拖）；灯格子悬停由
+        // lampGlyph 层叠指点手（子层后 push 覆盖父层）。push/pop 严格成对。
+        .onHover { hovering in
+            if hovering { NSCursor.openHand.push() } else { NSCursor.pop() }
+        }
         // 容器 AX 元素顺序（14A-2b 修）：先 .contain 建容器，再挂容器级 identifier
         //（原序 identifier 在内层 → 泄漏到子 Text，容器本身无 identifier）。
         .accessibilityElement(children: .contain)
@@ -268,7 +272,7 @@ struct AttentionLampBarView: View {
         // ①◌绿空心环/✓钩/?问号透明像素多，.plain 按钮命中只认不透明内容 →
         //   点圆心落空 → 面板 isMovableByWindowBackground 转拖拽，点击不成立；
         // ②14×14 灯标命中区过小；③修复=contentShape 整格可点+padding 扩命中格
-        //   （视觉零变化；hover 卡 popover 显示在灯条下方不遮灯面，保留观察）。
+        //   （视觉零变化）。交互层重做（老林裁 A 案）再除 hover popover 干扰源。
         Button {
             onNavigate(slot.sessionKey)
         } label: {
@@ -293,43 +297,17 @@ struct AttentionLampBarView: View {
         .background(focusedIndex == index
                     ? Color.accentColor.opacity(0.25) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
-        // hover 卡最小面（I2 fix round 1）：消费 AttentionHoverWaitText 单源，勿另造文案。
-        .onHover { hovering in
-            hoveredKey = hovering ? slot.sessionKey
-                : (hoveredKey == slot.sessionKey ? nil : hoveredKey)
-        }
-        .popover(isPresented: Binding(
-            get: { hoveredKey == slot.sessionKey },
-            set: { if !$0, hoveredKey == slot.sessionKey { hoveredKey = nil } }
-        )) {
-            hoverCard(for: slot, index: index)
-        }
-    }
-
-    /// hover 卡（修复批四，老林裁决）：一眼看不见的信息——身份线移除（编号/目录名灯下
-    /// 已有，重复零价值）；首行状态原因（●黄两因分辨唯一通道）/次行等待时长（仅 ●黄）/
-    /// 末行动作提示。reasonLine 缺失（旧式构造摘要）→「状态未知」兜底（fail-closed）。
-    /// 修复批四缺陷②补强：hover 卡整体可点击跳转（老林点「点击跳到该窗口」文案区
-    /// 无响应实证——popover 内容层原无手势面）。
-    private func hoverCard(for slot: LampSlotSummary, index: Int) -> some View {
-        let lines = AttentionHoverCardText.lines(
+        // 交互层重做（老林 2026-08-14 裁 A 案）：hover popover 退役——独立小窗口
+        // 弹出/收起搅动事件路由系点击失败主嫌；改系统气泡（.help）：延迟出现、
+        // 纯提示面零事件参与，原因行信息经 AttentionHoverCardText 单源保留。
+        .help(AttentionHoverCardText.lines(
             reason: slot.reasonLine ?? "状态未知",
             lamp: slot.lamp, waitElapsed: data.waitElapsed[slot.sessionKey])
-        return Button {
-            hoveredKey = nil
-            onNavigate(slot.sessionKey)
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { pair in
-                    Text(pair.element)
-                        .font(.system(size: pair.offset == 0 ? 11 : 10,
-                                      weight: pair.offset == 0 ? .medium : .regular))
-                        .foregroundStyle(pair.offset == 0 ? Color.primary : Color.secondary)
-                }
-            }
-            .padding(8)
+            .joined(separator: "\n"))
+        // 光标反馈：灯格子=指点手（可点击）；与 bar 级抓取手 push/pop 层叠。
+        .onHover { hovering in
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
-        .buttonStyle(.plain)
     }
 
     /// 8+N 折叠灯（聚合色=overflow 最高优先灯态；穷举 +N 形状归 14A）。
