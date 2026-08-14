@@ -236,15 +236,17 @@ struct VoiceInkApp: App {
                 // 润色 gate 工厂（50 字规则 + 全局/场景开关，spec §3.3）
                 // C9-1 裁决：内层闭包每次调用时读 UserDefaults（开关变更下次润色生效，
                 // 比 plan Step 5 sketch 的工厂层快照读更新鲜一档）
-                // F10 fold：组合逻辑调用 router.shouldPolish(text:globalEnabled:disabledScenes:sceneType:)
-                // （SceneRouterTests 覆盖的被测方法为单一源），不复制 50 字判断
+                // F10 fold：组合逻辑调用 router.shouldPolish(text:globalEnabled:disabledScenes:sceneType:incrementalEnabled:)
+                // （SceneRouterTests 覆盖的被测方法为单一源），不复制长度/非空判断
                 let gateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool = { sceneType in
                     { text in
                         let defaults = UserDefaults.standard
                         let globalEnabled = defaults.object(forKey: "agentVoicePolishEnabled") as? Bool ?? true
                         let disabled = Set(defaults.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? [])
+                        let incremental = defaults.object(forKey: "agentVoiceIncrementalPolishEnabled") as? Bool ?? true
                         return router.shouldPolish(text: text, globalEnabled: globalEnabled,
-                                                   disabledScenes: disabled, sceneType: sceneType)
+                                                   disabledScenes: disabled, sceneType: sceneType,
+                                                   incrementalEnabled: incremental)
                     }
                 }
 
@@ -252,7 +254,8 @@ struct VoiceInkApp: App {
                     router: router,
                     knowledge: knowledgeStore,
                     polish: polishAdapter,
-                    shouldPolishGate: { router.shouldPolish(text: $0) })   // C9-7 ②：纯 50 字规则（L2208 退化形）；全局/场景开关归控制器 polishGateFactory 消费
+                    shouldPolishGate: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                    // V1.1：pipeline 侧 gate 退化为非空规则；50 字规则归 gateFactory 按增量开关裁决（Task 4）
 
                 // 本地三级链素材：Apple Speech（macOS 26+）→ Whisper（spec §3.5.3）
                 let whisperASR = WhisperASR(transcriber: whisperTranscriber)
