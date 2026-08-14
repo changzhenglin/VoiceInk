@@ -99,6 +99,18 @@ public enum VoiceInputTransition {
     }
 }
 
+/// V1.1 持久化快照（Codable 版本化——格式演进走 v 字段，损坏/旧版有回退合同；fold P2-6）
+struct PolishedPartsSnapshot: Codable {
+    struct Entry: Codable {
+        let i: Int
+        let raw: String
+        let state: String        // pending/polishing/polished/failed
+        let pol: String?         // 仅 polished 有值
+    }
+    let v: Int                   // 当前恒 1
+    let sentences: [Entry]
+}
+
 /// 会话控制器注入口（全部依赖走 seam，app 层注入真实实现）
 public struct SessionControllerPorts {
     /// 流式 ASR 构造（云模式；返回 nil = 无云端可用）。
@@ -290,7 +302,7 @@ public final class VoiceInputSessionController {
         currentScene = scene
 
         // 云流式启动（D2：选中云 ASR 才流式；工厂每会话新建实例——Task 2 裁决）
-        guard let streamingASR = ports.makeStreamingASR() else {
+        guard var streamingASR = ports.makeStreamingASR() else {
             _ = transition(.streamingUnavailable)
             beginLocalRecord()   // F4-round2（codex re-review P1-4a）：纯本地模式也建恢复记录
             return
@@ -318,6 +330,15 @@ public final class VoiceInputSessionController {
         streamingSession = session
         liveSessionId = store.sessionId
         streamingProviderId = streamingASR.providerId
+        // V1.1 Task 8：lost 推送缝隙——session.start() 已占用 onSessionLost 槽位（markFailed），
+        // 此处包装保留原链条并推送 streamingLost 立即生效：增量快照清理（spec §5 条款 3）
+        // 不能等帧驱动检测的帧间隔延迟。回调可能来自任意线程 → Task hop 回 MainActor。
+        // 与帧驱动路径并存不冲突（streamingLost 相位守卫幂等）。
+        let baseLost = streamingASR.onSessionLost
+        streamingASR.onSessionLost = { [weak self] in
+            baseLost?()
+            Task { @MainActor [weak self] in self?.streamingLost() }
+        }
         // V1.1 Task 6：streamingSession 挂载成功后创建增量会话——工厂返回 nil 即增量关
         //（含开关关/场景禁用，fold I3/P1-5：准入判断在组合根，控制器零键名、零 UserDefaults）。
         // 先于 observePartials 接线，保证首个 partial 到达时增量会话已就位。
@@ -367,10 +388,14 @@ public final class VoiceInputSessionController {
 
     /// 增量会话句状态更新入口（onUpdate 回调；token 守卫防过期会话事件）。
     /// Task 7：显示快照发布 + 渐进预览接线（预览域）。
+    /// Task 8：版本化逐句快照持久化（fold P1-4/P2-6）。
     @MainActor
     private func handleIncrementalUpdate(_ snap: IncrementalSnapshot, token: SessionToken) {
         guard currentToken == token else { return }
         publishDisplaySnapshot()   // fold（P2-7）：句状态变化即发布录音面板显示流
+        // V1.1 Task 8（fold P1-4/P2-6）：句状态变化即全量重写版本化逐句快照——
+        // 含未润色句（恢复需要句界与顺序）；条目数=句数，量级小，原子。
+        persistPolishedParts(snap)
         // 渐进预览：仅 previewing 相且本会话预览在位时更新
         guard phase == .previewing, let session = preview,
               session.kind == .polished else { return }
@@ -379,6 +404,30 @@ public final class VoiceInputSessionController {
         // fold（codex P3-1）：元数据保留渐进更新——kind/sourceSummary/traceId/sceneType 不重建丢失
         preview = session.withPolishedText(newAssembly, userReverted: previewUserReverted)
         onPreviewChanged?(preview)
+    }
+
+    /// V1.1 Task 8：全量重写逐句快照到 streaming_sessions（liveSessionId 守卫——
+    /// 会话已结算/未挂载不落盘）。失败不阻塞主流程：warning 日志只含错误描述，
+    /// 不含句文本（隐私面，fold P2-6）。
+    private func persistPolishedParts(_ snap: IncrementalSnapshot) {
+        guard let sid = liveSessionId else { return }
+        let entries = snap.sentences.map { s -> PolishedPartsSnapshot.Entry in
+            if case .polished(let pol) = s.state {
+                return .init(i: s.index, raw: s.originalText, state: "polished", pol: pol)
+            }
+            // 三值映射（brief 逐字）：polished/polishing/failed——.pending 归 failed（未润色同族）
+            return .init(i: s.index, raw: s.originalText,
+                         state: String(describing: s.state).hasPrefix("polishing") ? "polishing" : "failed",
+                         pol: nil)
+        }
+        do {
+            let data = try JSONEncoder().encode(PolishedPartsSnapshot(v: 1, sentences: entries))
+            try StreamingSessionStore(engine: ports.storageEngine, sessionId: sid)
+                .updatePolishedParts(String(data: data, encoding: .utf8) ?? "")
+        } catch {
+            logger.warning("增量快照持久化失败（不阻塞）：\(error.localizedDescription)")
+            // 日志只含错误描述，不含句文本（隐私面）
+        }
     }
 
     /// 发布录音面板显示快照（fold codex P2-7：UI 消费结构化显示快照，永不自行拆分全文）。
@@ -417,7 +466,13 @@ public final class VoiceInputSessionController {
     public func streamingLost() {
         guard phase == .recordingStreaming else { return }
         incrementalClose()   // fold：断网丢弃增量结果（spec §5 条款 3）——cancel+清引用；
-        // 增量持久化清理与测试见 Task 8/12（晚到请求降级后返回：UI/预览/DB 均不变）
+        // 晚到请求降级后返回：UI/预览不变（generation 失效在飞续体）
+        // V1.1 Task 8（fold P1-3/P2-6）：增量丢弃 = 清空逐句快照——记录行保留，
+        // completed_text 仍由后续本地链写回（V1 语义不变）；DB 侧随增量一起作废
+        if let sid = liveSessionId {
+            try? StreamingSessionStore(engine: ports.storageEngine, sessionId: sid)
+                .updatePolishedParts("")
+        }
         onDisplayUpdate?(nil)   // 会话收尾发布 nil（流式丢失后无增量会话）
         _ = transition(.streamingUnavailable)
         // streamingSession 保留供 finish 收尾；后续帧不再 feed（phase guard）
@@ -890,18 +945,71 @@ public final class VoiceInputSessionController {
         _ = transition(.recoveryQueueDrained)
     }
 
-    /// 呈现恢复队列首条（kind=.recoveredDraft + sourceSummary=时间+场景）
+    /// 呈现恢复队列首条（kind=.recoveredDraft + sourceSummary=时间+场景）。
+    /// V1.1 Task 8（fold I1=B，spec §4.2）：含增量快照时逐句组装 + 逐句显示段
+    /// （未润色句由呈现层加「未润色」标记）；快照空/损坏/校验失败 → 既有全文原文路径
+    /// （无逐句段，V1 纯转写恢复逐字不变）。
     private func presentRecoveryHead() {
         guard let record = recoveryQueue.first else { return }
-        let session = PreviewSession(traceId: "recovery-\(UUID().uuidString)",
+        let session: PreviewSession
+        if let assembly = Self.assembleRecoveredSnapshot(record) {
+            session = PreviewSession(traceId: "recovery-\(UUID().uuidString)",
+                                     originalText: record.recoverableText,
+                                     polishedText: assembly.polishedText,
+                                     sceneType: record.sceneType,
+                                     kind: .recoveredDraft,
+                                     sourceSummary: Self.sourceSummary(for: record) + " · 含增量润色",
+                                     recoveredSegments: assembly.segments)
+        } else {
+            session = PreviewSession(traceId: "recovery-\(UUID().uuidString)",
                                      originalText: record.recoverableText,
                                      polishedText: record.recoverableText,
                                      sceneType: record.sceneType,
                                      kind: .recoveredDraft,
                                      sourceSummary: Self.sourceSummary(for: record))
+        }
         preview = session
         pendingOutcome = nil
         onPreviewChanged?(session)
+    }
+
+    /// V1.1 Task 8（fold P2-6）：解析版本化逐句快照并组装恢复预览。
+    /// 安全回退合同：非法 JSON/缺字段/未知版本/空句表/序号校验失败（连续/顺序/
+    /// 无重复/无越界，entry.i 必须等于其位置下标）/polished 缺 pol/组装结果
+    /// 与全文原文相同（全句未润色成功）→ 返回 nil，调用方走既有全文原文路径，
+    /// 不抛错不崩。
+    private static func assembleRecoveredSnapshot(
+        _ record: StreamingSessionRecord
+    ) -> (polishedText: String, segments: [RecoveredSentenceSegment])? {
+        guard !record.polishedParts.isEmpty,
+              let data = record.polishedParts.data(using: .utf8),
+              let snapshot = try? JSONDecoder().decode(PolishedPartsSnapshot.self, from: data),
+              snapshot.v == 1, !snapshot.sentences.isEmpty else { return nil }
+        // 严格序号校验：entry.i == 位置下标（0 起连续）——单条件同时钉住顺序/重复/越界/连续
+        for (offset, entry) in snapshot.sentences.enumerated() where entry.i != offset {
+            return nil
+        }
+        var assembled = ""
+        var segments: [RecoveredSentenceSegment] = []
+        for entry in snapshot.sentences {
+            // polished 必须携带 pol，否则视为损坏（上方已校验序号，此处回退整段）
+            guard entry.state != "polished" || entry.pol != nil else { return nil }
+            let isPolished = entry.state == "polished"
+            let text = isPolished ? (entry.pol ?? "") : entry.raw
+            assembled += text
+            segments.append(RecoveredSentenceSegment(id: entry.i, text: text,
+                                                     isPolished: isPolished))
+        }
+        // pending 尾句（录音中进行中文本，不在快照句表）→ 原文段
+        if !record.pendingText.isEmpty {
+            segments.append(RecoveredSentenceSegment(id: snapshot.sentences.count,
+                                                     text: record.pendingText,
+                                                     isPolished: false))
+        }
+        let polishedText = assembled + record.pendingText
+        // 全句未润色成功（组装 == 全文原文，无增量收益）→ 既有路径（无逐句段，brief 合同）
+        guard polishedText != record.recoverableText else { return nil }
+        return (polishedText, segments)
     }
 
     private static func sourceSummary(for record: StreamingSessionRecord) -> String {

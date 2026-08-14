@@ -11,6 +11,19 @@ public enum PreviewKind: String, Sendable {
     case recoverableError
 }
 
+/// V1.1 fold（spec §4.2）：恢复面板逐句显示段（仅 kind=.recoveredDraft 且含增量快照时非 nil）
+public struct RecoveredSentenceSegment: Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let text: String        // polished=润色文本；未润色=原文
+    public let isPolished: Bool    // false → 呈现层加「未润色」标记
+
+    public init(id: Int, text: String, isPolished: Bool) {
+        self.id = id
+        self.text = text
+        self.isPolished = isPolished
+    }
+}
+
 /// 预览会话（V1 spec §3.2：松手→润色→面板展示+一键回退→确认输出）
 public struct PreviewSession: Sendable, Equatable, Identifiable {
     /// = traceId（全链路追踪一致性）
@@ -25,10 +38,13 @@ public struct PreviewSession: Sendable, Equatable, Identifiable {
     public let kind: PreviewKind
     /// 来源描述（恢复条目 = 时间+场景；普通润色预览 = nil）
     public let sourceSummary: String?
+    /// V1.1 Task 8（fold I1=B）：恢复逐句显示段；默认 nil 保既有构造点零变化
+    public let recoveredSegments: [RecoveredSentenceSegment]?
 
     public init(traceId: String, originalText: String,
                 polishedText: String, sceneType: String,
-                kind: PreviewKind = .polished, sourceSummary: String? = nil) {
+                kind: PreviewKind = .polished, sourceSummary: String? = nil,
+                recoveredSegments: [RecoveredSentenceSegment]? = nil) {
         self.traceId = traceId
         self.originalText = originalText
         self.polishedText = polishedText
@@ -36,6 +52,7 @@ public struct PreviewSession: Sendable, Equatable, Identifiable {
         self.selectedText = polishedText
         self.kind = kind
         self.sourceSummary = sourceSummary
+        self.recoveredSegments = recoveredSegments
     }
 
     /// 一键回退原文（spec §3.5 验收 #4）
@@ -48,11 +65,12 @@ public struct PreviewSession: Sendable, Equatable, Identifiable {
         selectedText = polishedText
     }
 
-    /// V1.1 fold：渐进更新保留元数据（避免重建丢 kind/sourceSummary——codex P3）
+    /// V1.1 fold：渐进更新保留元数据（避免重建丢 kind/sourceSummary/recoveredSegments——codex P3）
     public func withPolishedText(_ newText: String, userReverted: Bool) -> PreviewSession {
         var copy = PreviewSession(traceId: traceId, originalText: originalText,
                                   polishedText: newText, sceneType: sceneType,
-                                  kind: kind, sourceSummary: sourceSummary)
+                                  kind: kind, sourceSummary: sourceSummary,
+                                  recoveredSegments: recoveredSegments)
         copy.selectedText = userReverted ? originalText : newText
         return copy
     }
@@ -61,7 +79,8 @@ public struct PreviewSession: Sendable, Equatable, Identifiable {
     public func withOriginalText(_ newText: String, userReverted: Bool) -> PreviewSession {
         var copy = PreviewSession(traceId: traceId, originalText: newText,
                                   polishedText: polishedText, sceneType: sceneType,
-                                  kind: kind, sourceSummary: sourceSummary)
+                                  kind: kind, sourceSummary: sourceSummary,
+                                  recoveredSegments: recoveredSegments)
         copy.selectedText = userReverted ? newText : polishedText
         return copy
     }

@@ -9,6 +9,9 @@ public struct StreamingSessionRecord: Sendable, Equatable {
     public let completedText: String
     public let pendingText: String
     public let state: String
+    /// V1.1 Task 8（migration v3）：完整版本化逐句快照 JSON（空串=无快照）；
+    /// 格式合同见 VoiceInputSessionController.PolishedPartsSnapshot
+    public let polishedParts: String
 
     /// 可恢复文本 = 已定稿 + 进行中
     public var recoverableText: String { completedText + pendingText }
@@ -51,6 +54,17 @@ public final class StreamingSessionStore: Sendable {
         }
     }
 
+    /// V1.1（fold P1-4/P2-6）：完整版本化逐句快照持久化。
+    /// 格式：{"v":1,"sentences":[{"i":句序,"raw":逐字原文,"state":"pending|polishing|polished|failed","pol":润色文本(仅 polished)}]}
+    /// ——含未润色句（恢复需要句界与顺序）；句状态变化时全量重写（条目数=句数，量级小，原子）
+    public func updatePolishedParts(_ json: String) throws {
+        try engine.writer.write { db in
+            try db.execute(
+                sql: "UPDATE streaming_sessions SET polished_parts = ? WHERE session_id = ?",
+                arguments: [json, sessionId])
+        }
+    }
+
     /// 结算 = 删除记录（注入成功或用户丢弃时调用；V1 不留 streaming 历史）
     public func settle() throws {
         try engine.writer.write { db in
@@ -66,7 +80,8 @@ public final class StreamingSessionStore: Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT session_id, started_at, scene_type, completed_text, pending_text, state
+                    SELECT session_id, started_at, scene_type, completed_text, pending_text,
+                           state, polished_parts
                     FROM streaming_sessions
                     WHERE state = 'active'
                     ORDER BY started_at ASC
@@ -78,7 +93,8 @@ public final class StreamingSessionStore: Sendable {
                     sceneType: row["scene_type"],
                     completedText: row["completed_text"],
                     pendingText: row["pending_text"],
-                    state: row["state"])
+                    state: row["state"],
+                    polishedParts: row["polished_parts"])
             }
         }
     }
