@@ -78,35 +78,32 @@ final class AttentionFixBatch3OrderTests: XCTestCase {
 
     func testProjectionHonorsExplicitOrder() {
         let p = AttentionLampBarProjection()
-        var slotMap = SlotMap()
         // sessionKey 字典序 a<b<c；显式 order c→a→b → 显示序必须 c,a,b
         let data = p.project(from: [snapshot("a"), snapshot("b"), snapshot("c")],
                              hookHealth: .healthy, lastEventAt: { _ in nil },
                              now: Date(timeIntervalSince1970: 1_750_000_000),
-                             slotMap: &slotMap, order: ["c", "a", "b"])
+                             order: ["c", "a", "b"])
         XCTAssertEqual(data.slots.map(\.sessionKey), ["c", "a", "b"],
                        "裁决卡③：显示序=iTerm2 序，非字典序")
     }
 
     func testProjectionNilOrderKeepsLegacySort() {
         let p = AttentionLampBarProjection()
-        var slotMap = SlotMap()
         let data = p.project(from: [snapshot("c"), snapshot("a"), snapshot("b")],
                              hookHealth: .healthy, lastEventAt: { _ in nil },
                              now: Date(timeIntervalSince1970: 1_750_000_000),
-                             slotMap: &slotMap, order: nil)
+                             order: nil)
         XCTAssertEqual(data.slots.map(\.sessionKey), ["a", "b", "c"],
                        "order=nil（降级路径）→ 既有字典序零回退")
     }
 
     func testProjectionOrderTailDeterministic() {
         let p = AttentionLampBarProjection()
-        var slotMap = SlotMap()
         // order 只含 b；a/c 未排位 → 尾随且字典序确定
         let data = p.project(from: [snapshot("c"), snapshot("a"), snapshot("b")],
                              hookHealth: .healthy, lastEventAt: { _ in nil },
                              now: Date(timeIntervalSince1970: 1_750_000_000),
-                             slotMap: &slotMap, order: ["b"])
+                             order: ["b"])
         XCTAssertEqual(data.slots.map(\.sessionKey), ["b", "a", "c"],
                        "排位序优先，未排位尾随字典序（fail-closed 确定性）")
     }

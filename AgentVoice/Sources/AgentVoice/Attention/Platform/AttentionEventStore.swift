@@ -107,6 +107,18 @@ public final class AttentionEventStore: @unchecked Sendable {
                 CREATE INDEX IF NOT EXISTS idx_attention_events_session_observed
                 ON attention_events(adapter_type, native_session_id, observed_at)
                 """)
+            // 修复批六（缺陷⑦根治，老林 2026-08-14 裁 A 案批准 privacy posture
+            // 变更）：session→claude 进程号映射持久层。此前 pid 证据仅运行时内存
+            //（ephemeral），app 重启全忘 → 全部会话落「pid 未知档」4h 归档，
+            // 活着闲置窗口被误归档丢灯。落盘后冷启动 replay 播种，归档三要素
+            //「pid 已知档」立即生效。privacy：仅数字元数据列，零内容列
+            //（矩阵 attention_process_pid persist sink 授权在案）。
+            // additive schema：既有库重放 init 幂等 migrate（IF NOT EXISTS）。
+            try db.create(table: "session_pid_map", ifNotExists: true) { t in
+                t.column("session_key", .text).primaryKey()
+                t.column("pid", .integer).notNull()
+                t.column("updated_at", .datetime).notNull()
+            }
         }
     }
 
@@ -294,6 +306,45 @@ public final class AttentionEventStore: @unchecked Sendable {
 
     /// 测试辅助：关闭库（验证非约束错误的 fail-closed 路径）
     public func closeForTesting() { try? dbQueue.close() }
+}
+
+// MARK: - 修复批六：session→pid 映射持久层（缺陷⑦根治，老林 2026-08-14 裁 A 案）
+
+extension AttentionEventStore {
+    /// 记录会话的 claude 进程号（upsert 覆盖；同会话进程重启/窗口重开取新值）。
+    /// 写失败静默降级（运行时 sessionPids 映射为权威，落盘面仅冷启动播种用；
+    /// 降级=回退批六前语义，不 fail 投递主路径）。privacy：仅数字元数据
+    ///（矩阵 attention_process_pid persist sink 授权在案），零内容列。
+    public func recordSessionPid(sessionKey: String, pid: Int, at: Date) {
+        try? dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO session_pid_map (session_key, pid, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_key) DO UPDATE SET
+                    pid = excluded.pid, updated_at = excluded.updated_at
+                """, arguments: [sessionKey, pid, at])
+        }
+    }
+
+    /// 冷启动播种读取：全量 session→pid 映射。C17 同式：读路径禁 try!，
+    /// 磁盘/损坏/关闭态降级空集（=批六前运行时语义，不阻塞启动）。
+    /// 行提取走可选下标惯用法（loadPersistedItems 同式；NULL/损坏行跳过）。
+    public func loadSessionPids() -> [String: Int] {
+        do {
+            let rows = try dbQueue.read { db in
+                try Row.fetchAll(db, sql: "SELECT session_key, pid FROM session_pid_map")
+            }
+            var out: [String: Int] = [:]
+            for row in rows {
+                guard let key: String = row["session_key"],
+                      let pid: Int = row["pid"], pid > 0 else { continue }
+                out[key] = pid
+            }
+            return out
+        } catch {
+            return [:]
+        }
+    }
 }
 
 // MARK: - Task 8: completed unseen presentation TTL（spec §8.7 retention 分离）

@@ -19,7 +19,8 @@ struct AttentionLampBarData: Equatable {
 }
 
 /// v4 灯条呈现投影桥（裁决 A app 层纯桥面）：把 router 五轴快照经 Task 5 projector
-/// 穷举投影成 Lamp，再用 LampSlotAllocator 稳定分槽，聚合为 AttentionLampBarData。
+/// 穷举投影成 Lamp，按 iTerm2 实时序（裁决卡③；修复批六起直驱显示）聚合为
+/// AttentionLampBarData。
 /// 零 UI 依赖、可注入、fail-closed：guard 轴（privacy/identity/hookHealth）不可验证即 ?灰。
 ///
 /// guard 轴来源（fail-closed 纪律，red-line §3）：
@@ -30,26 +31,27 @@ struct AttentionLampBarData: Equatable {
 /// - hookHealth：调用方按装机/版本漂移状态注入（drift/未装 → 非 healthy → ?灰）。
 struct AttentionLampBarProjection: Sendable {
     private let projector = AttentionProjector()
-    private let allocator = LampSlotAllocator()
 
-    /// 由快照投影出 bar 数据（槽位摘要按槽位升序 + 8+N 折叠 + 等待时长）。
-    /// 裁决卡③：`order`=iTerm2 窗口序排位（rank 序，未排位尾随字典序——fail-closed
-    /// 确定性）；nil=既有字典序（降级路径零回退）。槽位摘要携带 position 呈现元数据
-    ///（显示序号=槽位序 1 起）；displayLabel 由调用方按分槽结果后置附着
-    ///（fullCwdLabels 冲突后缀语义以槽位键集为域，先分槽后取标签）。
+    /// 灯条容量上限（§4 D7Z 前 8 盏；原 LampSlotAllocator.slotCapacity 单源继任——
+    /// 修复批六裁决卡③落实：座位表机制退役，容量常量归投影面）。
+    static let lampCapacity = 8
+
+    /// 由快照投影出 bar 数据（显示序=iTerm2 实时序 + 8+N 折叠 + ●黄等待时长）。
+    /// 修复批六（缺陷⑥根治，老林 2026-08-14 裁落实裁决卡③）：**显示序完全由
+    /// order（iTerm2 rank 序）驱动**——持久座位表（LampSlotAllocator/lampSlotMap）
+    /// 退出显示链路。根因：此前显示序=placed.sorted(slot) 由持久座位表首现序主导，
+    /// order 参数只定新会话取槽序不定显示序，违裁决卡③「排序不再依赖持久槽位图/
+    /// iTerm2 序变化灯跟随」（批三测试全用空座位表掩盖分歧；生产座位表实读=
+    /// 首现序≠iTerm2 当前序，老林目视「对不上」）。
+    /// 语义：order 在位 → 排位序显示，未排位尾随字典序；order=nil（iTerm2 不可用
+    /// 降级）→ 字典序兜底（fail-closed 确定性保持）。显示序前 8 盏灯，其余折叠
+    /// overflow（=iTerm2 最右侧）。position 按显示序重编号 1..N；displayLabel 由
+    /// 调用方后置附着（fullCwdLabels 冲突后缀语义以显示键集为域不变）。
     func project(from snapshots: [AttentionStateSnapshot],
                  hookHealth: HookHealth,
                  lastEventAt: (String) -> Date?,
                  now: Date,
-                 slotMap: inout SlotMap,
                  order: [String]? = nil) -> AttentionLampBarData {
-        // C1（fix round 1）：先释放 closed/archived（§4 释放条件；槽位真实复用）。
-        // router snapshots 字典只增不减，closed 会话须先释放——否则其槽位永久占用，
-        // 活跃会话被挤出 overflow。
-        for snap in snapshots {
-            _ = allocator.release(sessionKey: snap.sessionKey,
-                                  lifecycle: snap.lifecycle, from: &slotMap)
-        }
         // 裁决卡③：输入序=iTerm2 排位序（order 在位）；未排位/无 order → 字典序兜底。
         let orderedSnapshots: [AttentionStateSnapshot]
         if let order {
@@ -67,10 +69,10 @@ struct AttentionLampBarProjection: Sendable {
             orderedSnapshots = snapshots.sorted { $0.sessionKey < $1.sessionKey }
         }
         var data = AttentionLampBarData()
-        var placed: [(slot: Int, summary: LampSlotSummary)] = []
-        // C1（fix round 1）：仅对受管（.managed）会话分槽。discovered 未受管（G1 NoLamp）
-        // 不占槽；closed/archived 已释放不重分。避免闭会话按字典序先占满 0-7 槽、
-        // 活跃会话全得 overflow → bar 永久「8 暗点 + +N」零活跃灯（违 §4/G1）。
+        // 裁决卡③落实：显示序=orderedSnapshots 序直驱（managed 过滤；discovered
+        // 未受管 G1 NoLamp；closed/archived 天然不入灯——无历史槽位中间层，
+        // 重启/窗口重开不携带任何历史排位偏好）。
+        var displayIndex = 0
         for snap in orderedSnapshots where snap.lifecycle == .managed {
             let input = ProjectionInput(
                 lifecycle: snap.lifecycle,
@@ -85,18 +87,18 @@ struct AttentionLampBarProjection: Sendable {
                     ? lastEventAt(snap.sessionKey) : nil,
                 now: now)
             let result = projector.project(input)
-            let assignment = allocator.assign(sessionKey: snap.sessionKey, to: &slotMap)
-            if case .slot(let index) = assignment {
-                placed.append((index, LampSlotSummary(
+            displayIndex += 1
+            if displayIndex <= Self.lampCapacity {
+                data.slots.append(LampSlotSummary(
                     sessionKey: snap.sessionKey,
                     lamp: result.lamp,
-                    privacyMasked: result.privacyMasked)))
+                    privacyMasked: result.privacyMasked))
                 // ●黄等待时长供给（hover 文案单源消费，§7）。
                 if result.lamp == .waitingYellow, let last = lastEventAt(snap.sessionKey) {
                     data.waitElapsed[snap.sessionKey] = max(0, now.timeIntervalSince(last))
                 }
             } else {
-                // 8+N 折叠（I2 fix round 1）：overflow 计数 + 最高优先灯态聚合。
+                // 8+N 折叠：overflow=iTerm2 最右侧会话；计数+最高优先灯态聚合。
                 data.overflowCount += 1
                 if Self.lampAttentionRank(result.lamp)
                     > Self.lampAttentionRank(data.overflowAggregateLamp) {
@@ -104,13 +106,12 @@ struct AttentionLampBarProjection: Sendable {
                 }
             }
         }
-        // 裁决卡③：显示序=槽位序（分槽按输入序）；携带 position 呈现元数据
-        //（VO/hover/灯下序号消费；displayLabel 由调用方后置附着）。
+        // position 按显示序重编号 1..N（VO/hover/灯下序号消费）。
         // 修复批四：reasonLine=状态原因单源产出（hover 增值面消费；老林裁决）。
         let snapByKey = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.sessionKey, $0) })
         let reasonModel = AttentionLampBarModel()
-        data.slots = placed.sorted { $0.slot < $1.slot }.enumerated().map { pair in
-            let s = pair.element.summary
+        data.slots = data.slots.enumerated().map { pair in
+            let s = pair.element
             let snap = snapByKey[s.sessionKey]
             return LampSlotSummary(sessionKey: s.sessionKey, lamp: s.lamp,
                                     privacyMasked: s.privacyMasked,

@@ -78,52 +78,57 @@ final class FixBatch6PidPersistenceTests: XCTestCase {
 
     // MARK: - 3. 冷启动播种 + 归档档位生效（缺陷⑦核心验收）
 
+    /// 注：会话须含非 connectionFact 事件（此用 PreToolUse=tool_in_flight）才入
+    /// replay 快照（replayFromStore 跳过 connectionFact/sessionEnd——既有 M-3
+    /// 缺口面，本批不触；GhostLampArchiveTests 同式 SessionStart+PreToolUse）。
     @discardableResult
     private func post(_ router: AttentionEventRouter, _ hook: String, sid: String,
-                      at: Date) throws -> AttentionEventRouter.IngestResult {
-        let payload: [String: Any] = ["session_id": sid]
+                      at: Date, extra: [String: Any] = [:]) throws -> AttentionEventRouter.IngestResult {
+        var payload: [String: Any] = ["session_id": sid]
+        for (k, v) in extra { payload[k] = v }
         let data = try JSONSerialization.data(withJSONObject: payload)
         return router.ingest(hookEventName: hook,
                              payloadJson: String(data: data, encoding: .utf8)!,
                              observedAt: at)
     }
 
-    func testReplaySeedsSessionPidsFromStore() throws {
+    private func makeSeededSession(_ sid: String, pid: Int) throws
+        -> (store: AttentionEventStore, fresh: AttentionEventRouter, lastEvent: Date) {
         let store = try AttentionEventStore(path: nil)
         let writer = AttentionEventRouter(store: store)
-        try post(writer, "SessionStart", sid: "s-seed", at: base)
-        store.recordSessionPid(sessionKey: "s-seed", pid: 777, at: base)
+        try post(writer, "SessionStart", sid: sid, at: base)
+        let last = base.addingTimeInterval(60)
+        try post(writer, "PreToolUse", sid: sid, at: last,
+                 extra: ["tool_name": "Bash"])   // 事件不带 pid（模拟重启前会话）
+        store.recordSessionPid(sessionKey: sid, pid: pid, at: last)
         let fresh = AttentionEventRouter(store: store)     // 模拟重启：运行时内存空白
-        XCTAssertNil(fresh.sessionPid(for: "s-seed"))
         fresh.replayFromStore()
-        XCTAssertEqual(fresh.sessionPid(for: "s-seed"), 777,
+        return (store, fresh, last)
+    }
+
+    func testReplaySeedsSessionPidsFromStore() throws {
+        let seeded = try makeSeededSession("s-seed", pid: 777)
+        XCTAssertNotNil(seeded.fresh.sessionPid(for: "s-seed"))
+        XCTAssertEqual(seeded.fresh.sessionPid(for: "s-seed"), 777,
                        "冷启动 replay 自持久层播种 pid 证据")
     }
 
     func testReplaySeededAliveIdleSessionNeverArchived() throws {
         // 缺陷⑦核心验收：活着但闲置的窗口，重启后闲置 5h 也不丢灯
-        let store = try AttentionEventStore(path: nil)
-        let writer = AttentionEventRouter(store: store)
-        try post(writer, "SessionStart", sid: "s-idle-alive", at: base)
-        store.recordSessionPid(sessionKey: "s-idle-alive", pid: 888, at: base)
-        let fresh = AttentionEventRouter(store: store)
-        fresh.replayFromStore()
-        let archived = fresh.archiveDeadSessions(now: base.addingTimeInterval(5 * 3600),
-                                                 isProcessAlive: { $0 == 888 })
+        let seeded = try makeSeededSession("s-idle-alive", pid: 888)
+        let archived = seeded.fresh.archiveDeadSessions(
+            now: seeded.lastEvent.addingTimeInterval(5 * 3600),
+            isProcessAlive: { $0 == 888 })
         XCTAssertFalse(archived.contains("s-idle-alive"),
                        "播种 pid 活着 → 闲置窗口永不归档（活着闲置不丢灯）")
     }
 
     func testReplaySeededDeadSessionArchivedAtPidThreshold() throws {
         // 播种 pid 死亡 → 重启后 30min 速率立即生效（不退化 4h 未知档）
-        let store = try AttentionEventStore(path: nil)
-        let writer = AttentionEventRouter(store: store)
-        try post(writer, "SessionStart", sid: "s-dead", at: base)
-        store.recordSessionPid(sessionKey: "s-dead", pid: 999, at: base)
-        let fresh = AttentionEventRouter(store: store)
-        fresh.replayFromStore()
-        let archived = fresh.archiveDeadSessions(now: base.addingTimeInterval(31 * 60),
-                                                 isProcessAlive: { _ in false })
+        let seeded = try makeSeededSession("s-dead", pid: 999)
+        let archived = seeded.fresh.archiveDeadSessions(
+            now: seeded.lastEvent.addingTimeInterval(31 * 60),
+            isProcessAlive: { _ in false })
         XCTAssertTrue(archived.contains("s-dead"),
                       "播种 pid 死亡 + 超 30min 无事件 → archived")
     }

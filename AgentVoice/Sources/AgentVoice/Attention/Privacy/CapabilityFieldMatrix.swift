@@ -128,8 +128,13 @@ public struct CapabilityFieldMatrix: Sendable {
         // 批准登记；sizeLimit 收紧至枚举尺度（官方两值均 ≤20 字节）
         row(.attentionIngest, "notification_type", eph: true, render: true, sizeLimit: 64),
         // hook 投递进程号（14A-3 裁决卡①幽灵灯探活证据要素，老林 2026-08-13
-        // 随方案批准）：纯数字标记，ephemeral，零内容面；sizeLimit 收紧至数字尺度
-        row(.attentionIngest, "attention_process_pid", eph: true, sizeLimit: 16),
+        // 随方案批准）：纯数字标记，零内容面；sizeLimit 收紧至数字尺度。
+        // 修复批六（缺陷⑦根治，老林 2026-08-14 AskUserQuestion 裁 A 案批准）：
+        // persist sink 授权——session→pid 映射落盘（session_pid_map 表，仅数字
+        // 元数据，与 session_id/cwd_label 同形态同库），重启后归档三要素「pid
+        // 已知档」立即生效：活着闲置窗口永不丢灯，死会话 30min 速率清理。
+        // privacy posture 变更已在案（final review 与 P1 gate 呈报义务）。
+        row(.attentionIngest, "attention_process_pid", eph: true, persist: true, sizeLimit: 16),
         row(.attentionIngest, "source",           eph: true, render: true),
         // cwd：§8.8「cwd 规范化标识」——basename 模式（14A-3 修复批：只保留最后
         // 一段作显示标签；此前 .redact 整体替换致灯条/面板标签全 REDACTED）

@@ -5,7 +5,7 @@ public enum Lifecycle: String, Codable, Sendable {
     case discovered, managed, closed
     /// v4 Task 8A 词表补齐（灯条 spec §3 L104 冻结决策：僵尸 PID/TTY 双证据 → archived，
     /// 面板保留历史行、释放槽位）。additive 扩容——既有 discovered/managed/closed 语义不变，
-    /// §4 槽位释放条件为 closed/archived（LampSlotAllocator 消费）。
+    /// archived 不入灯（投影面 lifecycle==.managed 过滤消费）。
     case archived
 }
 public enum ActivityFact: String, Codable, Sendable {

@@ -60,17 +60,10 @@ final class AttentionStore: ObservableObject {
     private var consumeGeneration: UInt64 = 0
 
     // MARK: - Task 8A：v4 灯条生产表面（behind versioned flag，裁决 A/B）
-    /// 稳定 session_key→slot 空间记忆（§4；裁决 5 持久落点=UserDefaults additive，
-    /// 不做 schema 迁移——interventionKey schema 迁移明确不消费）。
-    private var lampSlotMap = SlotMap()
-    private var lampSlotMapLoaded = false
-    /// Task 14A-2b E2E seam：槽位映射持久化开关（enableForE2E 置 false——E2E fresh DB
-    /// 对应 fresh map；共享 UserDefaults 域的历史实例 ghost 键会永占槽位致新会话全
-    /// overflow。生产路径恒 true：持久 DB↔快照齐全，closed/archived 正常释放不受影响）。
-    private var slotMapPersistenceEnabled = true
-    /// 8A-M1（fix round 1）：上一次持久化的映射——脏标记比较，变化才写 UserDefaults。
-    private var lastPersistedSlotMap = SlotMap()
-    private static let lampSlotMapKey = "attentionLampSlotMap.v1"
+    /// 修复批六（缺陷⑥根治，老林 2026-08-14 裁落实裁决卡③）：持久座位表
+    ///（lampSlotMap/UserDefaults attentionLampSlotMap.v1）退役出显示链路——
+    /// 显示序完全由 iTerm2 实时顺序驱动，无历史排位偏好。UserDefaults 既有
+    /// 键留置不读（用户数据不主动删除；零行为影响）。
     /// 裁决卡③：iTerm2 窗口顺序锚定生产组合（懒建——flag off / E2E / 无 iTerm2 零开销；
     /// tty 缓存常驻实例内，进程生命期 tty 不变）。
     /// 修复批四 I-1：上游包 TTL 缓存（2s 对齐 tick：同周期双 timer 重复调用全消+
@@ -218,7 +211,6 @@ final class AttentionStore: ObservableObject {
         // 对应 disableForTesting 也绝不 uninstall——「仅 uninstall 本实例所装 hooks」不变量）
         router = r; server = s; retentionScheduler = sched
         enabled = true
-        slotMapPersistenceEnabled = false   // E2E fresh DB ↔ fresh map（ghost 键隔离，见字段注记）
         consumeGeneration &+= 1
         let gen = consumeGeneration
         let ticker = AttentionProductionTicker(router: r, interval: tickInterval)
@@ -247,7 +239,6 @@ final class AttentionStore: ObservableObject {
         enabled = false; sessions = []; pendingCount = 0; overflow = nil; versionDrift = false
         lastDrainedEntries = []; lastSoundCompensation = .none
         fullScreenOverride = nil
-        slotMapPersistenceEnabled = true   // E2E seam 态复位（生产语义恢复）
     }
 
     // MARK: - Task 14A-2b：E2E bridge seam（launch argument 驱动；红线=绝不触 settings.json hooks）
@@ -460,13 +451,13 @@ final class AttentionStore: ObservableObject {
     // MARK: - Task 8A：v4 灯条生产表面投影（behind versioned flag；裁决 A app 接线）
 
     /// 灯条 bar 数据（呈现层消费面）：router 快照经 Task 5 projector 穷举投影 +
-    /// LampSlotAllocator 稳定分槽（§4）+ 8+N 折叠 + ●黄等待时长。flag off 时调用方
-    /// 不呈现（store 采集继续）。C1（fix round 1）：投影桥仅对 .managed 分槽、先释放
-    /// closed/archived（避免活跃会话被挤出 overflow）。fail-closed guard 轴：hookHealth
-    /// 按 versionDrift 注入；privacy/identity 由 ingestPrivacyGated 门入库时已 fail-closed。
+    /// iTerm2 实时序直驱显示（裁决卡③）+ 8+N 折叠 + ●黄等待时长。flag off 时调用方
+    /// 不呈现（store 采集继续）。fail-closed guard 轴：hookHealth 按 versionDrift
+    /// 注入；privacy/identity 由 ingestPrivacyGated 门入库时已 fail-closed。
+    /// 修复批六（缺陷⑥根治）：持久座位表退役——显示序=order（iTerm2 rank 序）
+    /// 直驱，重启/窗口重开零历史排位偏好。
     func lampBarData() -> AttentionLampBarData {
         guard let router else { return AttentionLampBarData() }
-        restoreLampSlotMapIfNeeded()
         let snaps = router.currentSnapshots()
         var lastMap: [String: Date] = [:]
         for s in snaps {
@@ -491,7 +482,7 @@ final class AttentionStore: ObservableObject {
         let projection = AttentionLampBarProjection()
         var data = projection.project(from: snaps, hookHealth: hookHealth,
                                       lastEventAt: { lastMap[$0] }, now: Date(),
-                                      slotMap: &lampSlotMap, order: order)
+                                      order: order)
         // 14A-3 裁决卡②（老林批准）：灯上完整目录名标签（router 单源确定性分配）
         data.labels = router.fullCwdLabels(sessionKeys: data.slots.map(\.sessionKey))
         // 裁决卡③：displayLabel 后置附着（VO/hover/灯下「序号 目录名」人话面消费）。
@@ -504,7 +495,6 @@ final class AttentionStore: ObservableObject {
                             position: s.position,
                             reasonLine: s.reasonLine)
         }
-        persistLampSlotMapIfChanged()
         return data
     }
 
@@ -520,30 +510,6 @@ final class AttentionStore: ObservableObject {
         }
         let cwd = router?.cwdPath(for: sessionKey)
         _ = AXNavigator().navigate(sessionKey: sessionKey, cwd: cwd)
-    }
-
-    /// 空间记忆恢复（§4 重启不重置；clean-start——stale 发现⑤：M1 无 slot 映射，
-    /// 首次运行为空 map 全新建，无 legacy 漂移）。
-    private func restoreLampSlotMapIfNeeded() {
-        guard slotMapPersistenceEnabled else { lampSlotMapLoaded = true; return }
-        guard !lampSlotMapLoaded else { return }
-        lampSlotMapLoaded = true
-        if let data = UserDefaults.standard.data(forKey: Self.lampSlotMapKey),
-           let map = try? JSONDecoder().decode(SlotMap.self, from: data) {
-            lampSlotMap = map
-        }
-        lastPersistedSlotMap = lampSlotMap   // 恢复后即与持久态一致（免立即重写）
-    }
-
-    /// 8A-M1（fix round 1）：脏标记持久化——仅映射变化才写 UserDefaults，
-    /// 免每 2s tick 无条件写。
-    private func persistLampSlotMapIfChanged() {
-        guard slotMapPersistenceEnabled else { return }
-        guard lampSlotMap != lastPersistedSlotMap else { return }
-        if let data = try? JSONEncoder().encode(lampSlotMap) {
-            UserDefaults.standard.set(data, forKey: Self.lampSlotMapKey)
-            lastPersistedSlotMap = lampSlotMap
-        }
     }
 
     /// Task 8A：灯条短标识（§7 单源=cwd basename label；缺失退化 sessionKey 前缀归调用方）。

@@ -147,6 +147,10 @@ public final class AttentionEventRouter: @unchecked Sendable {
     public func replayFromStore() {
         lock.lock(); defer { lock.unlock() }
         items = store.loadPersistedItems()          // C5：resolved/snoozed 状态保留
+        // 修复批六（缺陷⑦根治，老林 2026-08-14 裁 A 案）：自持久层播种 pid 证据——
+        // 重启后归档三要素「pid 已知档」立即生效（活着闲置窗口永不丢灯；死会话
+        // 30min 速率清理）。load 失败空 map=批六前语义（fail-safe 降级不阻塞启动）。
+        for (key, pid) in store.loadSessionPids() { sessionPids[key] = pid }
         let events = store.events(since: .distantPast)
         for e in events where e.kind != .connectionFact && e.kind != .auditCorrection
                            && e.kind != .sessionEnd {
@@ -255,6 +259,10 @@ public final class AttentionEventRouter: @unchecked Sendable {
         // 矩阵登记 attention_process_pid ephemeral；同 C20 运行时映射，不持久化）
         if let pid = payload["attention_process_pid"] as? Int, pid > 0 {
             sessionPids[event.nativeSessionId] = pid
+            // 修复批六（缺陷⑦根治，老林 2026-08-14 裁 A 案批准 persist 授权）：
+            // 映射落盘——重启后冷启动播种恢复探活证据。写失败静默降级
+            //（上方运行时映射为权威；降级=批六前语义，不 fail 投递主路径）。
+            store.recordSessionPid(sessionKey: event.nativeSessionId, pid: pid, at: observedAt)
         }
         // C18：max() 防乱序到达令时间戳倒退（与 replayFromStore 口径一致）
         sessionLastEventAt[event.nativeSessionId] =
