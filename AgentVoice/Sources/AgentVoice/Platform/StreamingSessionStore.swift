@@ -10,7 +10,7 @@ public struct StreamingSessionRecord: Sendable, Equatable {
     public let pendingText: String
     public let state: String
     /// V1.1 Task 8（migration v3）：完整版本化逐句快照 JSON（空串=无快照）；
-    /// 格式合同见 VoiceInputSessionController.PolishedPartsSnapshot
+    /// 格式合同见 VoiceInputSessionController.swift 文件作用域的 PolishedPartsSnapshot
     public let polishedParts: String
 
     /// 可恢复文本 = 已定稿 + 进行中

@@ -333,11 +333,17 @@ public final class VoiceInputSessionController {
         // V1.1 Task 8：lost 推送缝隙——session.start() 已占用 onSessionLost 槽位（markFailed），
         // 此处包装保留原链条并推送 streamingLost 立即生效：增量快照清理（spec §5 条款 3）
         // 不能等帧驱动检测的帧间隔延迟。回调可能来自任意线程 → Task hop 回 MainActor。
+        // 推送钉在发起会话上（boundSid==安装点记录 id）：旧会话 receiveLoop 延迟回调
+        // 在新会话重入后才到达时，liveSessionId 已指向新记录 → 守卫丢弃，不误降级新会话。
         // 与帧驱动路径并存不冲突（streamingLost 相位守卫幂等）。
         let baseLost = streamingASR.onSessionLost
+        let boundSid = store.sessionId
         streamingASR.onSessionLost = { [weak self] in
             baseLost?()
-            Task { @MainActor [weak self] in self?.streamingLost() }
+            Task { @MainActor [weak self] in
+                guard let self, self.liveSessionId == boundSid else { return }
+                self.streamingLost()
+            }
         }
         // V1.1 Task 6：streamingSession 挂载成功后创建增量会话——工厂返回 nil 即增量关
         //（含开关关/场景禁用，fold I3/P1-5：准入判断在组合根，控制器零键名、零 UserDefaults）。
@@ -468,10 +474,15 @@ public final class VoiceInputSessionController {
         incrementalClose()   // fold：断网丢弃增量结果（spec §5 条款 3）——cancel+清引用；
         // 晚到请求降级后返回：UI/预览不变（generation 失效在飞续体）
         // V1.1 Task 8（fold P1-3/P2-6）：增量丢弃 = 清空逐句快照——记录行保留，
-        // completed_text 仍由后续本地链写回（V1 语义不变）；DB 侧随增量一起作废
+        // completed_text 仍由后续本地链写回（V1 语义不变）；DB 侧随增量一起作废。
+        // 失败不静默（fold P2-6 对称）：warning 日志只含错误描述，不含句文本（隐私面）
         if let sid = liveSessionId {
-            try? StreamingSessionStore(engine: ports.storageEngine, sessionId: sid)
-                .updatePolishedParts("")
+            do {
+                try StreamingSessionStore(engine: ports.storageEngine, sessionId: sid)
+                    .updatePolishedParts("")
+            } catch {
+                logger.warning("增量快照清空失败（不阻塞）：\(error.localizedDescription)")
+            }
         }
         onDisplayUpdate?(nil)   // 会话收尾发布 nil（流式丢失后无增量会话）
         _ = transition(.streamingUnavailable)
@@ -975,9 +986,9 @@ public final class VoiceInputSessionController {
 
     /// V1.1 Task 8（fold P2-6）：解析版本化逐句快照并组装恢复预览。
     /// 安全回退合同：非法 JSON/缺字段/未知版本/空句表/序号校验失败（连续/顺序/
-    /// 无重复/无越界，entry.i 必须等于其位置下标）/polished 缺 pol/组装结果
-    /// 与全文原文相同（全句未润色成功）→ 返回 nil，调用方走既有全文原文路径，
-    /// 不抛错不崩。
+    /// 无重复/无越界，entry.i 必须等于其位置下标）/polished 缺 pol 或为空串/
+    /// 组装结果与全文原文相同（全句未润色成功）→ 返回 nil，调用方走既有全文
+    /// 原文路径，不抛错不崩。
     private static func assembleRecoveredSnapshot(
         _ record: StreamingSessionRecord
     ) -> (polishedText: String, segments: [RecoveredSentenceSegment])? {
@@ -992,8 +1003,9 @@ public final class VoiceInputSessionController {
         var assembled = ""
         var segments: [RecoveredSentenceSegment] = []
         for entry in snapshot.sentences {
-            // polished 必须携带 pol，否则视为损坏（上方已校验序号，此处回退整段）
-            guard entry.state != "polished" || entry.pol != nil else { return nil }
+            // polished 必须携带非空 pol，否则视为损坏回退整段
+            //（自产数据不可能触发；防外部损坏的 pol:"" 拼出空句）
+            guard entry.state != "polished" || !(entry.pol ?? "").isEmpty else { return nil }
             let isPolished = entry.state == "polished"
             let text = isPolished ? (entry.pol ?? "") : entry.raw
             assembled += text
