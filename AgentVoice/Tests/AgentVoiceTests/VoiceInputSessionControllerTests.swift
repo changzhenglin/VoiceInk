@@ -424,12 +424,16 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         return data
     }
 
-    /// 预置一条崩溃残留记录（begin + updateText）
+    /// 预置一条崩溃残留记录（begin + updateText；V1.1 Task 8 扩 polishedParts 注入口）
     private func seedRecord(sessionId: String, sceneType: String,
-                            at date: Date, completed: String, pending: String = "") throws {
+                            at date: Date, completed: String, pending: String = "",
+                            polishedParts: String = "") throws {
         let store = StreamingSessionStore(engine: engine, sessionId: sessionId)
         try store.begin(sceneType: sceneType, at: date)
         try store.updateText(completed: completed, pending: pending)
+        if !polishedParts.isEmpty {
+            try store.updatePolishedParts(polishedParts)
+        }
     }
 
     private func recoverActive() throws -> [StreamingSessionRecord] {
@@ -1759,5 +1763,109 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertEqual(preview?.polishedText, "整段润色结果。")   // V1 整段润色
         XCTAssertEqual(sut.polishProvider.callCount, 1)
         XCTAssertTrue(sut.injector.injected.isEmpty)
+    }
+
+    // ── V1.1 Task 8：逐句持久化与崩溃恢复组装呈现 ──
+
+    /// fold（Eng I1=老林裁 B 按 spec 做）：spec §4.2 逐句呈现+未润色句标记。
+    /// 注入崩溃残留记录（含版本化逐句快照）→ 恢复预览 polishedText=逐句组装+pending、
+    /// recoveredSegments 逐句显示段（未润色句 isPolished=false 供呈现层加标记）、
+    /// sourceSummary 含「含增量润色」摘要。
+    func test_recovery_preview_renders_per_sentence_with_unpolished_tags() async throws {
+        let snapshot = #"{"v":1,"sentences":[{"i":0,"raw":"句一原。","state":"polished","pol":"句一润。"},{"i":1,"raw":"句二原。","state":"failed"}]}"#
+        try seedRecord(sessionId: "rec-v11", sceneType: "office_writing",
+                       at: Date(timeIntervalSince1970: 3_000_000),
+                       completed: "句一原。句二原。", pending: "尾",
+                       polishedParts: snapshot)
+        let sut = makeSUT()
+        sut.controller.presentRecoveredSessions(try recoverActive())
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.kind, .recoveredDraft)
+        XCTAssertEqual(preview?.polishedText, "句一润。句二原。尾")   // 润色句取 pol + 未润句原文 + pending
+        XCTAssertEqual(preview?.originalText, "句一原。句二原。尾")   // 全文原文
+        XCTAssertEqual(preview?.recoveredSegments?.count, 3)
+        XCTAssertEqual(preview?.recoveredSegments?[0].text, "句一润。")
+        XCTAssertEqual(preview?.recoveredSegments?[0].isPolished, true)
+        XCTAssertEqual(preview?.recoveredSegments?[1].text, "句二原。")
+        XCTAssertEqual(preview?.recoveredSegments?[1].isPolished, false)   // 呈现层加「未润色」标记
+        XCTAssertEqual(preview?.recoveredSegments?[2].text, "尾")
+        XCTAssertEqual(preview?.recoveredSegments?[2].isPolished, false)
+        XCTAssertTrue(preview?.sourceSummary?.contains("含增量润色") ?? false)
+    }
+
+    /// fold（codex P2-6 隐私面）：数据生命周期——①confirm settle → 记录整行删除（既有语义，
+    /// 增量快照随之消失）；②streamingLost → polished_parts 清空（增量丢弃，spec §5 条款 3），
+    /// 记录行保留（completed_text 由后续本地链接管，V1 语义不变）。
+    func test_settle_and_streaming_lost_clear_polished_parts() async throws {
+        // ① confirm settle → 整行删除
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。"
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        let persisted = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.contains("句一润。")) ?? false
+        }
+        XCTAssertTrue(persisted)   // 录音期句状态变化 → 逐句快照持久化（fold P1-4）
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        await sut.controller.confirmPreview()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)   // settle 整行删除，增量快照随之消失
+
+        // ② streamingLost → polished_parts 清空、记录行保留
+        let asr2 = FakeStreamingASR()
+        let port2 = ControllableSentencePolishPort()
+        port2.hang("句二原。")   // 在飞挂起（未润色句也在册）
+        let sut2 = makeSUT(streamingASRs: { asr2 },
+                           makeIncrementalPolish: { scene, traceId in
+                               IncrementalPolishSession(polishPort: port2, scene: scene,
+                                                        traceId: traceId, maxInFlight: 3)
+                           })
+        await sut2.controller.pttDown()
+        asr2.emitPartial("句二原。", finalized: true)
+        let hasParts = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.contains("句二原。")) ?? false
+        }
+        XCTAssertTrue(hasParts)
+        asr2.fireLost()   // 断网丢弃增量（spec §5 条款 3）
+        let cleared = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.isEmpty) ?? false
+        }
+        XCTAssertTrue(cleared)                       // polished_parts 已清空
+        XCTAssertEqual(try recoverActive().count, 1)   // 记录行保留（V1 语义）
+    }
+
+    /// fold（codex P2-6）：损坏 JSON 安全回退合同——非法 JSON/缺字段/重复 i/越界 i/乱序，
+    /// 恢复组装一律回退全文原文（polishedText == originalText），不抛错不崩、无逐句段。
+    func test_corrupted_polished_parts_falls_back_to_raw_recovery() async throws {
+        let corruptVariants = [
+            "不是 JSON",
+            #"{"v":1}"#,   // 缺 sentences 字段
+            #"{"v":1,"sentences":[{"i":0,"raw":"甲原。","state":"polished","pol":"甲润。"},{"i":0,"raw":"乙原。","state":"failed"}]}"#,   // 重复 i
+            #"{"v":1,"sentences":[{"i":5,"raw":"甲原。","state":"failed"}]}"#,   // 越界 i
+            #"{"v":1,"sentences":[{"i":1,"raw":"乙原。","state":"failed"},{"i":0,"raw":"甲原。","state":"failed"}]}"#,   // 乱序
+        ]
+        for (idx, bad) in corruptVariants.enumerated() {
+            engine = try StorageEngine(path: nil)   // 每变体独立内存库
+            try seedRecord(sessionId: "rec-bad-\(idx)", sceneType: "office_writing",
+                           at: Date(timeIntervalSince1970: Double(4_000_000 + idx)),
+                           completed: "甲原。乙原。", pending: "",
+                           polishedParts: bad)
+            let sut = makeSUT()
+            sut.controller.presentRecoveredSessions(try recoverActive())
+            let preview = lastPreview(sut)
+            XCTAssertEqual(preview?.polishedText, "甲原。乙原。", "损坏变体 \(idx) 应回退全文原文")
+            XCTAssertEqual(preview?.originalText, "甲原。乙原。")
+            XCTAssertNil(preview?.recoveredSegments, "损坏变体 \(idx) 回退路径无逐句段")
+        }
     }
 }
