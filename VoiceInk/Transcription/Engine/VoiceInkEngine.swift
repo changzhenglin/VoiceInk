@@ -135,6 +135,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
     @Published var agentVoicePhaseForward: AgentVoicePhase = .idle {
         didSet { handleAgentVoicePhaseChange(from: oldValue) }
     }
+    /// V1.1 增量显示转发（Task 9：UI 经 engine 观察刷新；VoiceInk.swift 沉 coordinator.$incrementalDisplay 写入；
+    /// nil = 无增量会话——V1 路径/会话收尾；Task 10 消费）
+    @Published var incrementalDisplayForward: IncrementalDisplaySnapshot?
     /// V1 预览转发订阅容器（VoiceInk.swift composition root 注入 sink）
     private(set) lazy var previewCancellables = Set<AnyCancellable>()
 

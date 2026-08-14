@@ -37,6 +37,9 @@ struct SettingsView: View {
     @AppStorage("agentVoiceASRMode") private var agentVoiceASRMode = "auto"
     /// V1 润色全局开关（spec §3.3：默认开+可关；AppDefaults 注册域同为 true）
     @AppStorage("agentVoicePolishEnabled") private var agentVoicePolishEnabled = true
+    /// V1.1 增量润色开关（spec §5 条款 8：默认开+可关；下次会话生效——控制器 pttDown 快照读取；
+    /// AppDefaults 注册域同为 true）
+    @AppStorage("agentVoiceIncrementalPolishEnabled") private var agentVoiceIncrementalPolishEnabled = true
     /// V1 润色场景级禁用列表（元素 = sceneType rawValue；数组无 @AppStorage 支持，@State + 写穿 UserDefaults）
     @State private var polishDisabledScenes: [String] =
         UserDefaults.standard.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? []
@@ -268,6 +271,12 @@ struct SettingsView: View {
                     // ② 自动润色（spec §3.3：默认开+可关，全局+场景级；关 → 直出原文）
                     GroupBox("自动润色") {
                         Toggle("自动润色", isOn: $agentVoicePolishEnabled)
+                        // V1.1 增量润色开关（spec §5 条款 8：下次会话生效；联动=全局关时禁用）
+                        Toggle("边说边润色（云模式）", isOn: $agentVoiceIncrementalPolishEnabled)
+                            .disabled(!agentVoicePolishEnabled)
+                        Text("说话时按句润色呈现，松手后快速出完整结果；关闭后回到整段润色")
+                            .settingsDescription()
+                            .disabled(!agentVoicePolishEnabled)
                         // 场景级开关：写穿 agentVoicePolishDisabledScenes（gate 每次润色调用时读，C9-1）
                         HStack(spacing: 16) {
                             Toggle("编程场景", isOn: scenePolishBinding("coding"))

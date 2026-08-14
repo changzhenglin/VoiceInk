@@ -70,6 +70,7 @@ enum AppDefaults {
             "agentVoiceHubPort": 9876,
             "agentVoiceASRMode": "auto",
             "agentVoicePolishEnabled": true,
+            "agentVoiceIncrementalPolishEnabled": true,
             "agentVoicePolishDisabledScenes": [String](),
 
         ])

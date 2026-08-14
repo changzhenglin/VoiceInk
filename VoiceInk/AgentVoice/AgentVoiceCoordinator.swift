@@ -28,6 +28,10 @@ final class AgentVoiceCoordinator: ObservableObject {
     /// 形态同 previewSession 的 assumeIsolated 同步桥，engine/UI 在 MainActor 读）
     @Published var phase: AgentVoicePhase = .idle
 
+    /// V1.1 增量显示快照转发给 UI（fold P2-7：结构化显示快照，UI 永不自行拆分全文；
+    /// nil = 无增量会话——V1 路径/会话收尾。形态同 previewSession 的 assumeIsolated 同步桥；Task 10 消费）
+    @Published var incrementalDisplay: IncrementalDisplaySnapshot?
+
     /// partial → engine 回调（Task 7 安装）
     var onPartialUpdate: (@MainActor (String) -> Void)?
 
@@ -65,6 +69,12 @@ final class AgentVoiceCoordinator: ObservableObject {
                 self?.handleResult(result)
             }
         }
+        // V1.1：增量显示流桥接（controller 回调 MainActor 发出，同步桥；对齐 previewSession 模式）
+        controller.onDisplayUpdate = { [weak self] display in
+            MainActor.assumeIsolated {
+                self?.incrementalDisplay = display
+            }
+        }
     }
 
     /// B1/B9：相位桥接 + 无 onStatus 结算路径的状态条复位（OOS-2 收口）。
@@ -90,10 +100,16 @@ final class AgentVoiceCoordinator: ObservableObject {
 
     // MARK: - engine 接口（Task 7 消费）
 
-    func beginSession() async { await controller.pttDown() }
+    func beginSession() async {
+        incrementalDisplay = nil   // V1.1 清空点①：新会话开启前清陈旧（controller close 发布 nil 双保险）
+        await controller.pttDown()
+    }
     func feedAudio(_ data: Data) { controller.enqueueAudio(data) }
     func endSession() async { await controller.pttUp() }
-    func cancelSession() async { await controller.cancelRecording() }
+    func cancelSession() async {
+        await controller.cancelRecording()
+        incrementalDisplay = nil   // V1.1 清空点②：取消即清增量显示（controller close 发布 nil 双保险）
+    }
 
     func confirmPreview() async { await controller.confirmPreview() }
     func discardPreview() { controller.discardPreview() }
@@ -135,6 +151,7 @@ final class AgentVoiceCoordinator: ObservableObject {
     /// plan sketch 标 private，为保既有测试直调放宽——必要支撑类偏差，报告声明）
     func handleResult(_ result: VoiceInputResult) {
         statusEmittedSincePhaseChange = true   // B9：onStatus 到达标记（区分带/不带 onStatus 的结算路径）
+        incrementalDisplay = nil   // V1.1 清空点③：会话结算清增量显示（controller 结算处也发布 nil，双保险）
         logger.info("AgentVoice 结果: state=\(result.state.rawValue) traceId=\(result.traceId) asr=\(result.asrProvider) polished=\(result.polished)")
 
         switch result.state {

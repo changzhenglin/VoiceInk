@@ -10,6 +10,8 @@ protocol RecorderStateProvider: AnyObject {
     var previewSessionForward: PreviewSession? { get }
     /// V1：控制器相位转发（preview==nil 窗口内 discardUndo/processing 呈现的唯一信号源；B1 裁决）
     var agentVoicePhaseForward: AgentVoicePhase { get }
+    /// V1.1：增量润色显示快照转发（nil = 无增量会话——V1 路径/会话收尾；Task 9 发布，Task 10 消费）
+    var incrementalDisplayForward: IncrementalDisplaySnapshot? { get }
     // V1 预览事件（VoiceInkEngine 转发 coordinator）
     func confirmPreview() async
     func togglePreviewRevert()
