@@ -158,8 +158,23 @@ final class AttentionHTTPServer {
         // 5s deadline 只约束读+入队（微秒级），高并发尾事件不再静默丢。
         guard let sanitized = try? FieldAllowlist.sanitize(source: .officialHook, data: payloadData),
               sanitized.privacyClass == .ok,
-              let sanitizedJson = String(data: sanitized.reencodedAllowedFields(),
-                                        encoding: .utf8) else {
+              var sanitizedPayload = (try? JSONSerialization.jsonObject(
+                  with: sanitized.reencodedAllowedFields()) as? [String: Any]) else {
+            return respond(conn, status: "422",
+                           body: #"{"status":"rejected","code":"E-PRIVACY-GATE"}"#)
+        }
+        // 修复批五 fix round 5（门管道缺陷根治）：sanitize 未知字段剥离把
+        // delivery_id/seq 一并剥掉——二者是 C6 nonce 与序号信封字段（零内容面），
+        // 被剥后 event_id 退化纯内容指纹 → 同会话同形 sanitize 内容事件互相
+        // .duplicate 静默丢（实证：本窗 Bash PreToolUse 除首条外全丢；该缺陷自
+        // privacy 门上线起存在，是数日「PreToolUse 高丢失」的真正主因）。
+        // 门原义=剥内容面；此处恢复门前既有信封字段，零新增内容字段、零矩阵行变更。
+        if let originalPayload = payloadObj as? [String: Any] {
+            if let dd = originalPayload["delivery_id"] { sanitizedPayload["delivery_id"] = dd }
+            if let sq = originalPayload["seq"] { sanitizedPayload["seq"] = sq }
+        }
+        guard let repairedData = try? JSONSerialization.data(withJSONObject: sanitizedPayload),
+              let sanitizedJson = String(data: repairedData, encoding: .utf8) else {
             return respond(conn, status: "422",
                            body: #"{"status":"rejected","code":"E-PRIVACY-GATE"}"#)
         }

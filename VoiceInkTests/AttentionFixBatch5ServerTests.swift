@@ -123,6 +123,58 @@ final class AttentionFixBatch5ServerTests: XCTestCase {
         XCTAssertEqual(router.currentSnapshots().count, 1, "大 payload 事件应入库")
     }
 
+    /// C2-5（批五 fix round 5，nonce 修复守卫）：同会话同形 sanitize 内容、
+    /// 仅 delivery_id 不同的两个事件必须都入库（修复前：delivery_id 被 privacy 门
+    /// 剥掉 → event_id 退化内容指纹 → 第二条 .duplicate 静默丢）。
+    /// 同 delivery_id 重发=重试幂等仍去重（C6 语义不退化）。
+    func testIdenticalContentDistinctNonceBothStored() throws {
+        let port: UInt16 = 47897
+        let (server, router) = try makeServer(port: port)
+        try server.start()
+        defer { server.stop() }
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let sid = "12121212-0000-0000-0000-000000000000"
+        func post(deliveryId: String) -> String? {
+            let body = #"{"hook_event_name":"PreToolUse","payload":{"session_id":"\#(sid)","tool_name":"Bash","delivery_id":"\#(deliveryId)"}}"#
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { return nil }
+            defer { close(fd) }
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = in_port_t(port.bigEndian)
+            addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+            let ok = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            guard ok == 0 else { return nil }
+            let req = "POST /ingest HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                      "Authorization: Bearer test-token\r\n" +
+                      "Content-Type: application/json\r\n" +
+                      "Content-Length: \(body.utf8.count)\r\n\r\n" + body
+            let bytes = Array(req.utf8)
+            _ = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
+            var tv = timeval(tv_sec: 5, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            var buf = [UInt8](repeating: 0, count: 1024)
+            let n = read(fd, &buf, buf.count)
+            return n > 0 ? String(bytes: buf[0..<n], encoding: .utf8) : nil
+        }
+
+        XCTAssertTrue(post(deliveryId: "nonce-a")?.contains("200") ?? false)
+        XCTAssertTrue(post(deliveryId: "nonce-b")?.contains("200") ?? false)
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.store.events(since: .distantPast).count, 2,
+                       "同形内容不同 nonce 必须都入库（修复前第二条被 duplicate 静默丢）")
+        // C6 重试幂等保持：同 nonce 重发不重复入库
+        XCTAssertTrue(post(deliveryId: "nonce-b")?.contains("200") ?? false)
+        XCTAssertTrue(router.waitForIngestQueueDrain(timeout: 5))
+        XCTAssertEqual(router.store.events(since: .distantPast).count, 2,
+                       "同 nonce 重发=重试幂等去重（C6 语义保持）")
+    }
+
     /// C2-4（批五 fix round 3，review F1 守卫）：stop 后不再接受投递——
     /// listener cancel + stopped 标志双闸；停机后事件不入库。
     /// 诚实注记：已准入在途 handler 的竞态窗由 connLock 内「检查+入队」原子闭合，
