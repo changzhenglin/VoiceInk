@@ -101,7 +101,7 @@ struct SentenceDisplaySegment: Identifiable, Equatable {
 }
 
 /// V1.1 Task 10：句级流式文本视图（Mini/Notch 两形态共用——同款逻辑单一源）。
-/// 容器形态与 LiveTranscriptView 逐字同款（字体/内边距/高度/渐变遮罩/滚动到底/禁动画）；
+/// 容器形态承 V1 录音文本区既有形态（字体/内边距/高度/渐变遮罩/滚动到底/禁动画）；
 /// 文本区由单字符串升级为句段行内拼接渲染：润色中段浅色指示、已润色/失败/V1 单段正常色。
 /// 防闪烁铁律：句序 id 稳定，原地替换=同 id 段文本一次性变更；transaction 禁动画
 /// 承 V1 先例——无逐字动画，替换即时呈现。
@@ -110,7 +110,7 @@ struct LiveSentenceTranscriptView: View {
 
     /// 润色中浅色指示系数（spec §4.1「浅色显示」；值按设计系统微调）
     private static let polishingOpacity = 0.55
-    /// 基准文本不透明度（承 LiveTranscriptView 既有 .white.opacity(0.8)）
+    /// 基准文本不透明度（承 V1 录音文本区既有 .white.opacity(0.8)）
     private static let baseTextOpacity = 0.8
 
     var body: some View {

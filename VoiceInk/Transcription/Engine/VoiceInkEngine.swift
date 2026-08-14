@@ -350,7 +350,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             // codex P1#8 fold：录音开始时快照 coordinator（防中途开关切换）
                             self.activeAgentVoiceSession = coordinator
 
-                            // partial → fork LiveTranscriptView UI 通道（D1 复用）；
+                            // partial → 录音面板流式文本 UI 通道（partialTranscript 供给句级/V1 呈现）；
                             // startID 校验 = 第二道闸（P0-1 控制器 token 匹配为第一道）
                             coordinator.onPartialUpdate = { [weak self] full in
                                 guard let self,

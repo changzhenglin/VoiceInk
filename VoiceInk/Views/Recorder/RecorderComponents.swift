@@ -300,42 +300,6 @@ struct RecorderModeButton: View {
     }
 }
 
-// MARK: - Live Transcript View
-
-struct LiveTranscriptView: View {
-    let text: String
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                Text(text)
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.8))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
-                    .id("bottom")
-            }
-            .frame(height: 56)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .black, location: 0.18),
-                        .init(color: .black, location: 1.0),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .onChange(of: text) {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-        }
-        .transaction { $0.disablesAnimations = true }
-    }
-}
-
 // MARK: - Recorder Status Display
 
 struct RecorderStatusDisplay: View {

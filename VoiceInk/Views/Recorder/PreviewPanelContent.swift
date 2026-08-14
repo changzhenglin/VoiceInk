@@ -191,13 +191,18 @@ struct PreviewPanelContent: View {
         switch mode {
         case .session(let preview):
             ScrollView(.vertical, showsIndicators: false) {
-                Text(preview.selectedText)
-                    .font(.body)   // 13pt 平台正文；语义字号响应辅助文字放大（UI 规范 §2）
-                    .lineSpacing(bodyLineSpacing)
-                    .foregroundColor(.white.opacity(0.9))
-                    .textSelection(.enabled)   // 可选中正文（UI 规范 §1 previewing 第 2 条）
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 2)
+                if let segments = preview.recoveredSegments {
+                    // V1.1 fold（Eng I1=B，spec §4.2）：含增量快照的恢复草稿逐句呈现
+                    recoveredSegmentBody(segments)
+                } else {
+                    Text(preview.selectedText)
+                        .font(.body)   // 13pt 平台正文；语义字号响应辅助文字放大（UI 规范 §2）
+                        .lineSpacing(bodyLineSpacing)
+                        .foregroundColor(.white.opacity(0.9))
+                        .textSelection(.enabled)   // 可选中正文（UI 规范 §1 previewing 第 2 条）
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 2)
+                }
             }
             // 长文本在 120pt 上限内滚动（UI 规范 §2）；ScrollView 跟随宿主固定高度容器
             // 的剩余预算自适应（宿主 previewContentHeight 固定，见 NotchRecorderView）。
@@ -219,6 +224,40 @@ struct PreviewPanelContent: View {
             EmptyView()   // 撤销条无正文（旧草稿冻结，超时才 settle 删除）
         }
     }
+
+    /// V1.1 fold（Eng I1=B，spec §4.2）：含增量快照的恢复草稿逐句呈现——
+    /// polished 段正常色润色文本；未润色段原文浅色 +「未润色」轻量标记。
+    /// 视觉推导（同设计系统族）：浅色系数 0.55 承录音面板句级呈现润色中浅色
+    /// （LiveSentenceTranscriptView polishingOpacity）；基准 0.9 为本面板正文既有值；
+    /// 标记复用 header 既有 PreviewStatusTag 灰 tag 形态。
+    /// 仅 recoveredSegments != nil 入口；recoveredSegments == nil 的 V1 纯转写恢复
+    /// 草稿不经过本函数（上方 else 分支逐字保留 V1 渲染路径）。
+    private func recoveredSegmentBody(_ segments: [RecoveredSentenceSegment]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(segments) { segment in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(segment.text)
+                        .font(.body)
+                        .lineSpacing(bodyLineSpacing)
+                        .foregroundColor(.white.opacity(
+                            segment.isPolished
+                                ? Self.segmentBaseOpacity
+                                : Self.segmentBaseOpacity * Self.unpolishedOpacityFactor))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !segment.isPolished {
+                        PreviewStatusTag(text: "未润色", tint: .gray)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// 逐句呈现基准不透明度（与正文区既有 .white.opacity(0.9) 同值）
+    private static let segmentBaseOpacity: Double = 0.9
+    /// 未润色段浅色系数（承录音面板句级呈现润色中浅色同族；0.9×0.55≈0.50）
+    private static let unpolishedOpacityFactor: Double = 0.55
 
     // MARK: - 操作区（按钮位置全状态固定：丢弃左置、主按钮实心右置，UI 规范 §2）
 

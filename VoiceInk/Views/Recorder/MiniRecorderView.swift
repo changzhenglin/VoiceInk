@@ -85,7 +85,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             if let previewMode = stateProvider.previewPanelMode {
                 // V1 预览分支（Task 8 Step 3）：预览优先——同一 nonactivating panel 原位切换。
                 // 仅 previewPanelMode 非 nil（previewing/transcribing 两态）时生效；
-                // LiveTranscriptView 与波形等既有渲染零改动。
+                // 录音态文本区（LiveSentenceTranscriptView）与波形等既有渲染不受预览分支影响。
                 PreviewPanelContent(
                     mode: previewMode,
                     contextText: stateProvider.partialTranscript,
