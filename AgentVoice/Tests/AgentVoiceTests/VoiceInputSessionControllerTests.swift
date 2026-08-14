@@ -251,6 +251,20 @@ private struct ThrowingKnowledge: KnowledgePort {
 }
 
 /// 可控 ASR 工厂：按序返回 fake（brief FakeASRChain，模拟每会话新建实例）
+/// V1.1 Task 6：记录型逐句润色缝隙——记录真实被派发的句子（按句立即返回未润色 outcome）。
+/// 与 IncrementalPolishSessionTests 的 FakePolishPort 同款不抽公共（包层测试文件各自持有）。
+private final class RecordingSentencePolishPort: SentencePolishPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _dispatched: [String] = []
+    var dispatched: [String] { lock.lock(); defer { lock.unlock() }; return _dispatched }
+    var dispatchedCount: Int { lock.lock(); defer { lock.unlock() }; return _dispatched.count }
+    func polishSentence(_ text: String, scene: SceneContext, traceId: String,
+                        context: String?) async -> PolishOutcome {
+        lock.lock(); _dispatched.append(text); lock.unlock()
+        return PolishOutcome(finalText: text, polished: false, polishProviderId: "recording", concern: nil)
+    }
+}
+
 private final class FakeASRChain: @unchecked Sendable {
     private let lock = NSLock()
     private let providers: [any StreamingASR]
@@ -298,7 +312,9 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         polishGateFactory: @escaping @Sendable (String) -> @Sendable (String) -> Bool = { _ in { _ in true } },
         scene: SceneContext = SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting),
         discardUndoTimeout: TimeInterval = 0.05,
-        detectScene: (@Sendable () async -> SceneContext)? = nil   // round-3：晚到窗口测试 seam（默认立即返回）
+        detectScene: (@Sendable () async -> SceneContext)? = nil,   // round-3：晚到窗口测试 seam（默认立即返回）
+        makeIncrementalPolish: (@MainActor @Sendable (_ scene: SceneContext, _ traceId: String)
+            -> IncrementalPolishSession?)? = nil   // V1.1 Task 6：增量润色会话工厂（nil=增量能力缺失走 V1；@MainActor=构造 @MainActor 组件所需，调用点本就 MainActor）
     ) -> SUT {
         let injector = FakeInjector()
         let polishProvider = FakePolishProvider()
@@ -316,7 +332,8 @@ final class VoiceInputSessionControllerTests: XCTestCase {
             pipeline: pipeline,
             injector: injector,
             storageEngine: engine,
-            polishGateFactory: polishGateFactory)
+            polishGateFactory: polishGateFactory,
+            makeIncrementalPolish: makeIncrementalPolish)
         let controller = VoiceInputSessionController(ports: ports,
                                                      discardUndoTimeout: discardUndoTimeout)
         let phases = Recorder<AgentVoicePhase>()
@@ -1352,5 +1369,61 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         // fix 前 RED：晚到续体 beginLocalRecord 建孤儿记录
         XCTAssertTrue(try recoverActive().isEmpty)
         XCTAssertEqual(sut.controller.phase, .idle)
+    }
+
+    // ── V1.1 Task 6：句定稿检测与增量派发 ──
+
+    /// 契约①：句定稿事件驱动增量派发——每句定稿即派发（不等后续句），pending 不派发，
+    /// 逐字原文传入（GC 15），原文流式不受影响（呈现铁律）。
+    func test_sentence_finalized_events_dispatch_incremental_polish() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "第一句。第二句。第三"
+        let port = RecordingSentencePolishPort()
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+
+        // 第一句定稿 → 增量组件即收到该句（逐句事件驱动，不等第二句）
+        asr.emitPartial("第一句。", finalized: true)
+        let first = await waitUntil { port.dispatchedCount >= 1 }
+        XCTAssertTrue(first)
+        XCTAssertEqual(port.dispatched, ["第一句。"])
+
+        // 第二句定稿 + 尾句 pending → 只派发新定稿句，pending 不派发
+        asr.emitPartial("第二句。", finalized: true)
+        asr.emitPartial("第三", finalized: false)
+        let second = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(second)
+        // 原文流式永远可见（呈现铁律）：partials 收到含 pending 的全文
+        let partialSeen = await waitUntil { sut.partials.all.contains("第一句。第二句。第三") }
+        XCTAssertTrue(partialSeen)
+        // 恰两句逐字原文被派发；pending「第三」不在内；无重复派发
+        XCTAssertEqual(port.dispatched, ["第一句。", "第二句。"])
+    }
+
+    /// 契约②：增量关 = ports 工厂返回 nil（fold I3/P1-5：开关语义归工厂，控制器零键名）——
+    /// 工厂在 pttDown 被调一次即返 nil，增量组件不创建、零派发；原文流式不受影响。
+    func test_incremental_disabled_switch_dispatches_nothing() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "第一句。第二句。"
+        let factoryCalls = Recorder<String>()
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              factoryCalls.append("\(scene.sceneType.rawValue)|\(traceId)")
+                              return nil
+                          })
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+
+        asr.emitPartial("第一句。", finalized: true)
+        asr.emitPartial("第二句。", finalized: true)
+        let partialSeen = await waitUntil { sut.partials.all.contains("第一句。第二句。") }
+        XCTAssertTrue(partialSeen)                        // 原文流式正常（呈现铁律）
+        XCTAssertEqual(factoryCalls.count, 1)             // 工厂 pttDown 时被调一次（下一会话生效语义，spec §5 条款 8）
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
     }
 }
