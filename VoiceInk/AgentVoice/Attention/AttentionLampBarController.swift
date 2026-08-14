@@ -28,10 +28,13 @@ final class AttentionLampBarViewModel: ObservableObject {
 }
 
 /// 灯条内容视图（光标三轮修②：NSTrackingArea 显式驱动宿主）。
-/// 两条常规路实证不可靠（不重走）：①push/pop 栈被系统每次鼠标移动的重置盖掉；
-/// ②window cursor rects（含 acceptsMouseMovedEvents 探针①，老林实测仍无反馈）。
-/// 三轮机制：tracking area（.mouseMoved+.cursorUpdate+.activeAlways+.inVisibleRect）
-/// 不依赖 window 级 cursor rects 管线；.activeAlways 保证非激活态生效；
+/// **光标面已降级 known hole（老林 2026-08-14 裁决）**：borderless nonactivating
+/// 悬浮面板上四种光标机制全实证无效——①push/pop 栈（被系统鼠标移动重置盖掉）
+/// ②window cursor rects ③acceptsMouseMovedEvents 探针（假设被否）④本 tracking area
+/// 显式驱动+宿主层重置防御。系统面限制证据充分，不再尝试；交互可用性以点击
+/// 可靠性+悬停气泡（.help）为准。本实现保留=best-effort（已验证零回归，若未来
+/// 系统行为恢复即自动生效）。known hole 呈报挂 P1 gate/final review/PR。
+/// 机制本体：tracking area（.mouseMoved+.cursorUpdate+.activeAlways+.inVisibleRect）
 /// cursorUpdate 按鼠标位置 hit-test 灯格 → NSCursor.set()（灯格=指点手/空白=抓取手）。
 final class AttentionLampContentView: NSView {
     /// 灯格子 frame（SwiftUI Preference 上报；命名坐标系=bar 内容域，
@@ -66,9 +69,8 @@ final class AttentionLampContentView: NSView {
 }
 
 /// 灯条 hosting 视图（光标三轮修②：SwiftUI 宿主层光标重置防御面）。
-/// NSHostingView 内部 hover 处理疑为二轮 cursor rects「实测无反馈」的另一主嫌
-///（系统面设置后被宿主层重置回去）——拦截 cursorUpdate 不走 super，
-/// mouseMoved 先 super 后补设，保证 wrapper 层 hit-test 结果最后生效。
+/// 随光标面降级 known hole（老林 2026-08-14 裁决，见 AttentionLampContentView
+/// 头注）——拦截机制保留：cursorUpdate 不走 super，mouseMoved 先 super 后补设。
 final class AttentionLampHostingView: NSHostingView<AttentionLampBarView> {
     weak var cursorHost: AttentionLampContentView?
 
