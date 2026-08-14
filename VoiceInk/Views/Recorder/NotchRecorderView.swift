@@ -265,7 +265,8 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         VStack(spacing: 0) {
             if displayState == .liveText {
                 Divider().background(Color.white.opacity(0.15))
-                LiveTranscriptView(text: stateProvider.partialTranscript)
+                // V1.1 Task 10：句级呈现——segments 由协议组装（增量快照→句段；nil→V1 单段逐字保留）
+                LiveSentenceTranscriptView(segments: stateProvider.sentenceDisplaySegments)
                     .padding(.horizontal, 8)
             }
         }
