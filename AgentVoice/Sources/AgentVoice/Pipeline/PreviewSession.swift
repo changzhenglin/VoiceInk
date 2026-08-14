@@ -47,6 +47,24 @@ public struct PreviewSession: Sendable, Equatable, Identifiable {
     public mutating func restorePolished() {
         selectedText = polishedText
     }
+
+    /// V1.1 fold：渐进更新保留元数据（避免重建丢 kind/sourceSummary——codex P3）
+    public func withPolishedText(_ newText: String, userReverted: Bool) -> PreviewSession {
+        var copy = PreviewSession(traceId: traceId, originalText: originalText,
+                                  polishedText: newText, sceneType: sceneType,
+                                  kind: kind, sourceSummary: sourceSummary)
+        copy.selectedText = userReverted ? originalText : newText
+        return copy
+    }
+
+    /// V1.1 fold：漂移核验后原文对齐（selectedText 随回退状态；其余元数据保留）
+    public func withOriginalText(_ newText: String, userReverted: Bool) -> PreviewSession {
+        var copy = PreviewSession(traceId: traceId, originalText: newText,
+                                  polishedText: polishedText, sceneType: sceneType,
+                                  kind: kind, sourceSummary: sourceSummary)
+        copy.selectedText = userReverted ? newText : polishedText
+        return copy
+    }
 }
 
 /// 预览决策（Coordinator 在润色完成后执行）

@@ -127,6 +127,10 @@ public struct SessionControllerPorts {
     /// （#ActorIsolatedCall 实证）；调用点（pttDown）本就 MainActor。
     public var makeIncrementalPolish: (@MainActor @Sendable (_ scene: SceneContext, _ traceId: String)
         -> IncrementalPolishSession?)?
+    /// V1.1 fold（codex P1-5）：松手时全局+场景开关复检（V1 语义：录音中切换松手即生效）。
+    /// 组合根注入：读 agentVoicePolishEnabled+agentVoicePolishDisabledScenes 两键，
+    /// 返回 globalEnabled && !disabled.contains(sceneType)。nil=测试默认放行。
+    public var incrementalReleaseGate: (@Sendable (_ sceneType: String) -> Bool)?
 
     public init(makeStreamingASR: @escaping @Sendable () -> (any StreamingASR)?,
                 localASRChain: @escaping @Sendable () -> [any ASRProvider],
@@ -136,7 +140,8 @@ public struct SessionControllerPorts {
                 storageEngine: StorageEngine,
                 polishGateFactory: @escaping @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool,
                 makeIncrementalPolish: (@MainActor @Sendable (_ scene: SceneContext, _ traceId: String)
-                    -> IncrementalPolishSession?)? = nil) {
+                    -> IncrementalPolishSession?)? = nil,
+                incrementalReleaseGate: (@Sendable (_ sceneType: String) -> Bool)? = nil) {
         self.makeStreamingASR = makeStreamingASR
         self.localASRChain = localASRChain
         self.detectScene = detectScene
@@ -145,6 +150,7 @@ public struct SessionControllerPorts {
         self.storageEngine = storageEngine
         self.polishGateFactory = polishGateFactory
         self.makeIncrementalPolish = makeIncrementalPolish
+        self.incrementalReleaseGate = incrementalReleaseGate
     }
 }
 
@@ -215,6 +221,10 @@ public final class VoiceInputSessionController {
     /// 最近一次句快照（publishDisplaySnapshot 的 pending 来源）
     private var lastSnapshot = SentenceSnapshot(completed: [], pending: "")
 
+    // ── V1.1 Task 7：渐进预览回退状态 ──
+    @MainActor
+    private var previewUserReverted = false   // pttDown/clearPreview 重置
+
     /// - Parameter discardUndoTimeout: 丢弃撤销窗口时长（D23/D29；默认 3s，测试注入短值）
     public init(ports: SessionControllerPorts, discardUndoTimeout: TimeInterval = 3.0) {
         self.ports = ports
@@ -241,11 +251,13 @@ public final class VoiceInputSessionController {
         case .previewing, .polishing, .recoverableError:
             settleLive()
             clearPreview()
-            incrementalSession?.cancel(); incrementalSession = nil   // V1.1：旧增量会话作废
+            incrementalClose()   // V1.1：旧增量会话作废（关闭点：pttDown 重入清理段）
+            onDisplayUpdate?(nil)   // 会话收尾发布 nil
         case .recoveryPreview:
             settleAllRecoveryQueue()   // D23：不允许双草稿后台并存——显式放弃整个恢复队列
             clearPreview()
-            incrementalSession?.cancel(); incrementalSession = nil   // V1.1：旧增量会话作废
+            incrementalClose()   // V1.1：旧增量会话作废（关闭点：pttDown 重入清理段）
+            onDisplayUpdate?(nil)   // 会话收尾发布 nil
         case .discardUndo:
             cancelUndoTimer()
             if undoSourcePhase == .recoveryPreview {
@@ -254,7 +266,8 @@ public final class VoiceInputSessionController {
                 settleLive()
             }
             clearPreview()
-            incrementalSession?.cancel(); incrementalSession = nil   // V1.1：旧增量会话作废
+            incrementalClose()   // V1.1：旧增量会话作废（关闭点：pttDown 重入清理段）
+            onDisplayUpdate?(nil)   // 会话收尾发布 nil
         case .idle, .recordingStreaming, .recordingBatch:
             break
         }
@@ -268,6 +281,7 @@ public final class VoiceInputSessionController {
         incrementalSession = nil
         lastCompletedCount = 0
         lastSnapshot = SentenceSnapshot(completed: [], pending: "")
+        previewUserReverted = false   // V1.1 Task 7：新会话回退状态重置
         currentTraceId = UUID().uuidString
         let scene = await ports.detectScene()
         // round-3（codex r2 P1-4a）：detectScene 晚到守卫——挂起窗口内取消/松手后，
@@ -352,12 +366,19 @@ public final class VoiceInputSessionController {
     }
 
     /// 增量会话句状态更新入口（onUpdate 回调；token 守卫防过期会话事件）。
-    /// 本任务先落骨架+显示快照发布；Task 7 在此接渐进预览更新（预览域）。
+    /// Task 7：显示快照发布 + 渐进预览接线（预览域）。
     @MainActor
     private func handleIncrementalUpdate(_ snap: IncrementalSnapshot, token: SessionToken) {
         guard currentToken == token else { return }
         publishDisplaySnapshot()   // fold（P2-7）：句状态变化即发布录音面板显示流
-        // Task 7 在此接渐进预览更新（预览域）
+        // 渐进预览：仅 previewing 相且本会话预览在位时更新
+        guard phase == .previewing, let session = preview,
+              session.kind == .polished else { return }
+        let newAssembly = snap.assembledText
+        guard newAssembly != session.polishedText else { return }
+        // fold（codex P3-1）：元数据保留渐进更新——kind/sourceSummary/traceId/sceneType 不重建丢失
+        preview = session.withPolishedText(newAssembly, userReverted: previewUserReverted)
+        onPreviewChanged?(preview)
     }
 
     /// 发布录音面板显示快照（fold codex P2-7：UI 消费结构化显示快照，永不自行拆分全文）。
@@ -395,11 +416,10 @@ public final class VoiceInputSessionController {
     /// Coordinator 亦可从外部信号直接调用本方法。
     public func streamingLost() {
         guard phase == .recordingStreaming else { return }
+        incrementalClose()   // fold：断网丢弃增量结果（spec §5 条款 3）——cancel+清引用；
+        // 增量持久化清理与测试见 Task 8/12（晚到请求降级后返回：UI/预览/DB 均不变）
+        onDisplayUpdate?(nil)   // 会话收尾发布 nil（流式丢失后无增量会话）
         _ = transition(.streamingUnavailable)
-        // V1.1 Task 6（fold codex P1-3）：流式丢失 = 增量会话同款原子清理——cancel 失效
-        // 在飞续体+置 nil；增量持久化清空归 Task 8/12。
-        incrementalSession?.cancel()
-        incrementalSession = nil
         // streamingSession 保留供 finish 收尾；后续帧不再 feed（phase guard）
     }
 
@@ -414,8 +434,8 @@ public final class VoiceInputSessionController {
     public func cancelRecording() async {
         // V1.1 Task 6：显式取消 = 增量会话作废（与 pttDown 重入清理/streamingLost 同款原子清理）。
         // 全相生效：录音中丢弃在途增量；预览族相取消时连同 pttUp 后残留的增量会话一并作废。
-        incrementalSession?.cancel()
-        incrementalSession = nil
+        incrementalClose()   // 关闭点：cancelRecording 各分支（顶部统一段）
+        onDisplayUpdate?(nil)   // 会话收尾发布 nil
         switch phase {
         case .recordingStreaming, .recordingBatch:
             let session = streamingSession
@@ -469,6 +489,15 @@ public final class VoiceInputSessionController {
         // SceneContext.bundleId 非可选（brief sketch 的 nil 不成立）→ 缺省空串
         let scene = currentScene ?? SceneContext(bundleId: "", sceneType: .officeWriting)
 
+        // ── V1.1 增量结算分支：增量会话在位（=流式挂载成功且创建准入已过）+ 松手准入通过 ──
+        if incrementalSession != nil, streamingSession != nil,
+           ports.incrementalReleaseGate?(scene.sceneType.rawValue) ?? true {
+            await runIncrementalSettlement(token: token, traceId: traceId, scene: scene)
+            return
+        }
+        if incrementalSession != nil { incrementalClose() }   // 松手准入失败（录音中切关全局/场景开关）
+
+        // ── V1 原路径（① finish→② 本地链→③ 空文本→整段润色）──
         // ① 流式收尾（含 drain；finish 恰一次——M3-1）
         var rawText: String?
         var asrSource = ""
@@ -518,6 +547,14 @@ public final class VoiceInputSessionController {
 
         guard let text = rawText else { return }   // 防御：两条上游路径均保证非空
 
+        // ④⑤ V1 整段润色路径（第一步已逐行原样抽为私有函数；增量关/本地/漂移降级共用）
+        await runWholeParagraphPolish(text: text, traceId: traceId, scene: scene,
+                                      asrSource: asrSource, token: token)
+    }
+
+    /// V1 整段润色路径（原 pttUp ④⑤ 代码逐行原样搬移，零行为变化——增量关/本地/漂移降级共用）
+    private func runWholeParagraphPolish(text: String, traceId: String, scene: SceneContext,
+                                         asrSource: String, token: SessionToken?) async {
         // ④ 润色决策（Task 9 C9-7：场景 gate 前置——polishGateFactory 按当前会话 sceneType 消费
         // 全局/场景开关（plan L2208「移入控制器润色前判断」形态）；gate 关 → 跳过润色直出原文，
         // 降级铁律形态，outcome 与 VoicePipeline gate 关结果同形）
@@ -545,6 +582,108 @@ public final class VoiceInputSessionController {
             onPreviewChanged?(session)
             _ = transition(.previewReady)
         }
+    }
+
+    /// V1.1 增量结算：快照立即预览（不等 final）→ 补尾 → 异步漂移核验 → 渐进替换
+    private func runIncrementalSettlement(token: SessionToken?, traceId: String,
+                                          scene: SceneContext) async {
+        guard let inc = incrementalSession, let session = streamingSession else { return }
+        streamingSession = nil   // 所有权转入本函数（finish 在 ③ 异步执行）
+        let completedJoined = lastSnapshot.completed.joined()
+        let snapshotOriginal = completedJoined + lastSnapshot.pending
+
+        // ① 补尾：未定稿尾句派发（唯一新派发；逐字原文传入，组件内 trim 判空与送模型，GC 15）
+        if !lastSnapshot.pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            inc.dispatch(newSentences: [lastSnapshot.pending])
+        }
+
+        // ② 快照决策（fold C1：不复用 PreviewDecision.decide 的 polished 门槛——
+        //    「润色是已完成的过去事件」前提在增量场景不成立，润色是进行中的未来事件）
+        let snap = inc.snapshot()
+        let hasPolished = snap.sentences.contains {
+            if case .polished = $0.state { return true }; return false
+        }
+        let previewOutcome = PolishOutcome(finalText: snap.assembledText, polished: hasPolished,
+                                           polishProviderId: "cloud-polish-hub-incremental", concern: nil)
+        if snap.allDone, snap.assembledText == snapshotOriginal {
+            // 唯一直出分支：allDone 且组装==原文（全失败/全无变化）——V1 铁律
+            incrementalClose()
+            _ = await session.finish()   // M3-1：finish 恰一次——ASR 关闭不泄漏（结果丢弃，语义同 V1 收尾）
+            await deliver(text: snap.assembledText, traceId: traceId, outcome: previewOutcome,
+                          asrProvider: streamingProviderId, token: token)
+            return
+        }
+        // 存在任何在飞句（.polishing/.pending，含补尾）或已润色句 → 一律立即预览（松手零等待）
+        guard phase == .polishing else { return }
+        let previewSession = PreviewSession(traceId: traceId, originalText: snapshotOriginal,
+                                            polishedText: snap.assembledText,
+                                            sceneType: scene.sceneType.rawValue)
+        preview = previewSession
+        pendingOutcome = previewOutcome
+        currentASRProviderId = streamingProviderId
+        onPreviewChanged?(previewSession)
+        _ = transition(.previewReady)
+
+        // ③ 漂移核验（异步——不阻塞预览呈现；final 仅作终稿校对，不再是预览前置）
+        let finishOutcome = await session.finish()
+        guard currentToken == token, phase == .previewing else { return }   // 重入/终态已关闭增量
+        switch finishOutcome {
+        case .text(let final):
+            if final == snapshotOriginal {
+                // 完全一致：无需动作（originalText 已是快照原文=final）
+            } else if final.hasPrefix(completedJoined) {
+                // 仅尾句与 pending 有出入：originalText 对齐 final（回退以 final 为准）
+                if let p = preview {
+                    preview = p.withOriginalText(final, userReverted: previewUserReverted)
+                    onPreviewChanged?(preview)
+                }
+            } else {
+                // 定稿句漂移 → 丢弃增量 → V1 整段润色 → 原位替换预览内容
+                incrementalClose()
+                await replacePreviewWithWholePolish(text: final, traceId: traceId,
+                                                    scene: scene, asrSource: streamingProviderId,
+                                                    token: token)
+            }
+        case .streamingUnavailable:
+            // 晚到 lost（录音正常但 final 失败/空）→ 丢弃增量 → 本地三级链 → 整段替换预览
+            incrementalClose()
+            let chain = await runLocalChain(traceId: traceId)
+            guard currentToken == token, phase == .previewing else { return }
+            if case .text(let text, let providerId) = chain {
+                await replacePreviewWithWholePolish(text: text, traceId: traceId, scene: scene,
+                                                    asrSource: providerId, token: token)
+            }
+            // .empty/.allFailed：保留快照预览（originalText 已是识别原文），不新增上报（F5 单一源）
+        }
+    }
+
+    /// 漂移/晚到 lost 降级：V1 整段润色并原位替换预览内容（phase 保持 .previewing，
+    /// 冻结转移表零新增；整段结果为直出语义时替换为原文预览——确认仍可用）
+    private func replacePreviewWithWholePolish(text: String, traceId: String, scene: SceneContext,
+                                               asrSource: String, token: SessionToken?) async {
+        let outcome: PolishOutcome
+        if ports.polishGateFactory(scene.sceneType.rawValue)(text) {
+            outcome = await ports.pipeline.polish(rawText: text, scene: scene, traceId: traceId)
+        } else {
+            outcome = PolishOutcome(finalText: text, polished: false, polishProviderId: nil, concern: nil)
+        }
+        guard currentToken == token, phase == .previewing else { return }
+        let replacement = PreviewSession(traceId: traceId, originalText: text,
+                                         polishedText: outcome.polished ? outcome.finalText : text,
+                                         sceneType: scene.sceneType.rawValue)
+        preview = replacement
+        pendingOutcome = outcome
+        currentASRProviderId = asrSource
+        onPreviewChanged?(replacement)
+    }
+
+    /// fold（codex P2-9 + 自核补充）：增量会话终态关闭——cancel 递增 generation 失效在飞续体，
+    /// 清引用；后续 onUpdate 回调的续体全部作废（组件内 guard generation），不再有晚到发布。
+    /// 关闭点（缺一即泄漏/晚到污染）：confirm 成功后、discard settle 后、cancelRecording 各分支、
+    /// pttDown 重入清理段、streamingLost、漂移/晚到 lost 丢弃、直出终结。
+    private func incrementalClose() {
+        incrementalSession?.cancel()
+        incrementalSession = nil
     }
 
     /// 本地三级链结果（区分「全失败」与「成功但空」：前者 blocked，后者 needsContext）
@@ -600,6 +739,7 @@ public final class VoiceInputSessionController {
                 // liveSessionId 误删新记录。token+相双条件守卫（deliver 同款模式）。
                 guard currentToken == token, phase == .previewing else { return }
                 settleLive()   // D16：交付成功 = 结算时点
+                incrementalClose()   // V1.1 关闭点：confirm 成功后——晚到在飞续体全部作废（carryover②）
                 reportDelivery(state: outcome.concern != nil ? .doneWithConcerns : .done,
                                traceId: session.traceId, text: session.selectedText,
                                reason: outcome.concern, outcome: outcome)
@@ -710,8 +850,10 @@ public final class VoiceInputSessionController {
               var session = preview else { return }
         if session.selectedText == session.polishedText {
             session.revertToOriginal()
+            previewUserReverted = true   // V1.1：回退时置位——渐进更新保留 selectedText=原文
         } else {
             session.restorePolished()
+            previewUserReverted = false   // V1.1：恢复润色时清位
         }
         preview = session
         onPreviewChanged?(session)
@@ -860,6 +1002,7 @@ public final class VoiceInputSessionController {
         let had = preview != nil
         preview = nil
         pendingOutcome = nil
+        previewUserReverted = false   // V1.1 Task 7：随预览清理重置
         if had { onPreviewChanged?(nil) }
     }
 
@@ -906,6 +1049,7 @@ public final class VoiceInputSessionController {
             }
         } else {
             settleLive()
+            incrementalClose()   // V1.1 关闭点：discard settle 后（撤销窗超时）——作废残留增量会话
             preview = nil
             pendingOutcome = nil
             _ = transition(.undoTimeout)
