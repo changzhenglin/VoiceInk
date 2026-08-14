@@ -176,6 +176,11 @@ final class AttentionLampBarController: NSObject {
             p.isOpaque = false
             p.backgroundColor = .clear
             p.hasShadow = false
+            // 光标三轮修探针①（r10）：borderless 面板默认不收 mouse-moved 事件
+            //（acceptsMouseMovedEvents=false）——二轮 cursor rects「实测无反馈」的
+            // 疑似缺口=解析从未被触发。一行使能验证该假设；无效则转 NSTrackingArea
+            // 显式驱动（不重走 push/pop 栈与裸 cursor rects 两条已证失败路）。
+            p.acceptsMouseMovedEvents = true
             // I1（fix round 1）：移除 .fullScreenAuxiliary——全屏 bar 隐藏（spec Step 4）。
             p.collectionBehavior = [.canJoinAllSpaces]
             panel = p
