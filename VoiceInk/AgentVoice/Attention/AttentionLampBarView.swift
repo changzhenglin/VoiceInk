@@ -164,8 +164,15 @@ struct AttentionLampBarView: View {
     let onNavigate: (String) -> Void
     /// Escape 第二级（bar → previousFocus；FocusRestorationCoordinator 裁决归控制器）。
     let onEscape: () -> Void
+    /// 交互层重做（老林裁 A 案+光标实测无反馈二轮修）：灯格子几何上报——
+    /// AppKit cursor rects 消费（NSCursor.push/pop 在非激活面板被系统鼠标移动
+    /// 重置不可靠；cursor rects 是正规机制，不依赖 app 激活态）。
+    let onCellFrames: ([CGRect]) -> Void
     private let model = AttentionLampBarModel()
     private let focusCoordinator = FocusRestorationCoordinator()
+
+    /// 灯格子几何上报命名坐标系（cursor rects 消费；覆盖整个 bar 内容域）。
+    static let cursorCoordSpace = "attention.lampbar.cursor"
 
     /// 键盘焦点槽位序（nil = bar 级，未聚焦具体灯）。
     @State private var focusedIndex: Int?
@@ -197,11 +204,12 @@ struct AttentionLampBarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(barBackground)
-        // 交互层重做（老林 2026-08-14 裁 A 案）：拖动区光标反馈——bar 整体悬停
-        // 显示抓取手（isMovableByWindowBackground 空白处可拖）；灯格子悬停由
-        // lampGlyph 层叠指点手（子层后 push 覆盖父层）。push/pop 严格成对。
-        .onHover { hovering in
-            if hovering { NSCursor.openHand.push() } else { NSCursor.pop() }
+        // 交互层重做：光标 rects 几何基准——命名坐标系覆盖整个 bar（含 padding/
+        // 背景=hosting 内容域），灯格子 frame 经 Preference 上报控制器→面板
+        // cursor rects（灯格=指点手/空白=抓取手；AppKit 正规机制不依赖激活态）。
+        .coordinateSpace(name: Self.cursorCoordSpace)
+        .onPreferenceChange(LampCellFramesKey.self) { frames in
+            onCellFrames(frames)
         }
         // 容器 AX 元素顺序（14A-2b 修）：先 .contain 建容器，再挂容器级 identifier
         //（原序 identifier 在内层 → 泄漏到子 Text，容器本身无 identifier）。
@@ -304,10 +312,11 @@ struct AttentionLampBarView: View {
             reason: slot.reasonLine ?? "状态未知",
             lamp: slot.lamp, waitElapsed: data.waitElapsed[slot.sessionKey])
             .joined(separator: "\n"))
-        // 光标反馈：灯格子=指点手（可点击）；与 bar 级抓取手 push/pop 层叠。
-        .onHover { hovering in
-            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        // 灯格子几何上报（cursor rects 消费面；命名坐标系=整个 bar 内容域）。
+        .background(GeometryReader { geo in
+            Color.clear.preference(key: LampCellFramesKey.self,
+                                   value: [geo.frame(in: .named(Self.cursorCoordSpace))])
+        })
     }
 
     /// 8+N 折叠灯（聚合色=overflow 最高优先灯态；穷举 +N 形状归 14A）。
@@ -366,5 +375,14 @@ private struct Triangle: Shape {
         p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         p.closeSubpath()
         return p
+    }
+}
+
+/// 灯格子几何 Preference（交互层重做：cursor rects 消费面）。
+/// 各灯格子经 GeometryReader 上报 frame（命名坐标系=bar 内容域），reduce 聚合。
+private struct LampCellFramesKey: PreferenceKey {
+    static var defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
     }
 }

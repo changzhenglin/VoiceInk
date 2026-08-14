@@ -27,6 +27,29 @@ final class AttentionLampBarViewModel: ObservableObject {
     }
 }
 
+/// 灯条内容视图（交互层重做：cursor rects 宿主）。
+/// NSWindow 无 addCursorRect API——cursor rects 须在视图 resetCursorRects 内登记；
+/// flipped 视图坐标系与 SwiftUI 命名空间一致（top-left 原点），灯格 frame 直用。
+/// 光标分区（老林裁 A 案）：灯格=指点手（点击区）；其余=抓取手（拖动区）。
+/// AppKit 正规机制：鼠标移动自动解析，不依赖 app 激活态与 push/pop 栈
+///（老林实测 push/pop 在 borderless nonactivating 面板无反馈→本机制替代）。
+final class AttentionLampContentView: NSView {
+    /// 灯格子 frame（SwiftUI Preference 上报；命名坐标系=bar 内容域）。
+    var lampCellFrames: [CGRect] = [] {
+        didSet { window?.discardCursorRects() }   // 触发 resetCursorRects 重建
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: NSCursor.openHand)      // 空白=拖动区
+        for frame in lampCellFrames {
+            addCursorRect(frame, cursor: NSCursor.pointingHand)   // 灯格=点击区
+        }
+    }
+}
+
 /// v4 灯条悬浮窗控制器（spec §3 悬浮灯条；behind versioned flag）。
 /// flag off → 不建窗/即隐藏（呈现静默）；flag on → 常驻主屏悬浮 bar。
 /// I1（fix round 1）：移除 `.fullScreenAuxiliary`——spec Step 4「全屏 bar 隐藏」，
@@ -40,6 +63,10 @@ final class AttentionLampBarController: NSObject {
     let viewModel = AttentionLampBarViewModel()
     private let focusCoordinator = FocusRestorationCoordinator()
     private var panel: NSPanel?
+    /// 交互层重做：hosting/contentView 直管（contentViewController 改 contentView
+    /// 包装视图以承载 cursor rects；引用保持供 syncPanel 更新 rootView/尺寸）。
+    private var hostingController: NSHostingController<AttentionLampBarView>?
+    private var contentWrapper: AttentionLampContentView?
     private var refreshTimer: Timer?
     private var hotkeyMonitor: Any?
     private var placementObserver: NSObjectProtocol?
@@ -66,6 +93,7 @@ final class AttentionLampBarController: NSObject {
         if let m = hotkeyMonitor { NSEvent.removeMonitor(m); hotkeyMonitor = nil }
         if let o = placementObserver { NotificationCenter.default.removeObserver(o); placementObserver = nil }
         panel?.orderOut(nil); panel = nil
+        hostingController = nil; contentWrapper = nil
         viewModel.barData = AttentionLampBarData(); viewModel.isVisible = false
     }
 
@@ -129,7 +157,20 @@ final class AttentionLampBarController: NSObject {
             let p = NSPanel(contentRect: .zero,
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
-            p.contentViewController = hosting
+            // 交互层重做：wrapper 视图承载 cursor rects（NSWindow 无 addCursorRect）
+            let wrapper = AttentionLampContentView()
+            wrapper.translatesAutoresizingMaskIntoConstraints = false
+            hosting.view.translatesAutoresizingMaskIntoConstraints = false
+            wrapper.addSubview(hosting.view)
+            NSLayoutConstraint.activate([
+                hosting.view.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+                hosting.view.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+                hosting.view.topAnchor.constraint(equalTo: wrapper.topAnchor),
+                hosting.view.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+            ])
+            p.contentView = wrapper
+            hostingController = hosting
+            contentWrapper = wrapper
             p.isFloatingPanel = true
             p.level = .floating
             p.isOpaque = false
@@ -149,7 +190,7 @@ final class AttentionLampBarController: NSObject {
                 guard let win = note.object as? NSWindow else { return }
                 AttentionLampBarPlacement.save(x: win.frame.origin.x, y: win.frame.origin.y)
             }
-        } else if let hosting = panel?.contentViewController as? NSHostingController<AttentionLampBarView> {
+        } else if let hosting = hostingController {
             hosting.rootView = makeBarView()
             // 14A-3 裁决卡②：标签加长（完整目录名）→ 面板尺寸随数据更新
             //（创建时 layoutNearTop 定尺寸，数据变化后须重算；宽度夹在屏宽内）
@@ -170,12 +211,16 @@ final class AttentionLampBarController: NSObject {
             },
             onEscape: { [weak self] in
                 Task { @MainActor in self?.handleBarEscape() }
+            },
+            onCellFrames: { [weak self] frames in
+                // 灯格子几何 → wrapper cursor rects（didSet 自动 invalidate）。
+                self?.contentWrapper?.lampCellFrames = frames
             })
     }
 
     private func layoutNearTop() {
         guard let screen = NSScreen.main, let panel else { return }
-        let size = panel.contentViewController?.view.fittingSize
+        let size = hostingController?.view.fittingSize
             ?? NSSize(width: 200, height: 40)
         panel.setContentSize(size)
         // 14A-3 修复批 C：有用户保存位置则恢复（拖动后跨启动保持），否则默认顶部
