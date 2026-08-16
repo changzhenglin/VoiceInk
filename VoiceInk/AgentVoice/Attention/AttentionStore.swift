@@ -33,6 +33,11 @@ final class AttentionStore: ObservableObject {
     @Published var overflow: OverflowInfo?
     @Published var enabled = false
     @Published var versionDrift = false
+    /// 漂移自愈节流（老林 2026-08-16 裁自动重注册）：已尝试重注册的版本号。
+    /// 同版本号只尝试一次（防失败窗内每 2s tick 周期写 settings）；drift 清零
+    /// 时重置 nil（未来新版本号可再触发）。MainActor 口径（refresh 读取/
+    /// detached 任务经 MainActor.run 写入）。
+    private var driftRepairAttemptedVersion: String?
     /// Task 17：导航反馈（.focused → nil 清除；.fallbackAppActivated → 提示用户自行找窗口；
     /// .failed → 导航失败提示）。面板动作按钮区一行 secondary 文案读取。
     @Published var navFeedback: String?
@@ -362,12 +367,31 @@ final class AttentionStore: ObservableObject {
     func refresh() {
         guard let router else { return }
         // ADJ-4 drift：探测 spawn 子进程（waitUntilExit 阻塞）——放后台不卡主线程
-        // （与 AttentionSettingsView.refreshVersions 同口径），回主线程置位
+        //（与 AttentionSettingsView.refreshVersions 同口径），回主线程置位。
+        // 漂移自愈批（老林裁自动重注册）：检测到漂移→安装器后台重注册当前版本号
+        //（节流=每版本号仅一次，先标记后执行防并发 tick 双写）；conflict/failed
+        // 保持 fail-closed（全灯?灰+诊断徽标），手动重启=既有恢复路径。
+        // 状态机语义零变更：hookHealth 入口级 guard 不动，只动注入上游自愈接线。
         let installed = HookInstaller(token: Self.sharedAuthToken()).installedClaudeVersion()
+        let attempted = driftRepairAttemptedVersion
         Task.detached(priority: .utility) { [weak self] in
             let drift = ClaudeVersionProbe.drift(installed: installed)
             guard let self else { return }
-            await MainActor.run { self.versionDrift = drift }
+            if drift, let current = ClaudeVersionProbe.current(),
+               AttentionDriftAutoRepairPolicy.shouldAttemptRepair(current: current,
+                                                                  attempted: attempted) {
+                // 先标记后执行：并发 tick 看到 attempted==current 即跳过，防双写。
+                await MainActor.run { self.driftRepairAttemptedVersion = current }
+                let installer = HookInstaller(token: Self.sharedAuthToken())
+                let result = installer.install(claudeVersion: current)
+                let stillDrift = AttentionDriftAutoRepairPolicy.driftAfterRepair(result: result)
+                await MainActor.run { self.versionDrift = stillDrift }
+                return
+            }
+            await MainActor.run {
+                self.versionDrift = drift
+                if !drift { self.driftRepairAttemptedVersion = nil }   // 清零复位节流
+            }
         }
         let snaps = router.currentSnapshots()
         let items = router.currentItems()

@@ -56,6 +56,10 @@ final class HookInstaller {
         let backup = settingsPath + ".agentos-backup-\(Int(Date().timeIntervalSince1970))"
         if fm.fileExists(atPath: settingsPath) {
             try? fm.copyItem(atPath: settingsPath, toPath: backup)
+            // 漂移自愈批（④类清理）：备份轮转保留最近 5 份——install() 每次建
+            // .agentos-backup-*（实测已积累 329 份），自动重注册将按 Claude 升级
+            // 频率日增，不轮转则 ~/.claude/ 无限积累。纯决策面在 Policy 可测。
+            rotateBackups(keeping: 5)
         }
         let scriptPath = installScript()
         let entry: [String: Any] = [
@@ -107,6 +111,21 @@ final class HookInstaller {
 
     func installedClaudeVersion() -> String? {
         (readSettings()?["voice_coding_attention"] as? [String: Any])?["installed_claude_version"] as? String
+    }
+
+    /// 备份轮转（漂移自愈批）：install() 每次建 .agentos-backup-* 副本，
+    /// 保留最近 keeping 份、删其余。过期判定纯决策面=Policy.expiredBackups
+    ///（文件名后缀 epoch 秒为时序权威）；删除失败静默降级（卫生面非关键路径）。
+    func rotateBackups(keeping: Int) {
+        let fm = FileManager.default
+        let dir = (settingsPath as NSString).deletingLastPathComponent
+        let prefix = (settingsPath as NSString).lastPathComponent + ".agentos-backup-"
+        let entries = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+        let backups = entries.filter { $0.hasPrefix(prefix) }
+            .map { (dir as NSString).appendingPathComponent($0) }
+        for path in AttentionDriftAutoRepairPolicy.expiredBackups(all: backups, keeping: keeping) {
+            try? fm.removeItem(atPath: path)
+        }
     }
 
     private func readSettings() -> [String: Any]? {
