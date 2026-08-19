@@ -127,6 +127,17 @@ public struct CapabilityFieldMatrix: Sendable {
         // idle_prompt）；枚举标记字段非内容面，tool_name（I6）先例同型；老林 2026-08-12
         // 批准登记；sizeLimit 收紧至枚举尺度（官方两值均 ≤20 字节）
         row(.attentionIngest, "notification_type", eph: true, render: true, sizeLimit: 64),
+        // —— 派生字段补行（老林 2026-08-19 final review P1-2 裁决批准）——
+        // adapter 层派生面随 event_json 持久化，矩阵文字与实际落盘对齐；
+        // 三行均为非内容派生形态（官方枚举分类/basename/哈希指纹），零原文落盘。
+        // notification_subtype：notification_type 派生分类（Adapter
+        // notificationSubtype）；源字段自身授权面不变（eph+render，上方行）。
+        row(.attentionIngest, "notification_subtype", eph: true, render: true, persist: true, sizeLimit: 64),
+        // cwd_label/cwd_ref：C20 合同裁决形态（契约层只存 basename 标签+全路径
+        // SHA-256 指纹，原始绝对路径从不落盘）；源字段 cwd 自身授权面不变
+        //（eph+render+basename，下方行）。
+        row(.attentionIngest, "cwd_label", eph: true, render: true, persist: true, sizeLimit: 256),
+        row(.attentionIngest, "cwd_ref", eph: true, persist: true, sizeLimit: 64),
         // hook 投递进程号（14A-3 裁决卡①幽灵灯探活证据要素，老林 2026-08-13
         // 随方案批准）：纯数字标记，零内容面；sizeLimit 收紧至数字尺度。
         // 修复批六（缺陷⑦根治，老林 2026-08-14 AskUserQuestion 裁 A 案批准）：

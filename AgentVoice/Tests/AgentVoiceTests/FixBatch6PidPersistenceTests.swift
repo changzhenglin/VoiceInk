@@ -34,6 +34,9 @@ final class FixBatch6PidPersistenceTests: XCTestCase {
             "reason", "stop_hook_active", "duration_ms", "permission_mode",
             "prompt_id", "hook_event_name", "session_id",
             "attention_process_pid",   // 批六新增（老林批准）
+            // 派生字段补行（老林 2026-08-19 final review P1-2 裁决批准）：
+            // 非内容派生形态（官方枚举分类/basename/哈希指纹），零原文落盘。
+            "notification_subtype", "cwd_label", "cwd_ref",
         ]
         for field in granted {
             XCTAssertEqual(
