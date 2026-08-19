@@ -15,12 +15,17 @@ final class ClaudeVersionProbe {
         // fix round 4（codex r4 闭合）：非阻塞收集——readabilityHandler 增量收集
         // 输出，取代 readDataToEndOfFile（后者在后代进程继承 stdout 且不写时
         // 可永久阻塞，破坏有界性）。
+        // fix round 5（codex r5 闭合）：EOF 标志位——尾部收敛改轮询该标志
+        //（有界短窗），取代固定 50ms 猜测窗（高负载下 handler 尾回调可能
+        // 未及处理→收空/收残→版本漏探）。
         let collected = NSMutableData()
         let collectLock = NSLock()
+        var eofReached = false   // collectLock 保护
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty {   // EOF
                 handle.readabilityHandler = nil
+                collectLock.lock(); eofReached = true; collectLock.unlock()
                 return
             }
             collectLock.lock(); collected.append(data); collectLock.unlock()
@@ -43,8 +48,15 @@ final class ClaudeVersionProbe {
             pipe.fileHandleForReading.readabilityHandler = nil
             return nil   // ADJ-4 探测失败 fail-open
         }
-        // 正常结束：handler 收残余留短窗（~30 字节输出瞬至）
-        Thread.sleep(forTimeInterval: 0.05)
+        // 正常结束：轮询 EOF 标志收敛尾部（fix round 5）——子进程已退出，
+        // EOF 必然到达（claude --version 无后代持有 stdout）；500ms 有界窗
+        // 超时（异常持有）取已收集缓冲，永不永挂。
+        let eofDeadline = Date().addingTimeInterval(0.5)
+        while true {
+            collectLock.lock(); let done = eofReached; collectLock.unlock()
+            if done || Date() >= eofDeadline { break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
         pipe.fileHandleForReading.readabilityHandler = nil
         collectLock.lock()
         let outData = collected.copy() as? Data ?? Data()
