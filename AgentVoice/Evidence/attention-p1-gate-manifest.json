@@ -4,10 +4,10 @@
     "owner": "老林（在场观察）+ 14A-3 观察窗",
     "phase": "14A-3",
     "automated_or_manual": "manual",
-    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（已建，观察记录进行中）",
-    "status": "PENDING",
-    "measurement": "一眼测试：灯态一眼读对率；二问：当前在等什么/该做什么答对率；人工观察标签记录，不含 prompt/正文",
-    "threshold": "3 个真实工作日×每天≥5次且 4/6/8 会话各有样本；一眼二问全对率≥80%"
+    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（段已闭环：仅 08-12 首夜 1 样本，verdict=错——命中缺陷期假等待，根因已由修复批三~六+批五根治；修复后正式采样 0 条）",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "一眼测试：灯态一眼读对率；二问：当前在等什么/该做什么答对率；人工观察标签记录，不含 prompt/正文。2026-08-19 老林裁决：观察期压缩为一个下午→未采样，豁免正式观察直接交付（以日常使用状态为准），本判据按裁决豁免，不写 PASS",
+    "threshold": "原判据=3 个真实工作日×每天≥5次且 4/6/8 会话各有样本；一眼二问全对率≥80%（2026-08-19 老林裁决豁免）"
   },
   {
     "id": "s9-02-no-lie",
@@ -35,8 +35,8 @@
     "phase": "14A-2",
     "automated_or_manual": "semi-automated",
     "evidence_path": "最小音频面机制 14A-2 已建并验证：VoiceInkTests/AttentionTickConsumeGuardTests.swift（drainedEntries 非空播放前提/silent·muted 抑制/全屏补偿决策，gate 段 4 GREEN）+ 包层 drain 机制 AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift；真机通知送达证据归 14A-3",
-    "status": "PENDING",
-    "measurement": "新●黄/▲红 收纳：聚合短计（drain 摘要）+ 通知双达；通知到达需真机证据（包层只证 drain at-most-once 机制，不证通知渠道送达）",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "新●黄/▲红 收纳：聚合短计（drain 摘要）+ 通知双达；通知到达需真机证据（包层只证 drain at-most-once 机制，不证通知渠道送达）。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——真机送达证据未产出，按裁决豁免，不写 PASS",
     "threshold": "聚合短计与通知双达；播放前提=drainedEntries 非空（事件驱动，不逐 tick 播）"
   },
   {
@@ -44,9 +44,9 @@
     "owner": "14A-2 implementer + 老林（VO 人工）",
     "phase": "14A-2",
     "automated_or_manual": "uitests+manual",
-    "evidence_path": "VoiceInkUITests/AttentionLampPresentationGateUITests.swift 自动化子集 GREEN（2026-08-12 gate 段 5 实跑）：⌘⇧V 纯键盘路径 + 灯元素 AX label 非空（VO 可读前提）+ 非激活不抢焦点；VoiceOver/Reduce Motion/关颜色 manual 三路径归 14A-3 在场窗口（EVIDENCE_REQUIRED）",
-    "status": "PENDING",
-    "measurement": "关颜色（色觉多样）/VoiceOver 全程可读/纯键盘全流程三路径验收",
+    "evidence_path": "VoiceInkUITests/AttentionLampPresentationGateUITests.swift 自动化子集 GREEN（2026-08-12 gate 段 5 实跑）：⌘⇧V 纯键盘路径 + 灯元素 AX label 非空（VO 可读前提）+ 非激活不抢焦点；VoiceOver/Reduce Motion/关颜色 manual 三路径归 14A-3 在场窗口",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "关颜色（色觉多样）/VoiceOver 全程可读/纯键盘全流程三路径验收。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——manual 三路径未跑（自动化子集 GREEN 在案），按裁决豁免，不写 PASS",
     "threshold": "三路径全流程通过；灯条非激活不抢焦点"
   },
   {
@@ -56,7 +56,7 @@
     "automated_or_manual": "automated+manual-spot",
     "evidence_path": "观察 seam 14A-2 已建：projection dump 每 tick 写盘（lamps/activity_fact 可观察）+ E2E tick 间隔注入（VoiceInk.swift -AttentionE2ETickIntervalSeconds）；量化 p95 计时测量归 14A-3 真机抽查",
     "status": "EVIDENCE_REQUIRED",
-    "measurement": "I5 回复信号→●黄转◌绿时延，自 store mutation 起计（spec §9 #6 口径）；机制链已就位（UAS userPromptRelated 信号 reducer 接线 Task 8B #5），量化证据未产出",
+    "measurement": "I5 回复信号→●黄转◌绿时延，自 store mutation 起计（spec §9 #6 口径）；机制链已就位（UAS userPromptRelated 信号 reducer 接线 Task 8B #5），量化证据未产出。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——无正式秒表抽查（日常使用无延迟报告），按裁决豁免，不写 PASS",
     "threshold": "p95≤2s（store 变更起至 UI 投影可见）"
   },
   {
@@ -64,9 +64,9 @@
     "owner": "老林（真机）+ 14A-2 implementer",
     "phase": "14A-2",
     "automated_or_manual": "manual",
-    "evidence_path": "supported-host 矩阵已入库：AgentVoice/Evidence/attention-env-matrix.json（5 终端行，measurement=support 档位，GateEnvMatrixStructureTests 结构校验 GREEN）；五场景真机演练未跑，归 14A-3/真机在场",
-    "status": "PENDING",
-    "measurement": "跳转失败降级五场景（最小化/跨 Space/跨屏/窗口不存在/AX 无权）+ ⨯/复制定位 + 灯态不变",
+    "evidence_path": "supported-host 矩阵已入库：AgentVoice/Evidence/attention-env-matrix.json（5 终端行，measurement=support 档位，GateEnvMatrixStructureTests 结构校验 GREEN）；真机部分证据：修复批四 live 实证（pid 播种全窗跳转可用，08-13 ledger）+ 老林 08-16 点击跳转复验「点击没有问题」（happy path）；五场景降级演练（最小化/跨 Space/跨屏/窗口不存在/AX 无权）未跑",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "跳转失败降级五场景（最小化/跨 Space/跨屏/窗口不存在/AX 无权）+ ⨯/复制定位 + 灯态不变。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——五场景演练未跑（happy path 真机证据在案），按裁决豁免，不写 PASS",
     "threshold": "五场景全降级不崩溃；supported-host 矩阵与实际 evidence 入库"
   },
   {
@@ -76,7 +76,7 @@
     "automated_or_manual": "semi-automated",
     "evidence_path": "detector/全屏补偿生产接线已就位（8B-2 app 层接线 commit 8309549）+ 14A-2 测试 seam 验证：fullScreenOverride 注入 + drainedEntries 非空前提全屏补偿决策（AttentionTickConsumeGuardTests GREEN）；真机送达证据归 14A-3",
     "status": "EVIDENCE_REQUIRED",
-    "measurement": "全屏时灯条 bar 隐藏 + 高优先事件经通知/声音第二通道送达；detector 在位（半自动），送达真机证据缺",
+    "measurement": "全屏时灯条 bar 隐藏 + 高优先事件经通知/声音第二通道送达；detector 在位（半自动），送达真机证据缺。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——真机送达证据未产出，按裁决豁免，不写 PASS",
     "threshold": "全屏隐藏且高优先双通道达；零静默丢失"
   },
   {
@@ -84,10 +84,10 @@
     "owner": "老林（在场观察）+ 14A-3 观察窗",
     "phase": "14A-3",
     "automated_or_manual": "manual",
-    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（已建，观察记录进行中）",
-    "status": "PENDING",
-    "measurement": "观察期 working 长任务中假 ?灰 出现率；分母/分子如实记录",
-    "threshold": "假 ?灰 率≤5%"
+    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（无假?灰抽查记录）。观察期唯一全灯?灰事件=版本漂移 fail-closed 设计行为（08-16 ledger 全灯?灰事件处置节：Claude Code 升级触发，非假?灰；08-19 漂移自愈批后该场景自动恢复）",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "观察期 working 长任务中假 ?灰 出现率；分母/分子如实记录。2026-08-19 老林裁决豁免正式观察直接交付——无正式抽查样本，日常使用期间无假?灰报告，本判据按裁决豁免，不写 PASS",
+    "threshold": "原判据=假 ?灰 率≤5%（2026-08-19 老林裁决豁免）"
   },
   {
     "id": "s9-10-gradient",
