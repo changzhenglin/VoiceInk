@@ -42,6 +42,12 @@ final class AttentionStore: ObservableObject {
     /// 在 MainActor 上检查+置位（原子），探测/修复完成时清零；探测耗时超过
     /// 刷新周期时并发 tick 不再各自通过节流检查（原 check-then-mark 非原子窗）。
     private var driftRepairInFlight = false
+    /// 在飞起点时刻（fix round 2：codex P2 liveness 根治）——探测/安装器均用
+    /// 无期限 waitUntilExit()，子进程永挂时完成回调永不归→标志永不清零→
+    /// 漂移检测永久停摆。超时阈值到→复位放行（永挂子进程弃收不追，
+    /// 僵尸归队只幂等写状态无害）。阈值 120s≫正常探测(~1s)+安装(ms 级)。
+    private var driftRepairStartedAt: Date?
+    private let driftRepairInFlightTimeout: TimeInterval = 120
     /// Task 17：导航反馈（.focused → nil 清除；.fallbackAppActivated → 提示用户自行找窗口；
     /// .failed → 导航失败提示）。面板动作按钮区一行 secondary 文案读取。
     @Published var navFeedback: String?
@@ -379,8 +385,16 @@ final class AttentionStore: ObservableObject {
         // final fix round（codex P2 竞态根治）：inFlight 标志 MainActor 原子置位，
         // 探测/修复在飞期间后续 tick 跳过探测——原 check-then-mark 窗口内多
         // detached 任务可同时通过节流检查并发改 settings。
+        // fix round 2（codex P2 liveness 根治）：在飞超时复位——子进程永挂时
+        // 完成回调不归，标志不得永久卡死漂移检测（120s 阈值，见属性注记）。
+        if driftRepairInFlight, let started = driftRepairStartedAt,
+           Date().timeIntervalSince(started) > driftRepairInFlightTimeout {
+            driftRepairInFlight = false
+            driftRepairStartedAt = nil
+        }
         if !driftRepairInFlight {
             driftRepairInFlight = true
+            driftRepairStartedAt = Date()
             let installed = HookInstaller(token: Self.sharedAuthToken()).installedClaudeVersion()
             let attempted = driftRepairAttemptedVersion
             Task.detached(priority: .utility) { [weak self] in
@@ -398,6 +412,7 @@ final class AttentionStore: ObservableObject {
                 }
                 await MainActor.run {
                     self.driftRepairInFlight = false
+                    self.driftRepairStartedAt = nil
                     self.versionDrift = stillDrift
                     if !stillDrift { self.driftRepairAttemptedVersion = nil }   // 清零复位节流
                 }

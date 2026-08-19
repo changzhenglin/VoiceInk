@@ -16,6 +16,9 @@ final class HookInstaller {
     private let settingsPath: String
     private let port: UInt16
     private let token: String
+    /// fix round 2（codex P2 hermetic 修）：投递脚本落盘路径注入 seam——
+    /// 生产 nil=home 默认路径（行为不变）；测试注入 tmp 路径（不触生产脚本）。
+    private let scriptDestination: String?
     /// 我方管理的事件键（install 写入 / uninstall 清理范围）；
     /// 不相关键（PreCompact 等其他插件的 hooks）不在安装/卸载范围，不阻塞安装。
     /// 14A-3 修复批 B（老林批准）：补 UserPromptSubmit（回复信号，spec I5 明文：
@@ -26,8 +29,9 @@ final class HookInstaller {
 
     init(settingsPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/settings.json").path,
-         port: UInt16 = 47821, token: String) {
+         port: UInt16 = 47821, token: String, scriptDestination: String? = nil) {
         self.settingsPath = settingsPath; self.port = port; self.token = token
+        self.scriptDestination = scriptDestination
     }
 
     func install(claudeVersion: String) -> InstallResult {
@@ -50,6 +54,12 @@ final class HookInstaller {
                 return .failed("既有 settings 不可读或不可解析：拒绝覆盖（请人工检查文件）")
             }
             settings = existing
+        }
+        // fix round 2（codex P2 守卫补全）：hooks 键存在但非字典结构 → 拒绝。
+        // 原守卫只验 JSON 根对象可解析，异常 hooks 结构会绕过 conflict 检查
+        // 被新字典整体替换（备份可恢复但预防优先）。
+        if let hooksVal = settings["hooks"], !(hooksVal is [String: Any]) {
+            return .failed("既有 settings hooks 结构异常（非字典）：拒绝覆盖（请人工检查文件）")
         }
         // merge 保护：我方管理的 8 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
         // 不相关键（PreCompact 等其他插件 hooks）不在安装/卸载范围，不阻塞。
@@ -152,18 +162,22 @@ final class HookInstaller {
     }
     /// 投递脚本落盘（final fix round：失败显式返 nil——原实现资源缺失/写入
     /// 失败仍返路径，install 报 .installed 但 hook 实际不可用）。
+    /// fix round 2（codex P2 二修）：①chmod 返回值检查——写入成功但执行位
+    /// 设置失败同归 hook 不可用，不得报 .installed；②dest 走 scriptDestination
+    /// 注入 seam（生产 nil=home 路径行为不变；测试注入 tmp 不触生产脚本）。
     private func installScript() -> String? {
-        let dest = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".voice-coding/attention-hook-deliver.sh").path
+        let dest = scriptDestination
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".voice-coding/attention-hook-deliver.sh").path
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: dest).deletingLastPathComponent(),
             withIntermediateDirectories: true)
         guard let url = Bundle.main.url(forResource: "attention-hook-deliver", withExtension: "sh"),
               let content = try? String(contentsOf: url),
-              (try? content.write(toFile: dest, atomically: true, encoding: .utf8)) != nil else {
+              (try? content.write(toFile: dest, atomically: true, encoding: .utf8)) != nil,
+              chmod(dest, 0o755) == 0 else {
             return nil
         }
-        chmod(dest, 0o755)
         return dest
     }
 }
