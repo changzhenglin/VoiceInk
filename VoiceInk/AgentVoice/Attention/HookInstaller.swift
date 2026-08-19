@@ -41,9 +41,14 @@ final class HookInstaller {
 
         let fm = FileManager.default
         var settings: [String: Any] = [:]
-        if fm.fileExists(atPath: settingsPath),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if fm.fileExists(atPath: settingsPath) {
+            // final fix round（codex P1-7 残留面守卫）：既有 settings 存在但不可读/
+            // 不可解析 → 拒绝安装。原实现在读取失败时退化为空字典继续写=覆盖
+            // 用户配置（虽有备份兜底，但预防优于事后恢复）。
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+                  let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .failed("既有 settings 不可读或不可解析：拒绝覆盖（请人工检查文件）")
+            }
             settings = existing
         }
         // merge 保护：我方管理的 8 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
@@ -61,7 +66,11 @@ final class HookInstaller {
             // 频率日增，不轮转则 ~/.claude/ 无限积累。纯决策面在 Policy 可测。
             rotateBackups(keeping: 5)
         }
-        let scriptPath = installScript()
+        // final fix round（codex P1-7 残留面）：脚本落盘失败显式拒绝——
+        // 原实现资源缺失/写入失败仍返路径并照报 .installed（hook 实际不可用）。
+        guard let scriptPath = installScript() else {
+            return .failed("投递脚本写入失败：安装中止（检查 ~/.voice-coding/ 可写性）")
+        }
         let entry: [String: Any] = [
             "matcher": "*",
             "hooks": [["type": "command",
@@ -141,17 +150,20 @@ final class HookInstaller {
         guard let arr = value as? [[String: Any]] else { return false }
         return arr.contains { isEntryOurs($0) }
     }
-    private func installScript() -> String {
+    /// 投递脚本落盘（final fix round：失败显式返 nil——原实现资源缺失/写入
+    /// 失败仍返路径，install 报 .installed 但 hook 实际不可用）。
+    private func installScript() -> String? {
         let dest = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".voice-coding/attention-hook-deliver.sh").path
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: dest).deletingLastPathComponent(),
             withIntermediateDirectories: true)
-        if let url = Bundle.main.url(forResource: "attention-hook-deliver", withExtension: "sh"),
-           let content = try? String(contentsOf: url) {
-            try? content.write(toFile: dest, atomically: true, encoding: .utf8)
-            chmod(dest, 0o755)
+        guard let url = Bundle.main.url(forResource: "attention-hook-deliver", withExtension: "sh"),
+              let content = try? String(contentsOf: url),
+              (try? content.write(toFile: dest, atomically: true, encoding: .utf8)) != nil else {
+            return nil
         }
+        chmod(dest, 0o755)
         return dest
     }
 }

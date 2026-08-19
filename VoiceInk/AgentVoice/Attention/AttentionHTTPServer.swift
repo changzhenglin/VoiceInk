@@ -94,7 +94,12 @@ final class AttentionHTTPServer {
         receiveFull(conn: conn, buffer: Data())
     }
 
-    /// F8：循环 receive 直到收满 Content-Length 或超限（单包截断防护）
+    /// F8：循环 receive 直到收满 Content-Length 或超限（单包截断防护）。
+    /// final fix round（codex P2 边界修）：maxBody 语义=body 上限——原实现
+    /// `buf.count > maxBody` 把请求头一并计入，恰好 1MiB body 加头部即误 413。
+    /// 现口径：缓冲增长上限=maxBody+headerBudget（内存上界不破）；头部解析后
+    /// 按 bodyLen 精确判限+Content-Length 声明超限提前拒。
+    private static let headerBudget = 16 * 1024
     private func receiveFull(conn: NWConnection, buffer: Data) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: maxBody) {
             [weak self] chunk, _, isComplete, error in
@@ -102,7 +107,7 @@ final class AttentionHTTPServer {
             if error != nil { return self.close(conn) }
             var buf = buffer
             if let chunk { buf.append(chunk) }
-            if buf.count > self.maxBody {
+            if buf.count > self.maxBody + Self.headerBudget {
                 return self.respond(conn, status: "413", body: #"{"status":"too_large"}"#)
             }
             // 解析 header 判断 body 是否收满
@@ -113,6 +118,10 @@ final class AttentionHTTPServer {
                     offsetBy: req[..<headerEnd.upperBound].utf8.count)
                 let bodyLen = buf.count - (bodyStart - buf.startIndex)
                 let declared = Self.contentLength(of: header) ?? Int.max
+                // body 精确判限（声明值提前拒+累积值实时拒）
+                if declared > self.maxBody || bodyLen > self.maxBody {
+                    return self.respond(conn, status: "413", body: #"{"status":"too_large"}"#)
+                }
                 if bodyLen >= declared || isComplete {
                     return self.process(conn: conn, request: req)
                 }

@@ -38,6 +38,10 @@ final class AttentionStore: ObservableObject {
     /// 时重置 nil（未来新版本号可再触发）。MainActor 口径（refresh 读取/
     /// detached 任务经 MainActor.run 写入）。
     private var driftRepairAttemptedVersion: String?
+    /// 漂移自愈在飞标志（final fix round：codex P2 竞态根治）——refresh tick
+    /// 在 MainActor 上检查+置位（原子），探测/修复完成时清零；探测耗时超过
+    /// 刷新周期时并发 tick 不再各自通过节流检查（原 check-then-mark 非原子窗）。
+    private var driftRepairInFlight = false
     /// Task 17：导航反馈（.focused → nil 清除；.fallbackAppActivated → 提示用户自行找窗口；
     /// .failed → 导航失败提示）。面板动作按钮区一行 secondary 文案读取。
     @Published var navFeedback: String?
@@ -372,25 +376,31 @@ final class AttentionStore: ObservableObject {
         //（节流=每版本号仅一次，先标记后执行防并发 tick 双写）；conflict/failed
         // 保持 fail-closed（全灯?灰+诊断徽标），手动重启=既有恢复路径。
         // 状态机语义零变更：hookHealth 入口级 guard 不动，只动注入上游自愈接线。
-        let installed = HookInstaller(token: Self.sharedAuthToken()).installedClaudeVersion()
-        let attempted = driftRepairAttemptedVersion
-        Task.detached(priority: .utility) { [weak self] in
-            let drift = ClaudeVersionProbe.drift(installed: installed)
-            guard let self else { return }
-            if drift, let current = ClaudeVersionProbe.current(),
-               AttentionDriftAutoRepairPolicy.shouldAttemptRepair(current: current,
-                                                                  attempted: attempted) {
-                // 先标记后执行：并发 tick 看到 attempted==current 即跳过，防双写。
-                await MainActor.run { self.driftRepairAttemptedVersion = current }
-                let installer = HookInstaller(token: Self.sharedAuthToken())
-                let result = installer.install(claudeVersion: current)
-                let stillDrift = AttentionDriftAutoRepairPolicy.driftAfterRepair(result: result)
-                await MainActor.run { self.versionDrift = stillDrift }
-                return
-            }
-            await MainActor.run {
-                self.versionDrift = drift
-                if !drift { self.driftRepairAttemptedVersion = nil }   // 清零复位节流
+        // final fix round（codex P2 竞态根治）：inFlight 标志 MainActor 原子置位，
+        // 探测/修复在飞期间后续 tick 跳过探测——原 check-then-mark 窗口内多
+        // detached 任务可同时通过节流检查并发改 settings。
+        if !driftRepairInFlight {
+            driftRepairInFlight = true
+            let installed = HookInstaller(token: Self.sharedAuthToken()).installedClaudeVersion()
+            let attempted = driftRepairAttemptedVersion
+            Task.detached(priority: .utility) { [weak self] in
+                let drift = ClaudeVersionProbe.drift(installed: installed)
+                guard let self else { return }
+                var stillDrift = drift
+                if drift, let current = ClaudeVersionProbe.current(),
+                   AttentionDriftAutoRepairPolicy.shouldAttemptRepair(current: current,
+                                                                      attempted: attempted) {
+                    // 先标记后执行：并发 tick 看到 attempted==current 即跳过，防双写。
+                    await MainActor.run { self.driftRepairAttemptedVersion = current }
+                    let installer = HookInstaller(token: Self.sharedAuthToken())
+                    let result = installer.install(claudeVersion: current)
+                    stillDrift = AttentionDriftAutoRepairPolicy.driftAfterRepair(result: result)
+                }
+                await MainActor.run {
+                    self.driftRepairInFlight = false
+                    self.versionDrift = stillDrift
+                    if !stillDrift { self.driftRepairAttemptedVersion = nil }   // 清零复位节流
+                }
             }
         }
         let snaps = router.currentSnapshots()
