@@ -46,8 +46,14 @@ final class AttentionStore: ObservableObject {
     /// 无期限 waitUntilExit()，子进程永挂时完成回调永不归→标志永不清零→
     /// 漂移检测永久停摆。超时阈值到→复位放行（永挂子进程弃收不追，
     /// 僵尸归队只幂等写状态无害）。阈值 120s≫正常探测(~1s)+安装(ms 级)。
+    /// fix round 3 更新：探测已自有界化（ClaudeVersionProbe.probeTimeout 强杀），
+    /// 本阈值退化为纵深兜底；复位时推进 generation 宣告旧任务作废。
     private var driftRepairStartedAt: Date?
     private let driftRepairInFlightTimeout: TimeInterval = 120
+    /// 自愈代际（fix round 3：codex r3 P2 根治）——每次启动/超时复位推进；
+    /// 完成回调仅在代际匹配时写状态：超时复位后启动新任务 B，旧任务 A 迟到
+    /// 归队不得清 B 的在飞标志（否则并发安装/状态覆盖重现）。
+    private var driftRepairGeneration: UInt64 = 0
     /// Task 17：导航反馈（.focused → nil 清除；.fallbackAppActivated → 提示用户自行找窗口；
     /// .failed → 导航失败提示）。面板动作按钮区一行 secondary 文案读取。
     @Published var navFeedback: String?
@@ -387,14 +393,19 @@ final class AttentionStore: ObservableObject {
         // detached 任务可同时通过节流检查并发改 settings。
         // fix round 2（codex P2 liveness 根治）：在飞超时复位——子进程永挂时
         // 完成回调不归，标志不得永久卡死漂移检测（120s 阈值，见属性注记）。
+        // fix round 3：复位同时推进代际——旧任务迟到回调经代际门作废，
+        // 不得清新任务在飞标志（codex r3 P2 根治）。
         if driftRepairInFlight, let started = driftRepairStartedAt,
            Date().timeIntervalSince(started) > driftRepairInFlightTimeout {
             driftRepairInFlight = false
             driftRepairStartedAt = nil
+            driftRepairGeneration &+= 1
         }
         if !driftRepairInFlight {
             driftRepairInFlight = true
             driftRepairStartedAt = Date()
+            driftRepairGeneration &+= 1
+            let gen = driftRepairGeneration
             let installed = HookInstaller(token: Self.sharedAuthToken()).installedClaudeVersion()
             let attempted = driftRepairAttemptedVersion
             Task.detached(priority: .utility) { [weak self] in
@@ -411,6 +422,9 @@ final class AttentionStore: ObservableObject {
                     stillDrift = AttentionDriftAutoRepairPolicy.driftAfterRepair(result: result)
                 }
                 await MainActor.run {
+                    // fix round 3（codex r3 P2 根治）：代际门——超时复位后旧任务
+                    // 迟到归队不得清新任务在飞标志（防并发安装/状态覆盖重现）。
+                    guard gen == self.driftRepairGeneration else { return }
                     self.driftRepairInFlight = false
                     self.driftRepairStartedAt = nil
                     self.versionDrift = stillDrift
