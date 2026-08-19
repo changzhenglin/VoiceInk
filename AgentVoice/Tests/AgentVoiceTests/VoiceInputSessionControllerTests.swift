@@ -1878,7 +1878,6 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         let asr = FakeStreamingASR()
         let longText = String(repeating: "字", count: 120)
         asr.finalText = longText
-        let port = ControllableSentencePolishPort()   // 工厂返回 nil 时永不消费——对照物
         let factoryCalls = Recorder<String>()
         let sut = makeSUT(streamingASRs: { asr },
                           polishResult: "整段润色结果。",
@@ -1895,8 +1894,7 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertEqual(preview?.originalText, longText)
         XCTAssertEqual(preview?.polishedText, "整段润色结果。")
         XCTAssertEqual(sut.polishProvider.callCount, 1)
-        XCTAssertEqual(port.dispatchedCount, 0)   // 增量零参与
-        XCTAssertEqual(factoryCalls.count, 1)     // 工厂 pttDown 被调一次返回 nil（开关语义归工厂）
+        XCTAssertEqual(factoryCalls.count, 1)     // 工厂 pttDown 被调一次返回 nil（开关语义归工厂）；port 从未传入 SUT，dispatchedCount 恒 0 不具断言价值
 
         // confirm/settle 全链 V1 语义
         await sut.controller.confirmPreview()
@@ -1976,6 +1974,8 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(displays.count, displaysCountAtLost)   // onDisplayUpdate 无新发布
         XCTAssertEqual(lastPreview(sut)?.polishedText, "本地链润色结果。")   // preview 无变化
+        // fold P1-3 复核：resume 降级返回后 DB polished_parts 仍清空（隐私面不变）
+        XCTAssertTrue((try? recoverActive().first?.polishedParts.isEmpty) ?? false)
     }
 
     /// 回归④：录音中取消——增量 cancel + settle + 无预览无注入（V1 取消语义全同）。
@@ -2006,6 +2006,9 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         port.resume("取消句。")
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(sut.controller.phase, .idle)
+        // resume 后复核：增量已关闭，晚到结果零注入、无新非 nil 预览发布
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+        XCTAssertTrue(sut.previews.all.allSatisfy { $0 == nil })
     }
 
     /// 回归⑤（fold Eng I2：spec §5 条款 8「录音中切换开关」）：pttDown 时工厂返回会话（增量开）
@@ -2037,15 +2040,28 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertTrue(dispatched)
         switchOff.append(1)   // 录音中切关开关（模拟 UserDefaults 变化）
 
+        // fold Eng I2 钉住：切关后句定稿继续到达仍被当前会话增量组件派发
+        // （当前会话创建时快照存活，spec §5 条款 8「句定稿仍派发」一面）
+        // 终稿同步含两句，避免快照(句一+句三)与 final(仅句一)不一致触发漂移降级 V1 整段
+        asr1.finalText = "句一原。句三原。"
+        port.results["句三原。"] = PolishOutcome(finalText: "句三润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        asr1.emitPartial("句三原。", finalized: true)
+        let stillDispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(stillDispatched)                          // 切关后句定稿仍派发
+        XCTAssertEqual(port.dispatched.last, "句三原。")
+        try? await Task.sleep(nanoseconds: 100_000_000)        // 让句三润色返回 settle
+
         // ① 当前会话增量组件继续工作：松手仍增量结算（创建时快照语义，spec §5 条款 8）
         await sut.controller.pttUp()
         XCTAssertEqual(sut.controller.phase, .previewing)
-        XCTAssertEqual(lastPreview(sut)?.polishedText, "句一润。")
-        XCTAssertEqual(lastPreview(sut)?.originalText, "句一原。")
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "句一润。句三润。")
+        XCTAssertEqual(lastPreview(sut)?.originalText, "句一原。句三原。")
         await sut.controller.confirmPreview()
         XCTAssertEqual(sut.controller.phase, .idle)
 
         // ② 新会话：工厂返回 nil → 增量组件不创建，V1 全路径
+        let dispatchedAfterSession1 = port.dispatchedCount
         await sut.controller.pttDown()
         asr2.emitPartial("句二原。", finalized: true)
         let partialSeen = await waitUntil { sut.partials.all.contains("句二原。") }
@@ -2055,7 +2071,7 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertEqual(lastPreview(sut)?.originalText, "句二原。")
         XCTAssertEqual(lastPreview(sut)?.polishedText, "整段润色结果。")   // V1 整段润色
         XCTAssertEqual(sut.polishProvider.callCount, 1)   // 会话二整段润色一次（会话一增量走 port 不耗 pipeline）
-        XCTAssertEqual(port.dispatchedCount, 1)           // 会话二增量零参与
+        XCTAssertEqual(port.dispatchedCount, dispatchedAfterSession1)   // 会话二增量零参与（相对值，不受会话一句数影响）
     }
 
     /// 回归⑥（fold codex P2-4：开关关=V1 的字数边界在控制器级钉住）：增量关 + 云流式成功，
