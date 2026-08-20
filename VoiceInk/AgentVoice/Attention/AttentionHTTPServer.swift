@@ -11,11 +11,22 @@ final class AttentionHTTPServer {
     private let authToken: String     // C2：由 AttentionStore 注入的全局唯一 token
     private var listener: NWListener?
     private(set) var authRejectCount = 0
-    private let maxBody = 65536
+    /// 修复批五 fix round 2：64KB→FieldAllowlist.maxBodyBytes（1MiB）单源对齐——
+    /// PostToolUse 携 tool_response/Write 携文件全文常超 64KB 被 413 静默拒
+    ///（B2 result 行实证）；privacy 门自身上限即 1MiB（禁止集字段解码边界跳过
+    /// 不 materialize），两限一致。内存注记（fix round 3 F6 更正）：receive chunk
+    /// 最大 1MiB 且超限检查在 append 后——单连接缓冲水位瞬时峰值 ≈2MiB，
+    /// 最坏 16 并发 ≈32MiB（菜单栏 app 可忽略）。
+    private let maxBody = FieldAllowlist.maxBodyBytes
     private let maxConcurrent = 16
     private var activeConnections = 0
     private var admittedConns: Set<ObjectIdentifier> = []  // I1：幂等递减记账
     private let connLock = NSLock()
+    /// 修复批五 fix round 3（review F1 根治）：停机标志——stop() 置位后，
+    /// process() 的「检查+入队」在同一把 connLock 内完成 → stop() 返回后
+    /// 确定性无新入队（已准入在途 handler 的 drain 竞态窗闭合），
+    /// disable 优雅排空「先断新入再排空在途」语义由或然转必然。
+    private var stopped = false
     private let requestDeadline: TimeInterval = 5   // C14：每请求 deadline
 
     init(router: AttentionEventRouter, port: UInt16 = 47821, authToken: String) {
@@ -48,7 +59,14 @@ final class AttentionHTTPServer {
         throw ServerError.bindFailed
     }
 
-    func stop() { listener?.cancel() }
+    func stop() {
+        // 修复批五 fix round 3（review F1）：先在锁内置停机标志再 cancel listener——
+        // 与 process() 的锁内「检查+入队」互斥，stop() 返回后无新入队（确定性）。
+        connLock.lock()
+        stopped = true
+        connLock.unlock()
+        listener?.cancel()
+    }
 
     /// C14：连接准入——超并发上限返 503，防慢客户端无限持有
     private func admit(_ conn: NWConnection) {
@@ -76,7 +94,12 @@ final class AttentionHTTPServer {
         receiveFull(conn: conn, buffer: Data())
     }
 
-    /// F8：循环 receive 直到收满 Content-Length 或超限（单包截断防护）
+    /// F8：循环 receive 直到收满 Content-Length 或超限（单包截断防护）。
+    /// final fix round（codex P2 边界修）：maxBody 语义=body 上限——原实现
+    /// `buf.count > maxBody` 把请求头一并计入，恰好 1MiB body 加头部即误 413。
+    /// 现口径：缓冲增长上限=maxBody+headerBudget（内存上界不破）；头部解析后
+    /// 按 bodyLen 精确判限+Content-Length 声明超限提前拒。
+    private static let headerBudget = 16 * 1024
     private func receiveFull(conn: NWConnection, buffer: Data) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: maxBody) {
             [weak self] chunk, _, isComplete, error in
@@ -84,7 +107,7 @@ final class AttentionHTTPServer {
             if error != nil { return self.close(conn) }
             var buf = buffer
             if let chunk { buf.append(chunk) }
-            if buf.count > self.maxBody {
+            if buf.count > self.maxBody + Self.headerBudget {
                 return self.respond(conn, status: "413", body: #"{"status":"too_large"}"#)
             }
             // 解析 header 判断 body 是否收满
@@ -95,6 +118,10 @@ final class AttentionHTTPServer {
                     offsetBy: req[..<headerEnd.upperBound].utf8.count)
                 let bodyLen = buf.count - (bodyStart - buf.startIndex)
                 let declared = Self.contentLength(of: header) ?? Int.max
+                // body 精确判限（声明值提前拒+累积值实时拒）
+                if declared > self.maxBody || bodyLen > self.maxBody {
+                    return self.respond(conn, status: "413", body: #"{"status":"too_large"}"#)
+                }
                 if bodyLen >= declared || isComplete {
                     return self.process(conn: conn, request: req)
                 }
@@ -128,18 +155,51 @@ final class AttentionHTTPServer {
         guard let json = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
               let hook = json["hook_event_name"] as? String,
               let payloadObj = json["payload"],
-              let payloadData = try? JSONSerialization.data(withJSONObject: payloadObj),
-              let payloadJson = String(data: payloadData, encoding: .utf8) else {
+              let payloadData = try? JSONSerialization.data(withJSONObject: payloadObj) else {
             return respond(conn, status: "400", body: #"{"status":"bad_request"}"#)
         }
-        let result = router.ingest(hookEventName: hook, payloadJson: payloadJson,
-                                   observedAt: Date())
-        switch result {
-        case .accepted: respond(conn, status: "200", body: #"{"status":"accepted"}"#)
-        case .duplicate: respond(conn, status: "200", body: #"{"status":"duplicate"}"#)
-        case .rejected(let code):
-            respond(conn, status: "422",
-                    body: #"{"status":"rejected","code":"\#(code.rawValue)"}"#)
+        // Task 8A carryover 消费 #1/#2：生产接线经 V1 前置最小隐私门（spec §8.8）——
+        // 原始 hook payload 先过 FieldAllowlist.sanitize，仅 privacyClass==.ok 以允许字段
+        // 再编码进入既有 ingest 链；blocked/unknown/超限在门处即拒（.rejected(.privacyGate)
+        // → 422）。transcript/prompt/tool input-output 真实内容不入库（red-line privacy）。
+        // 修复批五（delivery-loss 根治 A 面）：sanitize 保持同步（422 语义不变），
+        // ingest 主体转串行队列后台消费——连接生命周期不再包锁等待，
+        // 5s deadline 只约束读+入队（微秒级），高并发尾事件不再静默丢。
+        guard let sanitized = try? FieldAllowlist.sanitize(source: .officialHook, data: payloadData),
+              sanitized.privacyClass == .ok,
+              var sanitizedPayload = (try? JSONSerialization.jsonObject(
+                  with: sanitized.reencodedAllowedFields()) as? [String: Any]) else {
+            return respond(conn, status: "422",
+                           body: #"{"status":"rejected","code":"E-PRIVACY-GATE"}"#)
+        }
+        // 修复批五 fix round 5（门管道缺陷根治）：sanitize 未知字段剥离把
+        // delivery_id/seq 一并剥掉——二者是 C6 nonce 与序号信封字段（零内容面），
+        // 被剥后 event_id 退化纯内容指纹 → 同会话同形 sanitize 内容事件互相
+        // .duplicate 静默丢（实证：本窗 Bash PreToolUse 除首条外全丢；该缺陷自
+        // privacy 门上线起存在，是数日「PreToolUse 高丢失」的真正主因）。
+        // 门原义=剥内容面；此处恢复门前既有信封字段，零新增内容字段、零矩阵行变更。
+        if let originalPayload = payloadObj as? [String: Any] {
+            if let dd = originalPayload["delivery_id"] { sanitizedPayload["delivery_id"] = dd }
+            if let sq = originalPayload["seq"] { sanitizedPayload["seq"] = sq }
+        }
+        guard let repairedData = try? JSONSerialization.data(withJSONObject: sanitizedPayload),
+              let sanitizedJson = String(data: repairedData, encoding: .utf8) else {
+            return respond(conn, status: "422",
+                           body: #"{"status":"rejected","code":"E-PRIVACY-GATE"}"#)
+        }
+        // 修复批五 fix round 3（review F1）：停机检查与入队同锁原子——
+        // stop() 返回后此处必拒（已准入在途 handler 不再漏入队）。
+        connLock.lock()
+        if stopped {
+            connLock.unlock()
+            return close(conn)   // 停机后不受新事件；连接直接闭合（无消费方等响应）
+        }
+        let enqueueResult = router.ingestAsync(hookEventName: hook, payloadJson: sanitizedJson,
+                                               observedAt: Date())
+        connLock.unlock()
+        switch enqueueResult {
+        case .enqueued: respond(conn, status: "200", body: #"{"status":"queued"}"#)
+        case .queueFull: respond(conn, status: "503", body: #"{"status":"queue_full"}"#)
         }
     }
 

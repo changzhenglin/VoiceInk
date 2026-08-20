@@ -1,0 +1,38 @@
+[
+  {
+    "hook_event_name": "SessionStart",
+    "payload": {
+      "session_id": "14a2e26d-0002-4b02-9b02-000000000d02",
+      "delivery_id": "14a-late-d1",
+      "cwd": "/Users/synthetic-14a/proj-beta"
+    },
+    "observed_at_epoch": 1700000000.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a2e26d-0002-4b02-9b02-000000000d02",
+      "delivery_id": "14a-late-d2",
+      "cwd": "/Users/synthetic-14a/proj-beta"
+    },
+    "observed_at_epoch": 1700000010.0
+  },
+  {
+    "hook_event_name": "Stop",
+    "payload": {
+      "session_id": "14a2e26d-0002-4b02-9b02-000000000d02",
+      "delivery_id": "14a-late-d3",
+      "cwd": "/Users/synthetic-14a/proj-beta"
+    },
+    "observed_at_epoch": 1700000005.0
+  },
+  {
+    "hook_event_name": "UserPromptSubmit",
+    "payload": {
+      "session_id": "14a2e26d-0002-4b02-9b02-000000000d02",
+      "delivery_id": "14a-late-d4",
+      "cwd": "/Users/synthetic-14a/proj-beta"
+    },
+    "observed_at_epoch": 1700000003.0
+  }
+]

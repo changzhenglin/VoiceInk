@@ -1,0 +1,38 @@
+[
+  {
+    "hook_event_name": "SessionStart",
+    "payload": {
+      "session_id": "14a1d15c-0001-4a01-9a01-000000000d01",
+      "delivery_id": "14a-disc-d1",
+      "cwd": "/Users/synthetic-14a/proj-alpha"
+    },
+    "observed_at_epoch": 1700000000.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a1d15c-0001-4a01-9a01-000000000d01",
+      "delivery_id": "14a-disc-d2",
+      "cwd": "/Users/synthetic-14a/proj-alpha"
+    },
+    "observed_at_epoch": 1700000010.0
+  },
+  {
+    "hook_event_name": "SessionStart",
+    "payload": {
+      "session_id": "14a1d15c-0001-4a01-9a01-000000000d01",
+      "delivery_id": "14a-disc-d3",
+      "cwd": "/Users/synthetic-14a/proj-alpha"
+    },
+    "observed_at_epoch": 1700000620.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a1d15c-0001-4a01-9a01-000000000d01",
+      "delivery_id": "14a-disc-d4",
+      "cwd": "/Users/synthetic-14a/proj-alpha"
+    },
+    "observed_at_epoch": 1700000630.0
+  }
+]

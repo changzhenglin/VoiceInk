@@ -16,14 +16,22 @@ final class HookInstaller {
     private let settingsPath: String
     private let port: UInt16
     private let token: String
+    /// fix round 2（codex P2 hermetic 修）：投递脚本落盘路径注入 seam——
+    /// 生产 nil=home 默认路径（行为不变）；测试注入 tmp 路径（不触生产脚本）。
+    private let scriptDestination: String?
     /// 我方管理的事件键（install 写入 / uninstall 清理范围）；
     /// 不相关键（PreCompact 等其他插件的 hooks）不在安装/卸载范围，不阻塞安装。
-    private static let managedEventNames = ["Stop", "Notification", "PreToolUse", "StopFailure", "SessionStart", "SessionEnd"]
+    /// 14A-3 修复批 B（老林批准）：补 UserPromptSubmit（回复信号，spec I5 明文：
+    /// 用户应答 → waiting 解除 ●黄→◌绿；此前缺位致 waiting 项永不解除——14A-3
+    /// 首夜观察实证）+ PostToolUse（工具结束 lease 解除）。消费面 Task 8B #5 已建。
+    /// internal：修复批测试面可见（@testable）。
+    static let managedEventNames = ["Stop", "Notification", "PreToolUse", "PostToolUse", "StopFailure", "SessionStart", "SessionEnd", "UserPromptSubmit"]
 
     init(settingsPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/settings.json").path,
-         port: UInt16 = 47821, token: String) {
+         port: UInt16 = 47821, token: String, scriptDestination: String? = nil) {
         self.settingsPath = settingsPath; self.port = port; self.token = token
+        self.scriptDestination = scriptDestination
     }
 
     func install(claudeVersion: String) -> InstallResult {
@@ -37,12 +45,23 @@ final class HookInstaller {
 
         let fm = FileManager.default
         var settings: [String: Any] = [:]
-        if fm.fileExists(atPath: settingsPath),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if fm.fileExists(atPath: settingsPath) {
+            // final fix round（codex P1-7 残留面守卫）：既有 settings 存在但不可读/
+            // 不可解析 → 拒绝安装。原实现在读取失败时退化为空字典继续写=覆盖
+            // 用户配置（虽有备份兜底，但预防优于事后恢复）。
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+                  let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .failed("既有 settings 不可读或不可解析：拒绝覆盖（请人工检查文件）")
+            }
             settings = existing
         }
-        // merge 保护：我方管理的 6 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
+        // fix round 2（codex P2 守卫补全）：hooks 键存在但非字典结构 → 拒绝。
+        // 原守卫只验 JSON 根对象可解析，异常 hooks 结构会绕过 conflict 检查
+        // 被新字典整体替换（备份可恢复但预防优先）。
+        if let hooksVal = settings["hooks"], !(hooksVal is [String: Any]) {
+            return .failed("既有 settings hooks 结构异常（非字典）：拒绝覆盖（请人工检查文件）")
+        }
+        // merge 保护：我方管理的 8 事件键中若存在非 VoiceInk 条目 → 报冲突让 UI 层确认；
         // 不相关键（PreCompact 等其他插件 hooks）不在安装/卸载范围，不阻塞。
         if let hooks = settings["hooks"] as? [String: Any] {
             let foreign = hooks.keys.filter { Self.managedEventNames.contains($0) && !isOurs(hooks[$0]) }
@@ -52,8 +71,16 @@ final class HookInstaller {
         let backup = settingsPath + ".agentos-backup-\(Int(Date().timeIntervalSince1970))"
         if fm.fileExists(atPath: settingsPath) {
             try? fm.copyItem(atPath: settingsPath, toPath: backup)
+            // 漂移自愈批（④类清理）：备份轮转保留最近 5 份——install() 每次建
+            // .agentos-backup-*（实测已积累 329 份），自动重注册将按 Claude 升级
+            // 频率日增，不轮转则 ~/.claude/ 无限积累。纯决策面在 Policy 可测。
+            rotateBackups(keeping: 5)
         }
-        let scriptPath = installScript()
+        // final fix round（codex P1-7 残留面）：脚本落盘失败显式拒绝——
+        // 原实现资源缺失/写入失败仍返路径并照报 .installed（hook 实际不可用）。
+        guard let scriptPath = installScript() else {
+            return .failed("投递脚本写入失败：安装中止（检查 ~/.voice-coding/ 可写性）")
+        }
         let entry: [String: Any] = [
             "matcher": "*",
             "hooks": [["type": "command",
@@ -105,6 +132,21 @@ final class HookInstaller {
         (readSettings()?["voice_coding_attention"] as? [String: Any])?["installed_claude_version"] as? String
     }
 
+    /// 备份轮转（漂移自愈批）：install() 每次建 .agentos-backup-* 副本，
+    /// 保留最近 keeping 份、删其余。过期判定纯决策面=Policy.expiredBackups
+    ///（文件名后缀 epoch 秒为时序权威）；删除失败静默降级（卫生面非关键路径）。
+    func rotateBackups(keeping: Int) {
+        let fm = FileManager.default
+        let dir = (settingsPath as NSString).deletingLastPathComponent
+        let prefix = (settingsPath as NSString).lastPathComponent + ".agentos-backup-"
+        let entries = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+        let backups = entries.filter { $0.hasPrefix(prefix) }
+            .map { (dir as NSString).appendingPathComponent($0) }
+        for path in AttentionDriftAutoRepairPolicy.expiredBackups(all: backups, keeping: keeping) {
+            try? fm.removeItem(atPath: path)
+        }
+    }
+
     private func readSettings() -> [String: Any]? {
         (try? Data(contentsOf: URL(fileURLWithPath: settingsPath)))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -118,16 +160,23 @@ final class HookInstaller {
         guard let arr = value as? [[String: Any]] else { return false }
         return arr.contains { isEntryOurs($0) }
     }
-    private func installScript() -> String {
-        let dest = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".voice-coding/attention-hook-deliver.sh").path
+    /// 投递脚本落盘（final fix round：失败显式返 nil——原实现资源缺失/写入
+    /// 失败仍返路径，install 报 .installed 但 hook 实际不可用）。
+    /// fix round 2（codex P2 二修）：①chmod 返回值检查——写入成功但执行位
+    /// 设置失败同归 hook 不可用，不得报 .installed；②dest 走 scriptDestination
+    /// 注入 seam（生产 nil=home 路径行为不变；测试注入 tmp 不触生产脚本）。
+    private func installScript() -> String? {
+        let dest = scriptDestination
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".voice-coding/attention-hook-deliver.sh").path
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: dest).deletingLastPathComponent(),
             withIntermediateDirectories: true)
-        if let url = Bundle.main.url(forResource: "attention-hook-deliver", withExtension: "sh"),
-           let content = try? String(contentsOf: url) {
-            try? content.write(toFile: dest, atomically: true, encoding: .utf8)
-            chmod(dest, 0o755)
+        guard let url = Bundle.main.url(forResource: "attention-hook-deliver", withExtension: "sh"),
+              let content = try? String(contentsOf: url),
+              (try? content.write(toFile: dest, atomically: true, encoding: .utf8)) != nil,
+              chmod(dest, 0o755) == 0 else {
+            return nil
         }
         return dest
     }

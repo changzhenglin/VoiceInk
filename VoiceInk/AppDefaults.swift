@@ -1,4 +1,5 @@
 import Foundation
+import AgentVoice   // Task 14A-2：ReminderPreset（reminder preset 注册默认值）
 
 enum CleanupSettingsKeys {
     static let isTranscriptionCleanupEnabled = "IsTranscriptionCleanupEnabled"
@@ -10,6 +11,22 @@ enum CleanupSettingsKeys {
 
 enum RecorderDisplaySettingsKeys {
     static let showLiveTranscript = "ShowLiveTranscript"
+}
+
+/// 注意力 v4 灯条呈现键（Task 8A）。
+enum AttentionPresentationKeys {
+    /// P1 versioned feature gate：v4 灯条渲染层 behind flag（plan P1 feature gate 原文）。
+    /// off（默认）→ 呈现层全静默；store 采集继续（§2 Off 语义同律）。
+    static let lampBarP1Enabled = "AttentionLampBarP1Enabled"
+    /// 呈现策略 drain 重入语义——控制器裁决=at-most-once（一次性呈现），待 8B 接线批消费。
+    /// true=drain 周期重入重复呈现；false=一次性呈现。默认 false（裁决值，非临时）。
+    static let presentationDrainRepeat = "AttentionPresentationDrainRepeat"
+    /// Task 14A-2（裁决 5）：提醒 preset（ReminderPreset rawValue：strong/silent）。
+    /// 默认 strong=可发声档（原 decideSound 硬编码值语义平移）；控提示音/系统通知两表面。
+    static let reminderPreset = "AttentionReminderPreset"
+    /// Task 14A-2（裁决 5）：提醒 mute（Bool）。默认 false（原硬编码值语义平移）；
+    /// mute 优先于 preset（§2 L31）。
+    static let reminderMuted = "AttentionReminderMuted"
 }
 
 enum AppDefaults {
@@ -71,6 +88,14 @@ enum AppDefaults {
             "agentVoiceASRMode": "auto",
             "agentVoicePolishEnabled": true,
             "agentVoicePolishDisabledScenes": [String](),
+
+            // AgentVoice Attention v4 灯条（Task 8A；P1 behind versioned flag，默认静默）
+            AttentionPresentationKeys.lampBarP1Enabled: false,
+            AttentionPresentationKeys.presentationDrainRepeat: false,
+            // Task 14A-2（裁决 5）：reminder preset/muted 注册默认——可发声档 strong +
+            // 未 mute（原 decideSound 硬编码占位值的语义平移；用户设置 UI 面不扩，known hole）
+            AttentionPresentationKeys.reminderPreset: ReminderPreset.strong.rawValue,
+            AttentionPresentationKeys.reminderMuted: false,
 
         ])
 

@@ -181,11 +181,49 @@ struct VoiceInkApp: App {
         // 面板/设置窗口控制器 weak 注入（保证面板 open 前已注入）
         AttentionDetailPanelController.shared.store = attentionStore
         AttentionSettingsPanelController.shared.store = attentionStore
-        // 启动自动恢复：hooks 已装（用户上次开过）→ replay 恢复投影（C5 派生态持久化语义）；
+        // Task 14A-2b：E2E bridge 模式（launch argument `-AttentionE2EMode YES` 驱动）——
+        // enableForE2E 事务链同生产但跳过 hooks 安装（红线：settings.json 生产 hooks 零触碰），
+        // port/dbPath 注入避开生产 47821 与生产 DB；成功后写 bridge 文件供 UITests runner 消费。
+        // 非 E2E：启动自动恢复——hooks 已装（用户上次开过）→ replay 恢复投影（C5 派生态持久化语义）；
         // fail-open：失败不阻塞启动、enabled 保持 false。版本探测不进启动路径（refresh() tick 已含）
-        if HookInstaller(token: AttentionStore.sharedAuthToken()).installedClaudeVersion() != nil {
+        if UserDefaults.standard.bool(forKey: "AttentionE2EMode") {
+            let portArg = UserDefaults.standard.integer(forKey: "AttentionE2EPort")
+            let e2ePort: UInt16 = portArg > 0 ? UInt16(portArg) : 47931
+            let ttlArg = UserDefaults.standard.double(forKey: "AttentionE2ECompletedTTLSeconds")
+            if UserDefaults.standard.object(forKey: "AttentionE2ECompletedTTLSeconds") != nil, ttlArg > 0 {
+                AttentionProjector.completedTTLOverride = ttlArg
+            }
+            // E2E tick 间隔覆写（生产恒 30s；测试用短间隔加速 dump/timed-transition 可观察性）
+            let tickArg = UserDefaults.standard.double(forKey: "AttentionE2ETickIntervalSeconds")
+            let e2eTickInterval: TimeInterval =
+                (UserDefaults.standard.object(forKey: "AttentionE2ETickIntervalSeconds") != nil && tickArg > 0)
+                ? tickArg : AttentionProductionTicker.defaultInterval
+            // E2E DB 每次启动 fresh（测试隔离：跨 launch 会话累积会污染槽位分配确定性；
+            // UITests 各场景单实例自足，无跨 launch 持久化诉求）。
+            let e2eDbDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("voiceink-e2e-attention/\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: e2eDbDir, withIntermediateDirectories: true)
+            let e2eDbPath = e2eDbDir.appendingPathComponent("events.db").path
+            do {
+                try attentionStore.enableForE2E(port: e2ePort, dbPath: e2eDbPath,
+                                                tickInterval: e2eTickInterval)
+                attentionStore.e2eBridgeEnabled = true
+                attentionStore.writeE2EBridge(port: e2ePort)
+            } catch {
+                // E2E enable 失败（端口占用等）：bridge 文件写 error，runner 侧 waitForBridge 诚实失败
+                let payload: [String: Any] = ["error": String(describing: error)]
+                if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                    try? data.write(to: FileManager.default.temporaryDirectory
+                        .appendingPathComponent("voiceink-attention-e2e-bridge.json"))
+                }
+            }
+        } else if HookInstaller(token: AttentionStore.sharedAuthToken()).installedClaudeVersion() != nil {
             try? attentionStore.enable()
         }
+
+        // ── Task 8A：v4 灯条生产表面（behind versioned flag；flag off 全静默，store 采集继续）──
+        AttentionLampBarController.shared.store = attentionStore
+        AttentionLampBarController.shared.start()
 
         appDelegate.menuBarManager = menuBarManager
 

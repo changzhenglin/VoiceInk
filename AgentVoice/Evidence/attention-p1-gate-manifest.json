@@ -1,0 +1,132 @@
+[
+  {
+    "id": "s9-01-one-glance",
+    "owner": "老林（在场观察）+ 14A-3 观察窗",
+    "phase": "14A-3",
+    "automated_or_manual": "manual",
+    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（段已闭环：仅 08-12 首夜 1 样本，verdict=错——命中缺陷期假等待，根因已由修复批三~六+批五根治；修复后正式采样 0 条）",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "一眼测试：灯态一眼读对率；二问：当前在等什么/该做什么答对率；人工观察标签记录，不含 prompt/正文。2026-08-19 老林裁决：观察期压缩为一个下午→未采样，豁免正式观察直接交付（以日常使用状态为准），本判据按裁决豁免，不写 PASS",
+    "threshold": "原判据=3 个真实工作日×每天≥5次且 4/6/8 会话各有样本；一眼二问全对率≥80%（2026-08-19 老林裁决豁免）"
+  },
+  {
+    "id": "s9-02-no-lie",
+    "owner": "14A-1 implementer",
+    "phase": "14A-1",
+    "automated_or_manual": "automated",
+    "evidence_path": "AgentVoice/Tests/AgentVoiceTests/AttentionFailureMatrixTests.swift; AgentVoice/Tests/AgentVoiceTests/AttentionReducerTests.swift; AgentVoice/Tests/AgentVoiceTests/FreshnessVectorTests.swift",
+    "status": "PASS",
+    "measurement": "假等待=closed 后信号/连接/重投事件不复活事实（矩阵轴 closedNotResurrected GREEN）；孤儿=SessionEnd 重置 activityFact（I3 reducer 测试）；僵尸=静态 active 源不复活 timeout（FreshnessVector 测试）+ working 仅由真实 hook 信号产生（reducer 边界测试）。已知边界见 task-14a-report known holes KH-1",
+    "threshold": "三场景零虚假呈现或如实 ?灰；fail-closed 断言全绿（0 failures）"
+  },
+  {
+    "id": "s9-03-collapse",
+    "owner": "14A-1 implementer",
+    "phase": "14A-1",
+    "automated_or_manual": "automated",
+    "evidence_path": "AgentVoice/Tests/AgentVoiceTests/LampSlotAllocatorTests.swift; AgentVoice/Tests/AgentVoiceTests/AttentionLampBarModelTests.swift",
+    "status": "PASS",
+    "measurement": "8 槽稳定分配（testFirstEightSessionsGetStableSlots）；第 9 个会话溢出 +N 折叠、永不顶替既有槽（testNinthSessionOverflowsNeverEvicts）；privacy masked 项不入 VO/计数（AttentionLampBarModelTests）",
+    "threshold": "9+ 会话 ●+N/▲+N 必现不静默；零驱逐"
+  },
+  {
+    "id": "s9-04-stow",
+    "owner": "14A-2 implementer + 老林（真机）",
+    "phase": "14A-2",
+    "automated_or_manual": "semi-automated",
+    "evidence_path": "最小音频面机制 14A-2 已建并验证：VoiceInkTests/AttentionTickConsumeGuardTests.swift（drainedEntries 非空播放前提/silent·muted 抑制/全屏补偿决策，gate 段 4 GREEN）+ 包层 drain 机制 AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift；真机通知送达证据归 14A-3",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "新●黄/▲红 收纳：聚合短计（drain 摘要）+ 通知双达；通知到达需真机证据（包层只证 drain at-most-once 机制，不证通知渠道送达）。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——真机送达证据未产出，按裁决豁免，不写 PASS",
+    "threshold": "聚合短计与通知双达；播放前提=drainedEntries 非空（事件驱动，不逐 tick 播）"
+  },
+  {
+    "id": "s9-05-accessibility",
+    "owner": "14A-2 implementer + 老林（VO 人工）",
+    "phase": "14A-2",
+    "automated_or_manual": "uitests+manual",
+    "evidence_path": "VoiceInkUITests/AttentionLampPresentationGateUITests.swift 自动化子集 GREEN（2026-08-12 gate 段 5 实跑）：⌘⇧V 纯键盘路径 + 灯元素 AX label 非空（VO 可读前提）+ 非激活不抢焦点；VoiceOver/Reduce Motion/关颜色 manual 三路径归 14A-3 在场窗口",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "关颜色（色觉多样）/VoiceOver 全程可读/纯键盘全流程三路径验收。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——manual 三路径未跑（自动化子集 GREEN 在案），按裁决豁免，不写 PASS",
+    "threshold": "三路径全流程通过；灯条非激活不抢焦点"
+  },
+  {
+    "id": "s9-06-realtime",
+    "owner": "14A-2 implementer（automated 计时）+ 老林（真机抽查）",
+    "phase": "14A-1/14A-2",
+    "automated_or_manual": "automated+manual-spot",
+    "evidence_path": "观察 seam 14A-2 已建：projection dump 每 tick 写盘（lamps/activity_fact 可观察）+ E2E tick 间隔注入（VoiceInk.swift -AttentionE2ETickIntervalSeconds）；量化 p95 计时测量归 14A-3 真机抽查",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "I5 回复信号→●黄转◌绿时延，自 store mutation 起计（spec §9 #6 口径）；机制链已就位（UAS userPromptRelated 信号 reducer 接线 Task 8B #5），量化证据未产出。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——无正式秒表抽查（日常使用无延迟报告），按裁决豁免，不写 PASS",
+    "threshold": "p95≤2s（store 变更起至 UI 投影可见）"
+  },
+  {
+    "id": "s9-07-jump-degrade",
+    "owner": "老林（真机）+ 14A-2 implementer",
+    "phase": "14A-2",
+    "automated_or_manual": "manual",
+    "evidence_path": "supported-host 矩阵已入库：AgentVoice/Evidence/attention-env-matrix.json（5 终端行，measurement=support 档位，GateEnvMatrixStructureTests 结构校验 GREEN）；真机部分证据：修复批四 live 实证（pid 播种全窗跳转可用，08-13 ledger）+ 老林 08-16 点击跳转复验「点击没有问题」（happy path）；五场景降级演练（最小化/跨 Space/跨屏/窗口不存在/AX 无权）未跑",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "跳转失败降级五场景（最小化/跨 Space/跨屏/窗口不存在/AX 无权）+ ⨯/复制定位 + 灯态不变。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——五场景演练未跑（happy path 真机证据在案），按裁决豁免，不写 PASS",
+    "threshold": "五场景全降级不崩溃；supported-host 矩阵与实际 evidence 入库"
+  },
+  {
+    "id": "s9-08-fullscreen-highprio",
+    "owner": "14A-2 implementer + 老林（真机）",
+    "phase": "14A-2",
+    "automated_or_manual": "semi-automated",
+    "evidence_path": "detector/全屏补偿生产接线已就位（8B-2 app 层接线 commit 8309549）+ 14A-2 测试 seam 验证：fullScreenOverride 注入 + drainedEntries 非空前提全屏补偿决策（AttentionTickConsumeGuardTests GREEN）；真机送达证据归 14A-3",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "全屏时灯条 bar 隐藏 + 高优先事件经通知/声音第二通道送达；detector 在位（半自动），送达真机证据缺。2026-08-19 老林裁决豁免 14A-3 在场面直接交付——真机送达证据未产出，按裁决豁免，不写 PASS",
+    "threshold": "全屏隐藏且高优先双通道达；零静默丢失"
+  },
+  {
+    "id": "s9-09-false-gray-rate",
+    "owner": "老林（在场观察）+ 14A-3 观察窗",
+    "phase": "14A-3",
+    "automated_or_manual": "manual",
+    "evidence_path": "AgentVoice/Evidence/attention-one-glance-observation.csv（无假?灰抽查记录）。观察期唯一全灯?灰事件=版本漂移 fail-closed 设计行为（08-16 ledger 全灯?灰事件处置节：Claude Code 升级触发，非假?灰；08-19 漂移自愈批后该场景自动恢复）",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "观察期 working 长任务中假 ?灰 出现率；分母/分子如实记录。2026-08-19 老林裁决豁免正式观察直接交付——无正式抽查样本，日常使用期间无假?灰报告，本判据按裁决豁免，不写 PASS",
+    "threshold": "原判据=假 ?灰 率≤5%（2026-08-19 老林裁决豁免）"
+  },
+  {
+    "id": "s9-10-gradient",
+    "owner": "14A-1 implementer（P1 证据映射）/ V2 归 P2",
+    "phase": "14A-1（P1 部分）+ P2（V2 部分）",
+    "automated_or_manual": "automated",
+    "evidence_path": "P1 部分映射：AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift（completed 静默/TTL 内不转）; AgentVoice/Tests/AgentVoiceTests/ReplayShadowHarnessTests.swift（receipt 冷启动不重播=场景 5）; AgentVoice/Tests/AgentVoiceTests/ChannelReceiptTests.swift（at-most-once）",
+    "status": "blocked_by_p2",
+    "measurement": "P1 梯度五项（completed 静默/Off 抑制/补偿条件/声音不影响灯/receipt 冷启动不重播）多数已被前序测试覆盖（见 evidence_path 映射）；Off 抑制/补偿条件/声音不影响灯三项专门断言面 14A-2 已落地（AttentionTickConsumeGuardTests + gate 段 5 globalOff 绝对安静用例 GREEN）；V2 梯度部分依赖 P2 Task 10-13，当前不得消费",
+    "threshold": "P1 五项全绿 + V2 部分待 P2 门"
+  },
+  {
+    "id": "s9-11-keyboard",
+    "owner": "14A-2 implementer（UITests）/ V2 归 P2",
+    "phase": "14A-2（P1 部分）+ P2（V2 部分）",
+    "automated_or_manual": "uitests",
+    "evidence_path": "（未产出）P1 键盘面 UITests 归 14A-2（前置=系统认证阻塞清除）；FocusRestorationCoordinator 生产 seam 已就位（Sources/AgentVoice/Attention/Presentation/FocusRestorationCoordinator.swift）",
+    "status": "blocked_by_p2",
+    "measurement": "P1 部分 GREEN（2026-08-12 gate 段 5 实跑）：灯条非激活不抢焦点 + previous-focus 恢复（bar 可见期本地 Escape 捕获→确定性隐藏，AttentionLampBarController installHotkeyMonitor）+ 键盘回归 ⌘⇧V；V2 交互面依赖 P2 intervention UI",
+    "threshold": "焦点不劫持/恢复正确；V2 待 P2"
+  },
+  {
+    "id": "s9-12-lifecycle-capacity",
+    "owner": "14A-1 implementer（已覆盖映射）+ 14A-2（kill 集成）",
+    "phase": "14A-1/14A-2",
+    "automated_or_manual": "automated",
+    "evidence_path": "已覆盖：AgentVoice/Tests/AgentVoiceTests/ProductionTickTests.swift（completed 5min→idle timed 转移）; AgentVoice/Tests/AgentVoiceTests/LampSlotAllocatorTests.swift（closed/archived 才释放 + 第 9 个不顶替）; AgentVoice/Tests/AgentVoiceTests/AttentionProjectorTests.swift（testG6FailedYieldsRed failed 即时红）; 14A-2 E2E TTL 覆写退灯实证（AttentionLampPresentationGateUITests.testCompletedExitsLampButUnseenRetained GREEN）",
+    "status": "EVIDENCE_REQUIRED",
+    "measurement": "四项中三项有自动化证据（timed 转移/槽释放条件/不顶替/failed 即时红=4 断言面）+ E2E TTL 覆写退灯实证（14A-2 gate 段 5）；kill→stale→archived 释放的集成场景（真实进程 kill）未覆盖（14A-2 scope 未含，后续集成面另行处理）",
+    "threshold": "completed 5min→idle；kill→stale→archived 释放；第 9 个不顶替；failed 即时收红"
+  },
+  {
+    "id": "s9-13-task0-capability-gate",
+    "owner": "P0 交付（已入库）/ 交互回传 PoC 归 P2",
+    "phase": "P0（已交付）+ P2（PoC）",
+    "automated_or_manual": "automated",
+    "evidence_path": "P0 证据在库：evidence/voice-coding/m1/（shadow runs 基线）+ AgentVoice/Evidence/attention-task0-probe/（探针 manifest）; AgentVoice/Sources/AgentVoice/Attention/Hooks/EventVersionMatrix.swift（版本矩阵）; AgentVoice/Sources/AgentVoice/Attention/Privacy/CapabilityFieldMatrix.swift（字段矩阵）",
+    "status": "blocked_by_p2",
+    "measurement": "payload 字段清单/脱敏 evidence 已由 P0 交付（m1 基线 + task0 探针 manifest 在库）；交互回传 PoC 依赖 P2 intervention/command 面，当前不得消费",
+    "threshold": "能力门 evidence 在库 + PoC 过 P2 门"
+  }
+]

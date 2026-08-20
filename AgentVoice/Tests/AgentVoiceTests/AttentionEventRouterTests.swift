@@ -39,17 +39,19 @@ final class AttentionEventRouterTests: XCTestCase {
         let router = try makeRouter()
         let sid = "10101010-1010-1010-1010-101010101010"
         let payload = #"{"session_id":"\#(sid)"}"#
-        // 先到高优先事实（水位线抬到 base+100）
-        let r1 = router.ingest(hookEventName: "PreToolUse",
-            payloadJson: #"{"session_id":"\#(sid)","permission_requested":true}"#,
+        // 先到高优先事实（Notification → waiting_user rank 2；水位线抬到 base+100）。
+        // I5 前触发事件为 PreToolUse+permission_requested（waitingPermission rank 3）；
+        // I5 删除该分支后改用 Notification——C11 watermark 语义不变（迟到 completed rank 0 < 2）
+        let r1 = router.ingest(hookEventName: "Notification",
+            payloadJson: payload,
             observedAt: Date(timeIntervalSince1970: 1_700_000_100))
         guard case .accepted(let s1) = r1 else { return XCTFail("got \(r1)") }
-        XCTAssertEqual(s1.activityFact, .waitingPermission)
+        XCTAssertEqual(s1.activityFact, .waitingUser)
         // 迟到旧事件（低优先 completed，observed_at 早于水位线）→ 不改状态
         let r2 = router.ingest(hookEventName: "Stop", payloadJson: payload,
                                observedAt: Date(timeIntervalSince1970: 1_700_000_000))
         guard case .accepted(let s2) = r2 else { return XCTFail("got \(r2)") }
-        XCTAssertEqual(s2.activityFact, .waitingPermission)   // 不被旧事件覆盖
+        XCTAssertEqual(s2.activityFact, .waitingUser)   // 不被旧事件覆盖
     }
 
     func testUnrecognizedHookRejectedNotCrash() throws {

@@ -1,0 +1,75 @@
+[
+  {
+    "hook_event_name": "SessionStart",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d1",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000000.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d2",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000010.0
+  },
+  {
+    "hook_event_name": "PreToolUse",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d3",
+      "tool_name": "Bash",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000020.0
+  },
+  {
+    "hook_event_name": "Stop",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d4",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000030.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d5",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000040.0
+  },
+  {
+    "hook_event_name": "UserPromptSubmit",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d6",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000050.0
+  },
+  {
+    "hook_event_name": "Stop",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d7",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000060.0
+  },
+  {
+    "hook_event_name": "SessionEnd",
+    "payload": {
+      "session_id": "14a6c6ab-0006-4f06-9f06-000000000d06",
+      "delivery_id": "14a-cold-d8",
+      "cwd": "/Users/synthetic-14a/proj-zeta"
+    },
+    "observed_at_epoch": 1700000070.0
+  }
+]

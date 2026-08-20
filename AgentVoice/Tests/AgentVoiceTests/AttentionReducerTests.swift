@@ -44,8 +44,9 @@ final class AttentionReducerTests: XCTestCase {
         XCTAssertEqual(s.lifecycle, .closed)
     }
 
-    func testAOnlyBoundaryWorkingIdleUnrepresentable() {
-        // A-only 硬边界：ActivityFact 枚举无 working/idle case——编译级保证
+    func testAttentionKindsDoNotDirectlyProduceWorking() {
+        // v4 扩容边界（spec §6 I5）：working 仅由 userPromptRelated 活动信号产生；
+        // 四个注意力 kind 事件本身仍不直接产生 working（断言语义不变）
         let allKinds: [EventKind] = [.waitingUser, .waitingPermission, .failed, .completed]
         var s = AttentionStateSnapshot(sessionKey: "k")
         for (i, k) in allKinds.enumerated() {
@@ -53,5 +54,32 @@ final class AttentionReducerTests: XCTestCase {
         }
         XCTAssertTrue([ActivityFact.unknown, .waitingUser, .waitingPermission, .failed, .completed]
             .contains(s.activityFact))
+    }
+
+    func testUserPromptSignalAfterSessionEndDoesNotResurrectFacts() {
+        // I5+C10：closed 后相关信号不得复活事实（sessionEnd 是唯一 closed 路径，
+        // §8.3「静态 active 源不得复活 timeout」同式）
+        var s = reducer.reduce(events: [ev(.waitingUser), ev(.sessionEnd, at: base + 10)],
+                               state: AttentionStateSnapshot(sessionKey: "k"))
+        let signal = NormalizedAgentEvent(
+            eventId: "sig1", adapterType: "claude_code", nativeSessionId: s.sessionKey,
+            sourceSequence: nil, occurredAt: nil, observedAt: base + 20,
+            kind: .connectionFact, payloadVersion: 1, sanitizedPayloadRef: nil,
+            sourceLevel: "experimental_fragile", sourceClaudeVersion: "2.1.220",
+            activitySignal: .userPromptRelated)
+        s = reducer.reduce(events: [signal], state: s)
+        XCTAssertEqual(s.lifecycle, .closed)
+        XCTAssertEqual(s.activityFact, .unknown)
+    }
+
+    func testToolInFlightDoesNotProduceAttentionFact() {
+        // I5（spec §6 L160）原语义：tool_in_flight 不产 waiting 注意力事实。
+        // 修复批四问题 3 语义取代（老林「务必弄对」裁决）：tool 活动=会话不在等待，
+        // 解除转移 waiting/completed/idle/unknown → working（不产 intervention 面语义保留）。
+        // 本例从 unknown 起步：tool 执行中 → working（原断言停留 unknown 已取代）。
+        let s = reducer.reduce(events: [ev(.toolInFlight)],
+                               state: AttentionStateSnapshot(sessionKey: "k"))
+        XCTAssertEqual(s.activityFact, .working)
+        XCTAssertEqual(s.attention, AttentionLevel.none)
     }
 }

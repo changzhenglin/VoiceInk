@@ -104,4 +104,27 @@ final class AttentionRetentionSchedulerTests: XCTestCase {
         XCTAssertEqual(result.capacityDeleted, 2)   // 5 行超 3 上限 → 删最旧 2 行（changesCount）
         XCTAssertEqual(store.events(since: .distantPast).map(\.eventId), ["r2", "r3", "r4"])
     }
+
+    // I2 补齐（Task 9 review fix round 1）：attention_items 侧同事务自清——
+    // 超龄 test 会话 items 清零；1h 内 test items 保留；生产会话 items（即使更旧）零误删
+    func testPurgeExpiredTestSessionsClearsItemsTableToo() throws {
+        let store = try AttentionEventStore(path: nil)
+        let scheduler = AttentionRetentionScheduler(store: store)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func item(_ id: String, sessionKey: String, updatedOffset: TimeInterval) -> AttentionItem {
+            var i = AttentionItem(attentionItemId: id, sessionKey: sessionKey,
+                                  kind: .waitingUser, createdAt: now.addingTimeInterval(updatedOffset))
+            i.updatedAt = now.addingTimeInterval(updatedOffset)
+            return i
+        }
+        store.persistItem(item("ti-expired", sessionKey: "test:claude_code|s1", updatedOffset: -3700))
+        store.persistItem(item("ti-fresh", sessionKey: "test:claude_code|s2", updatedOffset: -1800))
+        store.persistItem(item("pi-old", sessionKey: "claude_code|prod", updatedOffset: -7200))
+
+        _ = scheduler.purgeExpiredTestSessions(now: now)
+        let remaining = Set(store.loadPersistedItems().map(\.attentionItemId))
+        XCTAssertFalse(remaining.contains("ti-expired"), "超 1h test 会话 items 必须清")
+        XCTAssertTrue(remaining.contains("ti-fresh"), "1h 内 test 会话 items 保留")
+        XCTAssertTrue(remaining.contains("pi-old"), "生产会话 items（即使更旧）零误删")
+    }
 }

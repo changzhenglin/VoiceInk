@@ -1,0 +1,725 @@
+{
+  "runtime_version": "2.1.226",
+  "note": "field-name-only 探针产出：只有 key path/结构/字段名哈希，无任何 value。controlled=受控探针会话触发；incidental=并发会话附带观察（未受控触发，仅作存在性证据）",
+  "events": {
+    "PostToolUse": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "62083fb5defed88b4c7a839282ed940726b80551f3bf792fefc33a463f49aaa4",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 20,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "7cbf4e1263d39d449c2e8d034ae08c277d66de627bade34ece4831f90b43ea4d",
+          "path": "permission_mode",
+          "structure": "string"
+        },
+        {
+          "hash": "a4f12c3895258d0b6e32d9a4d692057c8cfcd5f8efc97dbdf7cefe1c46382b89",
+          "path": "effort",
+          "structure": "object"
+        },
+        {
+          "hash": "6954a2035e935ee078e975792c3e7ae1dfb1055db5aa916ad099477eff56444b",
+          "path": "effort.level",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "53372e7768434ef9f5ceb965b5ebb3ac3b32bc5aa0448b29b4e7b54307583fce",
+          "path": "tool_name",
+          "structure": "string"
+        },
+        {
+          "hash": "acfdbf3392fca8bb7b484bd00066c74deef8fe93a72225231c9a1fcaf75faacd",
+          "path": "tool_input",
+          "structure": "object"
+        },
+        {
+          "hash": "f1bc40b03f96e9f84ce416ee1d3bb65c6a2ea6478b2d05fbbc049dbb4d444eb3",
+          "path": "tool_input.command",
+          "structure": "string"
+        },
+        {
+          "hash": "75e6ca21b42a30522df68a6901a728376391579fdec77c6b13d683cebf16390c",
+          "path": "tool_input.description",
+          "structure": "string"
+        },
+        {
+          "hash": "4415b797b463e5f1b770f10e0b5d7b608a465c4571e705819b76066ddde0fa88",
+          "path": "tool_response",
+          "structure": "object"
+        },
+        {
+          "hash": "a3ed7e059e42aaee5ec620a9ef15ec666f23150d3f67d021e764ccbfb93413c0",
+          "path": "tool_response.stdout",
+          "structure": "string"
+        },
+        {
+          "hash": "206ec250f3f1102104703b0a0faf2a90396a3139c80d702d006829fa6722d37d",
+          "path": "tool_response.stderr",
+          "structure": "string"
+        },
+        {
+          "hash": "9e9358da797c5ed252bc738290b71c250d7379e9a7aa2c6fefc0e2cf10bc1df9",
+          "path": "tool_response.interrupted",
+          "structure": "boolean"
+        },
+        {
+          "hash": "4700a1e7c741df970df948a19d5066f157b1e093ee48c020a6b72617c2eb49bb",
+          "path": "tool_response.isImage",
+          "structure": "boolean"
+        },
+        {
+          "hash": "17cfb9049ae172af9c3d8e580191b51f2d538d445d40ee10332979049a6ac29f",
+          "path": "tool_response.noOutputExpected",
+          "structure": "boolean"
+        },
+        {
+          "hash": "323e7ffb7c32cd2b021f6e3857d055b2e92a7829ed96bd552626e3b2c207bcbb",
+          "path": "tool_use_id",
+          "structure": "string"
+        },
+        {
+          "hash": "f9caaaf7fc92a0b0e06b93caf945365f3abbbb82656747310a14bad611a46ec8",
+          "path": "duration_ms",
+          "structure": "number"
+        }
+      ]
+    },
+    "PostToolBatch": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "778b660ffbb34e294d17bf13f0cf469967cd0f5889a82741efd82b3d7ac51981",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 16,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "7cbf4e1263d39d449c2e8d034ae08c277d66de627bade34ece4831f90b43ea4d",
+          "path": "permission_mode",
+          "structure": "string"
+        },
+        {
+          "hash": "a4f12c3895258d0b6e32d9a4d692057c8cfcd5f8efc97dbdf7cefe1c46382b89",
+          "path": "effort",
+          "structure": "object"
+        },
+        {
+          "hash": "6954a2035e935ee078e975792c3e7ae1dfb1055db5aa916ad099477eff56444b",
+          "path": "effort.level",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "8e920ae7d06bef0e7e617974cd02be9c07cfbca65b0dbb89895394a1318b6534",
+          "path": "tool_calls",
+          "structure": "array"
+        },
+        {
+          "hash": "0548e39bcb4885fca8de485b3dbc9eee8c5d48171fd19ced492690149570110d",
+          "path": "tool_calls[0]",
+          "structure": "object"
+        },
+        {
+          "hash": "dec02d1cda03e485c4320203547a23b21908d3ce68c6c1f3fbb638baa52cf681",
+          "path": "tool_calls[0].tool_name",
+          "structure": "string"
+        },
+        {
+          "hash": "659a5fa950d79ac4555dd4f0cbe33b4c79485b3f591ac7182f5a0da5b394eb2c",
+          "path": "tool_calls[0].tool_input",
+          "structure": "object"
+        },
+        {
+          "hash": "0fc656b82da44b042d60f6432366833e2c4f3cfc104530264c1d484c52317ae1",
+          "path": "tool_calls[0].tool_input.command",
+          "structure": "string"
+        },
+        {
+          "hash": "7f031624147d10bc2a59a55a9bd3dc9689da9fb35b98b8d0c33f9c9f18b4ca29",
+          "path": "tool_calls[0].tool_input.description",
+          "structure": "string"
+        },
+        {
+          "hash": "fe388776e4b49caf899a6b96300ce8b1d63a5d70cadb149dddf2f24cfc9e4608",
+          "path": "tool_calls[0].tool_use_id",
+          "structure": "string"
+        },
+        {
+          "hash": "9bc96f109bd1b65d9e842b76b251b863a0b6a86387606f40e4c06678c7b019b8",
+          "path": "tool_calls[0].tool_response",
+          "structure": "string"
+        }
+      ]
+    },
+    "PreToolUse": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "e7684f027d3312d91331b890baf8b90b0b189ce4a2808094623d056e846b8f5a",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 13,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "7cbf4e1263d39d449c2e8d034ae08c277d66de627bade34ece4831f90b43ea4d",
+          "path": "permission_mode",
+          "structure": "string"
+        },
+        {
+          "hash": "a4f12c3895258d0b6e32d9a4d692057c8cfcd5f8efc97dbdf7cefe1c46382b89",
+          "path": "effort",
+          "structure": "object"
+        },
+        {
+          "hash": "6954a2035e935ee078e975792c3e7ae1dfb1055db5aa916ad099477eff56444b",
+          "path": "effort.level",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "53372e7768434ef9f5ceb965b5ebb3ac3b32bc5aa0448b29b4e7b54307583fce",
+          "path": "tool_name",
+          "structure": "string"
+        },
+        {
+          "hash": "acfdbf3392fca8bb7b484bd00066c74deef8fe93a72225231c9a1fcaf75faacd",
+          "path": "tool_input",
+          "structure": "object"
+        },
+        {
+          "hash": "f1bc40b03f96e9f84ce416ee1d3bb65c6a2ea6478b2d05fbbc049dbb4d444eb3",
+          "path": "tool_input.command",
+          "structure": "string"
+        },
+        {
+          "hash": "75e6ca21b42a30522df68a6901a728376391579fdec77c6b13d683cebf16390c",
+          "path": "tool_input.description",
+          "structure": "string"
+        },
+        {
+          "hash": "323e7ffb7c32cd2b021f6e3857d055b2e92a7829ed96bd552626e3b2c207bcbb",
+          "path": "tool_use_id",
+          "structure": "string"
+        }
+      ]
+    },
+    "Stop": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "3e511c2b3670c888a0002bf0e8fde2aeeaa25fec62680d831784b6a2b1d9d726",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 12,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "7cbf4e1263d39d449c2e8d034ae08c277d66de627bade34ece4831f90b43ea4d",
+          "path": "permission_mode",
+          "structure": "string"
+        },
+        {
+          "hash": "a4f12c3895258d0b6e32d9a4d692057c8cfcd5f8efc97dbdf7cefe1c46382b89",
+          "path": "effort",
+          "structure": "object"
+        },
+        {
+          "hash": "6954a2035e935ee078e975792c3e7ae1dfb1055db5aa916ad099477eff56444b",
+          "path": "effort.level",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "8d9caa2aa78c9a2518c2cddd9ce89909f18ba3a1ad25880ba724f16a3c658b5e",
+          "path": "stop_hook_active",
+          "structure": "boolean"
+        },
+        {
+          "hash": "045800f4bf9f51d1572ce55e507712f123cf9c5ff07b10346bd600bc0512535e",
+          "path": "last_assistant_message",
+          "structure": "string"
+        },
+        {
+          "hash": "4795f2f308498c6086840b7332679f98d80ebf9022ef6be7e16adbcddde052a3",
+          "path": "background_tasks",
+          "structure": "array"
+        },
+        {
+          "hash": "f1f9c1df5ac950d2a1721f3ad73e8b6331d25690a842dd2276db337b62fdde4a",
+          "path": "session_crons",
+          "structure": "array"
+        }
+      ]
+    },
+    "PermissionRequest": {
+      "source": "incidental",
+      "probe_env": "",
+      "event_id_hash": "f4fb0c94674562c3e34ec562de470bab6986a1b31eaa87669a33d21b4890b992",
+      "session_id_hash": "663685f9f6f852b573e14dda182815e9dcdcb17a13c167f8955598070853cb37",
+      "field_count": 13,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "7cbf4e1263d39d449c2e8d034ae08c277d66de627bade34ece4831f90b43ea4d",
+          "path": "permission_mode",
+          "structure": "string"
+        },
+        {
+          "hash": "a4f12c3895258d0b6e32d9a4d692057c8cfcd5f8efc97dbdf7cefe1c46382b89",
+          "path": "effort",
+          "structure": "object"
+        },
+        {
+          "hash": "6954a2035e935ee078e975792c3e7ae1dfb1055db5aa916ad099477eff56444b",
+          "path": "effort.level",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "53372e7768434ef9f5ceb965b5ebb3ac3b32bc5aa0448b29b4e7b54307583fce",
+          "path": "tool_name",
+          "structure": "string"
+        },
+        {
+          "hash": "acfdbf3392fca8bb7b484bd00066c74deef8fe93a72225231c9a1fcaf75faacd",
+          "path": "tool_input",
+          "structure": "object"
+        },
+        {
+          "hash": "f1bc40b03f96e9f84ce416ee1d3bb65c6a2ea6478b2d05fbbc049dbb4d444eb3",
+          "path": "tool_input.command",
+          "structure": "string"
+        },
+        {
+          "hash": "7e87f60a145221e1272e4d3e8ad37ca108a13db7da797999abf1bad184100f30",
+          "path": "tool_input.timeout",
+          "structure": "number"
+        },
+        {
+          "hash": "75e6ca21b42a30522df68a6901a728376391579fdec77c6b13d683cebf16390c",
+          "path": "tool_input.description",
+          "structure": "string"
+        }
+      ]
+    },
+    "SessionEnd": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "acb6e1c7a33d441d3375e1152769dae612e2326c1ba596285ef6719021e4e860",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 6,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "8fcfccf675b1f0bfd39dcbb13015052fe82bc51c003c165a410945c913dbb2be",
+          "path": "reason",
+          "structure": "string"
+        }
+      ]
+    },
+    "Notification": {
+      "source": "incidental",
+      "probe_env": "",
+      "event_id_hash": "1cabbd6bc0dd17dc4f505b362a80e2d17c8f054ffde83c2a8b3ce1e18d60dcfb",
+      "session_id_hash": "663685f9f6f852b573e14dda182815e9dcdcb17a13c167f8955598070853cb37",
+      "field_count": 7,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "ab530a13e45914982b79f9b7e3fba994cfd1f3fb22f71cea1afbf02b460c6d1d",
+          "path": "message",
+          "structure": "string"
+        },
+        {
+          "hash": "301379fe59fe939b9e714aa17a94b86385611660dfae8b063f902406634a048a",
+          "path": "notification_type",
+          "structure": "string"
+        }
+      ]
+    },
+    "SessionStart": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "0ad411d05b2ac32da5e896265b72fd8dccb9bbb831e47a16f0ff70996b2b9b60",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 5,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d",
+          "path": "source",
+          "structure": "string"
+        }
+      ]
+    },
+    "UserPromptSubmit": {
+      "source": "controlled",
+      "probe_env": "1",
+      "event_id_hash": "e87e87f448d68da0eb900e7afbb3ce3e613f7e1e1f6355a82bfae27ffd28f8be",
+      "session_id_hash": "e2f8e625967b0c6c29aa8f23e67643b582ee124f6b74f182cb466c9ac3aaae58",
+      "field_count": 7,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "7cbf4e1263d39d449c2e8d034ae08c277d66de627bade34ece4831f90b43ea4d",
+          "path": "permission_mode",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "cf07194ee232eb531e15f690000d19846dea69cf05504782658afcfacb9228a2",
+          "path": "prompt",
+          "structure": "string"
+        }
+      ]
+    },
+    "CwdChanged": {
+      "source": "incidental",
+      "probe_env": "",
+      "event_id_hash": "dde1b1f34c09a8bf851cf11c10d9fa1630b743569502116c9b32b44bf3c56374",
+      "session_id_hash": "663685f9f6f852b573e14dda182815e9dcdcb17a13c167f8955598070853cb37",
+      "field_count": 7,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "b1fdc26d01746431e7f6f2d88257c1020416e1f3679cc3dc2d7d90a1e25f3f2d",
+          "path": "old_cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "6a9a553f770b0172729a1f52ad83c16656357b6b7cff5c5b0cb7c7d53d4a53d8",
+          "path": "new_cwd",
+          "structure": "string"
+        }
+      ]
+    },
+    "TaskCompleted": {
+      "source": "incidental",
+      "probe_env": "",
+      "event_id_hash": "532f80adcfbb8d785713a41d7aa7960c9aa35bbfd25e09f4255d8c286ea34f4c",
+      "session_id_hash": "663685f9f6f852b573e14dda182815e9dcdcb17a13c167f8955598070853cb37",
+      "field_count": 8,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "14bc7aeea995cfb037517220d0e981df255def7318b07ac0cba6ad82e3ac7ccf",
+          "path": "task_id",
+          "structure": "string"
+        },
+        {
+          "hash": "f5f03a89a66554b1b54a4a185d6c0a1cff6810aac1270f0719dd9963ca36a9f8",
+          "path": "task_subject",
+          "structure": "string"
+        },
+        {
+          "hash": "861b7969ace78c7f6970f1a4641a74b2098c2a185b6977afe699d97ecfa22147",
+          "path": "task_description",
+          "structure": "string"
+        }
+      ]
+    },
+    "ConfigChange": {
+      "source": "incidental",
+      "probe_env": "",
+      "event_id_hash": "b71f994b134bc5eccc7af0786350a05d2301ad7815a84d4e1050b4e86906ac17",
+      "session_id_hash": "7152a66e9f3a0412b4c14bca87e0119c94ac2ac64a9f84e80dc3e50cc0e49160",
+      "field_count": 7,
+      "fields": [
+        {
+          "hash": "5c3a09bf22e12411b6af48dfe0b85c2d9d1181cd391e089574c8cf3ca1e5e4ad",
+          "path": "session_id",
+          "structure": "string"
+        },
+        {
+          "hash": "60a72f40aec86229e7b3767ebd4d9c368e9100078f5e6a9f4408923d1225617d",
+          "path": "transcript_path",
+          "structure": "string"
+        },
+        {
+          "hash": "6f2f7e6c655803beb2871d98989c75626fcbcccb088841866456739f4eb21aaa",
+          "path": "cwd",
+          "structure": "string"
+        },
+        {
+          "hash": "0dd7695f381b9f7616a4baef66877753ea2ef7b2046195927c6fc6e09d87a477",
+          "path": "prompt_id",
+          "structure": "string"
+        },
+        {
+          "hash": "ddfcd428067c2561f104d54882da3999a5c074599dd48766f1b984edfd88562a",
+          "path": "hook_event_name",
+          "structure": "string"
+        },
+        {
+          "hash": "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d",
+          "path": "source",
+          "structure": "string"
+        },
+        {
+          "hash": "1054bb88d1446c8d62c112102c6b7f6800ed9677244e8e3e344c6e5b8a6fb707",
+          "path": "file_path",
+          "structure": "string"
+        }
+      ]
+    }
+  },
+  "error_lines": [
+    {
+      "error_code": "body_too_large",
+      "probe_env": ""
+    }
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "jump_scenarios": [
+    {
+      "id": "jump-minimized",
+      "owner": "14A-2 implementer（值面）；真机证据待老林在场/E2E 补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "值面已建：VoiceInk/AgentVoice/Attention/AXNavigator.swift（degradation(for:cwd:)）；真机 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：目标窗口最小化时点灯跳转——AX 定位成功则 .focused 恢复窗口；不可定位则降级（灯态不变+⨯ 标记+toast+复制定位信息），灯条状态不受跳转结果影响",
+      "threshold": "真机观察或 E2E：跳转成功/如实降级二选一，零 crash、零灯态突变；fail-closed（AX 不可用按失败降级处理）"
+    },
+    {
+      "id": "jump-cross-space",
+      "owner": "14A-2 implementer（值面）；真机证据待老林在场/E2E 补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "值面已建：VoiceInk/AgentVoice/Attention/AXNavigator.swift（degradation(for:cwd:)）；真机 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：目标窗口在另一 Space 时点灯跳转——AX raise/activate 成功则 .focused；宿主仅能激活 app 不能跨 Space 聚焦窗口则 .fallbackAppActivated（提示用户自行找窗口）；失败则降级面",
+      "threshold": "真机观察或 E2E：跨 Space 场景三态（focused/fallback/failed）之一如实产生，降级文案与矩阵一致，零灯态突变"
+    },
+    {
+      "id": "jump-cross-display",
+      "owner": "14A-2 implementer（值面）；真机证据待老林在场/E2E 补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "值面已建：VoiceInk/AgentVoice/Attention/AXNavigator.swift（degradation(for:cwd:)）；真机 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：目标窗口在另一显示器时点灯跳转——AX 定位成功则 .focused（焦点跨屏移动）；不可定位则降级（灯态不变+⨯+toast+复制定位）",
+      "threshold": "真机观察或 E2E（需多显示器环境）：跳转成功/如实降级，零 crash；单显示器环境不猜结果，保持 PENDING"
+    },
+    {
+      "id": "jump-window-missing",
+      "owner": "14A-2 implementer（值面）；真机证据待老林在场/E2E 补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "值面已建：VoiceInk/AgentVoice/Attention/AXNavigator.swift（degradation(for:cwd:) .failed 分支）；真机 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：会话窗口已关闭/不存在时点灯跳转——AX 无匹配窗口 → .failed → 降级面（灯态不变+⨯ 导航错误标记+toast+可复制定位信息=「无法定位窗口，定位信息已可复制」）",
+      "threshold": "真机观察或 E2E：窗口不存在必走降级不 crash、不残留假聚焦态；跳转失败 ≠ 状态未知（灯态继承不变）"
+    },
+    {
+      "id": "jump-ax-unauthorized",
+      "owner": "14A-2 implementer（值面）；真机证据待老林在场/E2E 补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "值面已建：VoiceInk/AgentVoice/Attention/AXNavigator.swift（degradation(for:cwd:) .failed 分支）；真机 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：VoiceInk 未获辅助功能（AX）授权时点灯跳转——AX API 拒绝 → .failed → 降级面（灯态不变+⨯+toast+复制定位）；fail-closed：授权状态无法验证按失败处理，不猜成功",
+      "threshold": "真机观察（撤销 AX 授权后点灯）：必走降级且提示可引导授权，零 crash；不得静默吞错"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "fullscreen-bar-hidden",
+      "owner": "14A-2 implementer（决策值面）；真机表面证据待 E2E/在场补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "决策值面已建+单测覆盖：AgentVoice/Sources/AgentVoice/Attention/Presentation/NotificationSoundRouter.swift（decideSound）+ VoiceInkTests/AttentionTickConsumeGuardTests.swift（全屏补偿路由）；真机通知/音频表面投递 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：全屏时浮窗系统不可呈现 → decideSound 路由 .compensate(reason: .floatUnpresentable)，高优先经提示音/系统通知双通道达；非全屏可呈现 → .none 不补偿。preset=silent 或 muted → 静默（§2 L31 mute 优先）",
+      "threshold": "真机全屏场景：补偿音/系统通知至少一表面送达或如实静默（按 preset/muted），零逐 tick 即播（8B2-M1：空 drain 不补偿）"
+    },
+    {
+      "id": "high-priority-arrival",
+      "owner": "14A-2 implementer（决策值面）；真机表面证据待 E2E/在场补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "决策值面已建：AgentVoice/Sources/AgentVoice/Attention/Presentation/PresentationPolicy.swift（呈现决策纯函数）；真机高优先到达呈现 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：高优先（.high）事件到达——灯条升档即时可见（弱档）；全屏/浮窗受阻时经补偿路由走强档表面（提示音/系统通知）；completed 不弹浮窗（§2 浮窗契约）",
+      "threshold": "真机观察：高优先到达灯态升档 + 受阻时补偿表面送达；呈现决策矩阵（灯条/浮窗/提示音/系统通知）逐表面如实"
+    },
+    {
+      "id": "unseen-aggregate-notification",
+      "owner": "14A-2 implementer（值面）；真机表面证据待 E2E/在场补采",
+      "phase": "14A-2",
+      "automated_or_manual": "manual",
+      "evidence_path": "值面已建：AgentVoice/Sources/AgentVoice/Attention/Summary/UnseenSummaryQueue.swift（at-most-once 入队/FIFO drain）+ 灯条 ●黄等待时长投影；真机聚合通知投递 evidence 未采集",
+      "status": "PENDING",
+      "measurement": "期望行为：unseen completed 收纳——新黄/红聚合短计呈现（●+等待时长），聚合通知按 drain 交付一次性呈现（at-most-once，presentationDrainRepeat=false 默认）；空 drain tick 不重复通知（8B2-M1）",
+      "threshold": "真机观察：聚合短计与实际 unseen 数一致、一次性呈现不重复；privacy：通知面零 transcript/prompt/正文"
+    }
+  ],
+  "supported_hosts": [
+    {
+      "id": "com.apple.Terminal",
+      "owner": "14A-2 implementer（值面对齐）；真机验证待补采",
+      "phase": "14A-2",
+      "automated_or_manual": "automated",
+      "evidence_path": "值面单源：VoiceInk/AgentVoice/Attention/AXNavigator.swift supportedHostMatrix()；形状对齐门禁：AgentVoice/Tests/AgentVoiceTests/GateEnvMatrixStructureTests.swift",
+      "status": "PENDING",
+      "measurement": "degraded",
+      "threshold": "support ∈ {supported, degraded, unsupported} 与 AXNavigator.supportedHostMatrix() 现值逐行一致（不猜能力）；真机精确跳转验证补采后方可升 PASS"
+    },
+    {
+      "id": "com.googlecode.iterm2",
+      "owner": "14A-2 implementer（值面对齐）；真机验证待补采",
+      "phase": "14A-2",
+      "automated_or_manual": "automated",
+      "evidence_path": "值面单源：VoiceInk/AgentVoice/Attention/AXNavigator.swift supportedHostMatrix()；形状对齐门禁：AgentVoice/Tests/AgentVoiceTests/GateEnvMatrixStructureTests.swift",
+      "status": "PENDING",
+      "measurement": "degraded",
+      "threshold": "support ∈ {supported, degraded, unsupported} 与 AXNavigator.supportedHostMatrix() 现值逐行一致（不猜能力）；真机精确跳转验证补采后方可升 PASS"
+    },
+    {
+      "id": "co.zeit.hyper",
+      "owner": "14A-2 implementer（值面对齐）；真机验证待补采",
+      "phase": "14A-2",
+      "automated_or_manual": "automated",
+      "evidence_path": "值面单源：VoiceInk/AgentVoice/Attention/AXNavigator.swift supportedHostMatrix()；形状对齐门禁：AgentVoice/Tests/AgentVoiceTests/GateEnvMatrixStructureTests.swift",
+      "status": "PENDING",
+      "measurement": "degraded",
+      "threshold": "support ∈ {supported, degraded, unsupported} 与 AXNavigator.supportedHostMatrix() 现值逐行一致（不猜能力）；真机精确跳转验证补采后方可升 PASS"
+    },
+    {
+      "id": "com.github.wez.wezterm",
+      "owner": "14A-2 implementer（值面对齐）；真机验证待补采",
+      "phase": "14A-2",
+      "automated_or_manual": "automated",
+      "evidence_path": "值面单源：VoiceInk/AgentVoice/Attention/AXNavigator.swift supportedHostMatrix()；形状对齐门禁：AgentVoice/Tests/AgentVoiceTests/GateEnvMatrixStructureTests.swift",
+      "status": "PENDING",
+      "measurement": "degraded",
+      "threshold": "support ∈ {supported, degraded, unsupported} 与 AXNavigator.supportedHostMatrix() 现值逐行一致（不猜能力）；真机精确跳转验证补采后方可升 PASS"
+    },
+    {
+      "id": "net.kovidgoyal.kitty",
+      "owner": "14A-2 implementer（值面对齐）；真机验证待补采",
+      "phase": "14A-2",
+      "automated_or_manual": "automated",
+      "evidence_path": "值面单源：VoiceInk/AgentVoice/Attention/AXNavigator.swift supportedHostMatrix()；形状对齐门禁：AgentVoice/Tests/AgentVoiceTests/GateEnvMatrixStructureTests.swift",
+      "status": "PENDING",
+      "measurement": "degraded",
+      "threshold": "support ∈ {supported, degraded, unsupported} 与 AXNavigator.supportedHostMatrix() 现值逐行一致（不猜能力）；真机精确跳转验证补采后方可升 PASS"
+    }
+  ]
+}

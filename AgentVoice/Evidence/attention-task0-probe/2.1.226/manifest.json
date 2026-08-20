@@ -1,0 +1,200 @@
+{
+  "runtimeVersion": "2.1.226",
+  "claudeVersionRaw": "2.1.226 (Claude Code)",
+  "capturedAt": "2026-08-09T02:20:25Z",
+  "triggerSummary": "两次受控 claude -p 会话（一次性目录 /tmp/attention-task0-probe-session-*，人工值 prompt，VOICECODING_TEST=1）触发 7 类事件；探针窗口内并发会话附带观察到 Notification/PermissionRequest/ConfigChange/CwdChanged/TaskCompleted 5 类（未受控触发，按附带观察档记录）。实测纠正：Notification 子类 wire 字段名为 notification_type（非 spec §8.10 调研推测的 subtype）。另捕获 1 条 body_too_large fail-closed 错误行（并发会话大 payload，探针上限实战生效）。未触发：StopFailure/PostToolUseFailure/Task*/Subagent*/TeammateIdle/Worktree*/DirectoryAdded/FileChanged/Notification 四子类值域；机制面（http/async）未探。",
+  "results": [
+    {
+      "hookEventName": "ConfigChange",
+      "kind": "configChange",
+      "result": "observed",
+      "eventIdHash": "b71f994b134bc5eccc7af0786350a05d2301ad7815a84d4e1050b4e86906ac17",
+      "fieldListRef": "field-lists.json#/events/ConfigChange",
+      "triggerStep": "附带观察：探针窗口内并发非探针会话触发（未受控触发；field-name-only，仅字段名+哈希）；受控复现待补"
+    },
+    {
+      "hookEventName": "CwdChanged",
+      "kind": "cwdChanged",
+      "result": "observed",
+      "eventIdHash": "dde1b1f34c09a8bf851cf11c10d9fa1630b743569502116c9b32b44bf3c56374",
+      "fieldListRef": "field-lists.json#/events/CwdChanged",
+      "triggerStep": "附带观察：探针窗口内并发非探针会话触发（未受控触发；field-name-only，仅字段名+哈希）；受控复现待补"
+    },
+    {
+      "hookEventName": "DirectoryAdded",
+      "kind": "directoryAdded",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "FileChanged",
+      "kind": "fileChanged",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "Notification",
+      "kind": "notification",
+      "result": "observed",
+      "eventIdHash": "1cabbd6bc0dd17dc4f505b362a80e2d17c8f054ffde83c2a8b3ce1e18d60dcfb",
+      "fieldListRef": "field-lists.json#/events/Notification",
+      "triggerStep": "附带观察：探针窗口内并发非探针会话触发（未受控触发；field-name-only，仅字段名+哈希）；受控复现待补"
+    },
+    {
+      "hookEventName": "PermissionRequest",
+      "kind": "permissionRequest",
+      "result": "observed",
+      "eventIdHash": "f4fb0c94674562c3e34ec562de470bab6986a1b31eaa87669a33d21b4890b992",
+      "fieldListRef": "field-lists.json#/events/PermissionRequest",
+      "triggerStep": "附带观察：探针窗口内并发非探针会话触发（未受控触发；field-name-only，仅字段名+哈希）；受控复现待补"
+    },
+    {
+      "hookEventName": "PostToolBatch",
+      "kind": "postToolBatch",
+      "result": "observed",
+      "eventIdHash": "778b660ffbb34e294d17bf13f0cf469967cd0f5889a82741efd82b3d7ac51981",
+      "fieldListRef": "field-lists.json#/events/PostToolBatch",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "PostToolUse",
+      "kind": "postToolUse",
+      "result": "observed",
+      "eventIdHash": "62083fb5defed88b4c7a839282ed940726b80551f3bf792fefc33a463f49aaa4",
+      "fieldListRef": "field-lists.json#/events/PostToolUse",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "PostToolUseFailure",
+      "kind": "postToolUseFailure",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "PreToolUse",
+      "kind": "preToolUse",
+      "result": "observed",
+      "eventIdHash": "e7684f027d3312d91331b890baf8b90b0b189ce4a2808094623d056e846b8f5a",
+      "fieldListRef": "field-lists.json#/events/PreToolUse",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "SessionEnd",
+      "kind": "sessionEnd",
+      "result": "observed",
+      "eventIdHash": "acb6e1c7a33d441d3375e1152769dae612e2326c1ba596285ef6719021e4e860",
+      "fieldListRef": "field-lists.json#/events/SessionEnd",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "SessionStart",
+      "kind": "sessionStart",
+      "result": "observed",
+      "eventIdHash": "0ad411d05b2ac32da5e896265b72fd8dccb9bbb831e47a16f0ff70996b2b9b60",
+      "fieldListRef": "field-lists.json#/events/SessionStart",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "Stop",
+      "kind": "stop",
+      "result": "observed",
+      "eventIdHash": "3e511c2b3670c888a0002bf0e8fde2aeeaa25fec62680d831784b6a2b1d9d726",
+      "fieldListRef": "field-lists.json#/events/Stop",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "StopFailure",
+      "kind": "stopFailure",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "SubagentStart",
+      "kind": "subagentStart",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "SubagentStop",
+      "kind": "subagentStop",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "TaskCompleted",
+      "kind": "taskCompleted",
+      "result": "observed",
+      "eventIdHash": "532f80adcfbb8d785713a41d7aa7960c9aa35bbfd25e09f4255d8c286ea34f4c",
+      "fieldListRef": "field-lists.json#/events/TaskCompleted",
+      "triggerStep": "附带观察：探针窗口内并发非探针会话触发（未受控触发；field-name-only，仅字段名+哈希）；受控复现待补"
+    },
+    {
+      "hookEventName": "TaskCreated",
+      "kind": "taskCreated",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "TeammateIdle",
+      "kind": "teammateIdle",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "UserPromptSubmit",
+      "kind": "userPromptSubmit",
+      "result": "observed",
+      "eventIdHash": "e87e87f448d68da0eb900e7afbb3ce3e613f7e1e1f6355a82bfae27ffd28f8be",
+      "fieldListRef": "field-lists.json#/events/UserPromptSubmit",
+      "triggerStep": "受控探针会话 A/B：claude -p 一次性目录 + 人工值 prompt（VOICECODING_TEST=1）；A 带 Bash allowlist，B 无 allowlist；session_id 已归档 trigger-steps.md"
+    },
+    {
+      "hookEventName": "WorktreeCreate",
+      "kind": "worktreeCreate",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "WorktreeRemove",
+      "kind": "worktreeRemove",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "受控会话未触发；触发需失败注入/子代理/团队/worktree 等专用场景，留后续受控复现"
+    },
+    {
+      "hookEventName": "",
+      "kind": "httpHookHandler",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "机制面：本轮未做 HTTP hook 机制探针（需本地接收端），保持 unverified"
+    },
+    {
+      "hookEventName": "",
+      "kind": "asyncCommandHook",
+      "result": "unverified",
+      "eventIdHash": null,
+      "fieldListRef": null,
+      "triggerStep": "机制面：本轮未做 async hook 机制探针，保持 unverified"
+    }
+  ]
+}

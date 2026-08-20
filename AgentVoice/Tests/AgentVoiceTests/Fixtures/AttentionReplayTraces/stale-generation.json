@@ -1,0 +1,20 @@
+[
+  {
+    "hook_event_name": "SessionStart",
+    "payload": {
+      "session_id": "14a5b59a-0005-4e05-9e05-000000000d05",
+      "delivery_id": "14a-stalegen-d1",
+      "cwd": "/Users/synthetic-14a/proj-epsilon"
+    },
+    "observed_at_epoch": 1700000000.0
+  },
+  {
+    "hook_event_name": "Notification",
+    "payload": {
+      "session_id": "14a5b59a-0005-4e05-9e05-000000000d05",
+      "delivery_id": "14a-stalegen-d2",
+      "cwd": "/Users/synthetic-14a/proj-epsilon"
+    },
+    "observed_at_epoch": 1700000010.0
+  }
+]

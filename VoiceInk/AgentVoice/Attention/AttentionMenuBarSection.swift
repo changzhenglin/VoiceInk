@@ -16,6 +16,11 @@ struct AttentionMenuBarSection: View {
                         AttentionDetailPanelController.shared.open(sessionId: s.id)
                     } label: {
                         HStack {
+                            // 裁决卡③（老林裁决；M1 面 additive-only 例外授权，零删改既有行）：
+                            // 灯条图例编号——与灯显示序号同源，列表行↔灯一一对应。
+                            Text(s.displayNumber.map(String.init) ?? "·")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
                             Image(systemName: symbol(for: s))      // 形状通道
                             Text(s.shortLabel)
                             Spacer()
@@ -77,6 +82,10 @@ struct AttentionMenuBarSection: View {
         case .failed: return "exclamationmark.triangle.fill"
         case .completed: return "checkmark.circle"
         case .unknown: return "questionmark.circle"
+        // Task 5 ActivityFact 扩容（working/idle/waitingExternal）遗留编译债补齐——
+        // 控制器裁决 B 授权（2026-08-10）；既有 5 分支行为零改动，仅补穷举分支。
+        case .working, .idle: return "circle"
+        case .waitingExternal: return "hourglass"
         }
     }
     private func reasonText(for s: SessionDisplay) -> String {
@@ -86,6 +95,9 @@ struct AttentionMenuBarSection: View {
         case .failed: return "失败"
         case .completed: return "刚完成"
         case .unknown: return s.connection == .disconnected ? "已断开" : "未知"
+        case .working: return "工作中"
+        case .idle: return "空闲"
+        case .waitingExternal: return "等外部"
         }
     }
     private func relativeTime(_ d: Date) -> String {
