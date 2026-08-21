@@ -1000,6 +1000,10 @@ public final class VoiceInputSessionController {
         for (offset, entry) in snapshot.sentences.enumerated() where entry.i != offset {
             return nil
         }
+        // Wave 1 修复（final review 跨厂商 P1-4 / KH-T8-1/T8-2 共识，老林 08-21 裁 merge 前修）：
+        // 逐句 raw 拼接必须等于全文原文，否则快照判陈旧/不完整（漂移窗残留 completed_text
+        // 已新而快照旧 / 双写窗丢尾句）→ 回退全文原文路径，不把旧组装当有效恢复稿
+        guard snapshot.sentences.map(\.raw).joined() == record.completedText else { return nil }
         var assembled = ""
         var segments: [RecoveredSentenceSegment] = []
         for entry in snapshot.sentences {
@@ -1096,7 +1100,13 @@ public final class VoiceInputSessionController {
     private func settleLive() {
         guard let sessionId = liveSessionId else { return }
         liveSessionId = nil
-        try? StreamingSessionStore(engine: ports.storageEngine, sessionId: sessionId).settle()
+        // Wave 1 修复（final review 跨厂商 P2-3，老林 08-21 裁 merge 前修）：
+        // 删除失败不再静默吞——日志留痕 sessionId，防 active 行残留启动时重现
+        do {
+            try StreamingSessionStore(engine: ports.storageEngine, sessionId: sessionId).settle()
+        } catch {
+            logger.warning("settleLive 删除恢复记录失败 sessionId=\(sessionId): \(error.localizedDescription)")
+        }
     }
 
     /// F4-round2（codex re-review P1-4a）：纯本地/start 失败转批处理模式也建恢复记录——

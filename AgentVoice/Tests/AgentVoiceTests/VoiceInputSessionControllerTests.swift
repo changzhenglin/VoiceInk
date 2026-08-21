@@ -1793,6 +1793,26 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         XCTAssertTrue(preview?.sourceSummary?.contains("含增量润色") ?? false)
     }
 
+    /// Wave 1 修复（final review 跨厂商 P1-4 / KH-T8-1/T8-2 共识裁决，老林 08-21 裁 merge 前修）：
+    /// 逐句 raw 拼接+pending 必须等于全文原文，否则快照判陈旧/不完整（漂移窗残留 /
+    /// 双写窗丢尾句）→ 回退全文原文路径（无逐句段、无「含增量润色」摘要）。
+    func test_recovery_inconsistent_snapshot_falls_back_to_whole_original() async throws {
+        // 快照句表 raw 拼接="句一原。句二原。"，completed 已被 final 覆写多一句
+        // （KH-T8-1 漂移窗残留形态：completed_text 新、polished_parts 旧）
+        let snapshot = #"{"v":1,"sentences":[{"i":0,"raw":"句一原。","state":"polished","pol":"句一润。"},{"i":1,"raw":"句二原。","state":"failed"}]}"#
+        try seedRecord(sessionId: "rec-inconsistent", sceneType: "office_writing",
+                       at: Date(timeIntervalSince1970: 4_000_000),
+                       completed: "句一原。句二原。句三新增。", pending: "",
+                       polishedParts: snapshot)
+        let sut = makeSUT()
+        sut.controller.presentRecoveredSessions(try recoverActive())
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.kind, .recoveredDraft)
+        XCTAssertEqual(preview?.originalText, "句一原。句二原。句三新增。")   // 全文原文
+        XCTAssertNil(preview?.recoveredSegments)                            // 陈旧快照不逐句呈现
+        XCTAssertFalse(preview?.sourceSummary?.contains("含增量润色") ?? true)
+    }
+
     /// fold（codex P2-6 隐私面）：数据生命周期——①confirm settle → 记录整行删除（既有语义，
     /// 增量快照随之消失）；②streamingLost → polished_parts 清空（增量丢弃，spec §5 条款 3），
     /// 记录行保留（completed_text 由后续本地链接管，V1 语义不变）。
