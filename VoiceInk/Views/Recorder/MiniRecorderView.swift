@@ -73,7 +73,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private var transcriptSection: some View {
         VStack(spacing: 0) {
             if hasLiveTranscript {
-                LiveTranscriptView(text: stateProvider.partialTranscript)
+                // V1.1 Task 10：句级呈现——segments 由协议组装（增量快照→句段；nil→V1 单段逐字保留）
+                LiveSentenceTranscriptView(segments: stateProvider.sentenceDisplaySegments)
                 Divider().background(Color.white.opacity(0.15))
             }
         }
@@ -84,7 +85,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             if let previewMode = stateProvider.previewPanelMode {
                 // V1 预览分支（Task 8 Step 3）：预览优先——同一 nonactivating panel 原位切换。
                 // 仅 previewPanelMode 非 nil（previewing/transcribing 两态）时生效；
-                // LiveTranscriptView 与波形等既有渲染零改动。
+                // 录音态文本区（LiveSentenceTranscriptView）与波形等既有渲染不受预览分支影响。
                 PreviewPanelContent(
                     mode: previewMode,
                     contextText: stateProvider.partialTranscript,

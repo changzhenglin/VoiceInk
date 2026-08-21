@@ -118,6 +118,14 @@ private final class FakeStreamingASR: StreamingASR, @unchecked Sendable {
 
     func resumeStart() { startGate.continuation.yield(()) }
 
+    // V1.1 Task 7：final 挂起门控——钉住「预览不等 final」（松手立即预览）
+    var finalWaitForGate = false
+    private let finalGate = AsyncStream.makeStream(of: String.self)
+    func resumeFinal(_ text: String) {
+        finalGate.continuation.yield(text)
+        finalGate.continuation.finish()
+    }
+
     func startSession(traceId: String) async throws {
         lock.lock()
         _startEntered = true
@@ -136,6 +144,10 @@ private final class FakeStreamingASR: StreamingASR, @unchecked Sendable {
     }
     func partials() -> AsyncStream<String> { stream }
     func final() async throws -> String {
+        lock.lock(); let wait = finalWaitForGate; lock.unlock()
+        if wait {
+            for await t in finalGate.stream { return t }   // 挂起直到 resumeFinal(text)
+        }
         lock.lock(); defer { lock.unlock() }
         return finalText
     }
@@ -218,14 +230,16 @@ private final class FakePolishProvider: PolishProvider, @unchecked Sendable {
     var waitForGate = false                // true = polish 挂起等待 resume()
     private let lock = NSLock()
     private var _entered = false
+    private var _callCount = 0             // V1.1 Task 7：整段润色调用计数（漂移降级「恰一次」钉住）
     var entered: Bool { lock.lock(); defer { lock.unlock() }; return _entered }
+    var callCount: Int { lock.lock(); defer { lock.unlock() }; return _callCount }
     private let gate = AsyncStream.makeStream(of: Void.self)
 
     func resume() { gate.continuation.yield(()) }
 
     func polish(_ raw: String, scene: SceneContext,
                 knowledge: KnowledgeContext, traceId: String) -> AsyncThrowingStream<String, Error> {
-        lock.lock(); _entered = true; let wait = waitForGate; let result = resultText; lock.unlock()
+        lock.lock(); _entered = true; _callCount += 1; let wait = waitForGate; let result = resultText; lock.unlock()
         let gateStream = gate.stream
         return AsyncThrowingStream { continuation in
             Task {
@@ -251,6 +265,52 @@ private struct ThrowingKnowledge: KnowledgePort {
 }
 
 /// 可控 ASR 工厂：按序返回 fake（brief FakeASRChain，模拟每会话新建实例）
+/// V1.1 Task 6：记录型逐句润色缝隙——记录真实被派发的句子（按句立即返回未润色 outcome）。
+/// 与 IncrementalPolishSessionTests 的 FakePolishPort 同款不抽公共（包层测试文件各自持有）。
+private final class RecordingSentencePolishPort: SentencePolishPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _dispatched: [String] = []
+    var dispatched: [String] { lock.lock(); defer { lock.unlock() }; return _dispatched }
+    var dispatchedCount: Int { lock.lock(); defer { lock.unlock() }; return _dispatched.count }
+    func polishSentence(_ text: String, scene: SceneContext, traceId: String,
+                        context: String?) async -> PolishOutcome {
+        lock.lock(); _dispatched.append(text); lock.unlock()
+        return PolishOutcome(finalText: text, polished: false, polishProviderId: "recording", concern: nil)
+    }
+}
+
+/// V1.1 Task 7：可控逐句润色缝隙——可配置按句结果/失败/挂起门控（与组件测试 FakePolishPort
+/// 同款，包层测试文件各自持有不抽公共）。挂起句经 resume(text) 放行，钉住渐进预览时序。
+private final class ControllableSentencePolishPort: SentencePolishPort, @unchecked Sendable {
+    var results: [String: PolishOutcome] = [:]          // key=原句文本（trim 后）
+    var failTexts: Set<String> = []
+    private let lock = NSLock()
+    private var gates: [String: AsyncStream<Void>.Continuation] = [:]
+    private var streams: [String: AsyncStream<Void>] = [:]
+    private(set) var dispatched: [String] = []
+
+    func polishSentence(_ text: String, scene: SceneContext, traceId: String,
+                        context: String?) async -> PolishOutcome {
+        lock.lock(); dispatched.append(text)
+        let stream = streams[text]; lock.unlock()
+        if let stream { for await _ in stream { break } }   // 挂起直到 resume(text)
+        if failTexts.contains(text) {
+            return PolishOutcome(finalText: text, polished: false, polishProviderId: "controllable", concern: "controllable 失败")
+        }
+        return results[text] ?? PolishOutcome(finalText: text, polished: false,
+                                              polishProviderId: "controllable", concern: nil)
+    }
+    func hang(_ text: String) {
+        let (s, c) = AsyncStream.makeStream(of: Void.self)
+        lock.lock(); streams[text] = s; gates[text] = c; lock.unlock()
+    }
+    func resume(_ text: String) {
+        lock.lock(); let g = gates[text]; gates[text] = nil; lock.unlock()
+        g?.yield(()); g?.finish()
+    }
+    var dispatchedCount: Int { lock.lock(); defer { lock.unlock() }; return dispatched.count }
+}
+
 private final class FakeASRChain: @unchecked Sendable {
     private let lock = NSLock()
     private let providers: [any StreamingASR]
@@ -298,7 +358,10 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         polishGateFactory: @escaping @Sendable (String) -> @Sendable (String) -> Bool = { _ in { _ in true } },
         scene: SceneContext = SceneContext(bundleId: "com.apple.TextEdit", sceneType: .officeWriting),
         discardUndoTimeout: TimeInterval = 0.05,
-        detectScene: (@Sendable () async -> SceneContext)? = nil   // round-3：晚到窗口测试 seam（默认立即返回）
+        detectScene: (@Sendable () async -> SceneContext)? = nil,   // round-3：晚到窗口测试 seam（默认立即返回）
+        makeIncrementalPolish: (@MainActor @Sendable (_ scene: SceneContext, _ traceId: String)
+            -> IncrementalPolishSession?)? = nil,   // V1.1 Task 6：增量润色会话工厂（nil=增量能力缺失走 V1；@MainActor=构造 @MainActor 组件所需，调用点本就 MainActor）
+        incrementalReleaseGate: (@Sendable (_ sceneType: String) -> Bool)? = nil   // V1.1 Task 7：松手时全局/场景开关实时复检（nil=测试默认放行；不含增量开关）
     ) -> SUT {
         let injector = FakeInjector()
         let polishProvider = FakePolishProvider()
@@ -316,7 +379,9 @@ final class VoiceInputSessionControllerTests: XCTestCase {
             pipeline: pipeline,
             injector: injector,
             storageEngine: engine,
-            polishGateFactory: polishGateFactory)
+            polishGateFactory: polishGateFactory,
+            makeIncrementalPolish: makeIncrementalPolish,
+            incrementalReleaseGate: incrementalReleaseGate)
         let controller = VoiceInputSessionController(ports: ports,
                                                      discardUndoTimeout: discardUndoTimeout)
         let phases = Recorder<AgentVoicePhase>()
@@ -359,12 +424,16 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         return data
     }
 
-    /// 预置一条崩溃残留记录（begin + updateText）
+    /// 预置一条崩溃残留记录（begin + updateText；V1.1 Task 8 扩 polishedParts 注入口）
     private func seedRecord(sessionId: String, sceneType: String,
-                            at date: Date, completed: String, pending: String = "") throws {
+                            at date: Date, completed: String, pending: String = "",
+                            polishedParts: String = "") throws {
         let store = StreamingSessionStore(engine: engine, sessionId: sessionId)
         try store.begin(sceneType: sceneType, at: date)
         try store.updateText(completed: completed, pending: pending)
+        if !polishedParts.isEmpty {
+            try store.updatePolishedParts(polishedParts)
+        }
     }
 
     private func recoverActive() throws -> [StreamingSessionRecord] {
@@ -1352,5 +1421,735 @@ final class VoiceInputSessionControllerTests: XCTestCase {
         // fix 前 RED：晚到续体 beginLocalRecord 建孤儿记录
         XCTAssertTrue(try recoverActive().isEmpty)
         XCTAssertEqual(sut.controller.phase, .idle)
+    }
+
+    // ── V1.1 Task 6：句定稿检测与增量派发 ──
+
+    /// 契约①：句定稿事件驱动增量派发——每句定稿即派发（不等后续句），pending 不派发，
+    /// 逐字原文传入（GC 15），原文流式不受影响（呈现铁律）。
+    func test_sentence_finalized_events_dispatch_incremental_polish() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "第一句。第二句。第三"
+        let port = RecordingSentencePolishPort()
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+
+        // 第一句定稿 → 增量组件即收到该句（逐句事件驱动，不等第二句）
+        asr.emitPartial("第一句。", finalized: true)
+        let first = await waitUntil { port.dispatchedCount >= 1 }
+        XCTAssertTrue(first)
+        XCTAssertEqual(port.dispatched, ["第一句。"])
+
+        // 第二句定稿 + 尾句 pending → 只派发新定稿句，pending 不派发
+        asr.emitPartial("第二句。", finalized: true)
+        asr.emitPartial("第三", finalized: false)
+        let second = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(second)
+        // 原文流式永远可见（呈现铁律）：partials 收到含 pending 的全文
+        let partialSeen = await waitUntil { sut.partials.all.contains("第一句。第二句。第三") }
+        XCTAssertTrue(partialSeen)
+        // 恰两句逐字原文被派发；pending「第三」不在内；无重复派发
+        XCTAssertEqual(port.dispatched, ["第一句。", "第二句。"])
+    }
+
+    /// 契约②：增量关 = ports 工厂返回 nil（fold I3/P1-5：开关语义归工厂，控制器零键名）——
+    /// 工厂在 pttDown 被调一次即返 nil，增量组件不创建、零派发；原文流式不受影响。
+    func test_incremental_disabled_switch_dispatches_nothing() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "第一句。第二句。"
+        let factoryCalls = Recorder<String>()
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              factoryCalls.append("\(scene.sceneType.rawValue)|\(traceId)")
+                              return nil
+                          })
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+
+        asr.emitPartial("第一句。", finalized: true)
+        asr.emitPartial("第二句。", finalized: true)
+        let partialSeen = await waitUntil { sut.partials.all.contains("第一句。第二句。") }
+        XCTAssertTrue(partialSeen)                        // 原文流式正常（呈现铁律）
+        XCTAssertEqual(factoryCalls.count, 1)             // 工厂 pttDown 时被调一次（下一会话生效语义，spec §5 条款 8）
+        XCTAssertEqual(sut.controller.phase, .recordingStreaming)
+    }
+
+    // ── V1.1 Task 7：松手增量结算 + 补尾 + 渐进预览（fold 结构性重写契约）──
+
+    /// 契约①：松手立即预览，不等 final（codex P1-1）——final 永不返回，预览仍瞬间呈现；
+    /// 补尾句已派发；originalText=快照全文，polishedText=组装（润色句取润色文本）。
+    func test_pttUp_incremental_shows_preview_immediately_without_waiting_final() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalWaitForGate = true   // final 挂起永不返回
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.hang("句二原。")          // 句二在飞
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        let displays = Recorder<IncrementalDisplaySnapshot?>()
+        sut.controller.onDisplayUpdate = { displays.append($0) }
+
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        let s1polished = await waitUntil {
+            guard let snap = displays.all.last ?? nil else { return false }
+            return snap.sentences.first.map {
+                if case .polished = $0.state { return true }; return false
+            } ?? false
+        }
+        XCTAssertTrue(s1polished)                          // 句一润色完成
+        asr.emitPartial("句二原。", finalized: true)
+        let s2dispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(s2dispatched)                        // 句二在飞（挂起）
+        asr.emitPartial("尾句原", finalized: false)
+        let partialSeen = await waitUntil { sut.partials.all.contains("句一原。句二原。尾句原") }
+        XCTAssertTrue(partialSeen)
+
+        // 松手（final 永不返回）——预览必须立即呈现，零等待
+        let pttTask = Task { @MainActor in await sut.controller.pttUp() }
+        let previewed = await waitUntil { sut.previews.count >= 1 }
+        XCTAssertTrue(previewed)
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.originalText, "句一原。句二原。尾句原")
+        XCTAssertEqual(preview?.polishedText, "句一润。句二原。尾句原")
+        XCTAssertEqual(preview?.kind, .polished)
+        // 补尾已派发（增量组件快照含尾句条目）
+        XCTAssertEqual(port.dispatchedCount, 3)
+        XCTAssertEqual(port.dispatched.last, "尾句原")
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+        _ = pttTask   // pttUp 仍在等 finish（异步漂移核验），不等待
+    }
+
+    /// 契约②：单句发言松手（跨模型同源缺陷 C1 RED 用例①）——松手时 0 句已润色，
+    /// 预览立即弹出（全原文组装，不是 directInject）；补尾润色返回后渐进替换。
+    func test_pttUp_single_sentence_release_gets_preview_then_progressive_replace() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "独句原。"     // final 与快照一致（无漂移）
+        let port = ControllableSentencePolishPort()
+        port.hang("独句原。")          // 补尾润色挂起——松手时 0 句已润色
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("独句原。", finalized: false)   // 单句永远是 pending（短文本核心场景）
+        let partialSeen = await waitUntil { sut.partials.count >= 1 }
+        XCTAssertTrue(partialSeen)
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let preview = lastPreview(sut)
+        XCTAssertNotNil(preview)                          // 预览立即弹出，不是 directInject
+        XCTAssertEqual(preview?.originalText, "独句原。")
+        XCTAssertEqual(preview?.polishedText, "独句原。")   // 全原文组装（0 句润色）
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+
+        // 补尾润色返回 → 渐进替换；phase 保持
+        port.results["独句原。"] = PolishOutcome(finalText: "独句润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("独句原。")
+        let replaced = await waitUntil { lastPreview(sut)?.polishedText == "独句润。" }
+        XCTAssertTrue(replaced)
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+    }
+
+    /// 契约③：两句全在飞松手（慢链路常见路径——C1 RED 用例②）——预览呈现（原文组装），
+    /// 不得 directInject；在飞句陆续返回后渐进替换。
+    func test_pttUp_all_inflight_release_shows_preview_not_direct_inject() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。句二原。"
+        let port = ControllableSentencePolishPort()
+        port.hang("句一原。"); port.hang("句二原。")
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        asr.emitPartial("句二原。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(dispatched)
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        XCTAssertNotNil(lastPreview(sut))
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "句一原。句二原。")
+        XCTAssertTrue(sut.injector.injected.isEmpty)      // 不得 directInject
+
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("句一原。")
+        let replaced = await waitUntil { lastPreview(sut)?.polishedText == "句一润。句二原。" }
+        XCTAssertTrue(replaced)
+    }
+
+    /// 契约④：final 与快照前缀不符（云端终稿漂移）——增量 cancel+close，V1 整段润色恰一次，
+    /// 预览原位替换（originalText=final，polishedText=整段润色文本），phase 保持 .previewing。
+    func test_pttUp_final_diverges_replaces_preview_with_v1_whole_polish() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "云端终稿漂移文本。"   // 与快照前缀不符
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.hang("句二原。")
+        let sut = makeSUT(streamingASRs: { asr },
+                          polishResult: "整段润色结果。",
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        asr.emitPartial("句二原。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(dispatched)
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)   // 冻结转移表不新增转移
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.originalText, "云端终稿漂移文本。")
+        XCTAssertEqual(preview?.polishedText, "整段润色结果。")
+        XCTAssertEqual(sut.polishProvider.callCount, 1)     // pipeline 收整段调用恰一次
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+
+        // 增量已关闭：晚到句二结果不触发预览更新
+        let countBefore = sut.previews.count
+        port.results["句二原。"] = PolishOutcome(finalText: "句二润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("句二原。")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sut.previews.count, countBefore)
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "整段润色结果。")
+    }
+
+    /// 契约⑤：松手时 allDone 且组装==原文（全失败/无变化）——directInject 直出，
+    /// 无预览弹出（V1 铁律延续，与「全在飞」分支对照）。
+    func test_pttUp_all_done_no_polished_direct_injects() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。句二原。"
+        let port = ControllableSentencePolishPort()   // 未配 results → 两句均无变化（failed）
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        let displays = Recorder<IncrementalDisplaySnapshot?>()
+        sut.controller.onDisplayUpdate = { displays.append($0) }
+
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        asr.emitPartial("句二原。", finalized: true)
+        let allDone = await waitUntil {
+            guard let snap = displays.all.last ?? nil else { return false }
+            return snap.sentences.count == 2 && snap.sentences.allSatisfy { $0.state == .failed }
+        }
+        XCTAssertTrue(allDone)
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.injector.injected, ["句一原。句二原。"])   // 直出
+        XCTAssertFalse(sut.previews.all.contains { $0 != nil })      // 无预览弹出
+        XCTAssertEqual(sut.controller.phase, .idle)
+    }
+
+    /// 契约⑥：用户先回退原文，随后在飞句完成——polishedText 随渐进更新（withPolishedText），
+    /// selectedText 保持原文（用户回退不被渐进覆盖）。
+    func test_revert_blocks_progressive_selectedText_updates() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。句二原。"
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.hang("句二原。")
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        asr.emitPartial("句二原。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(dispatched)
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        sut.controller.togglePreviewRevert()   // 用户先回退原文
+        XCTAssertEqual(lastPreview(sut)?.selectedText, "句一原。句二原。")
+
+        // 在飞句完成 → polishedText 渐进更新；selectedText 保持原文
+        port.results["句二原。"] = PolishOutcome(finalText: "句二润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("句二原。")
+        let updated = await waitUntil { lastPreview(sut)?.polishedText == "句一润。句二润。" }
+        XCTAssertTrue(updated)
+        XCTAssertEqual(lastPreview(sut)?.selectedText, "句一原。句二原。")
+    }
+
+    /// 契约⑦：confirm 成功后 incrementalClose 生效——晚到润色结果不触发 onPreviewChanged、
+    /// 不改已清理状态、不崩（close=cancel 递增 generation 失效在飞续体）。
+    func test_progressive_updates_stop_after_confirm_close() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。句二原。"
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.hang("句二原。")
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        asr.emitPartial("句二原。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(dispatched)
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        await sut.controller.confirmPreview()   // 注入 selectedText（当前组装）+ settle
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertEqual(sut.injector.injected, ["句一润。句二原。"])
+        let countAfterConfirm = sut.previews.count
+
+        // confirm 后 incrementalClose：晚到润色结果零更新、不崩
+        port.results["句二原。"] = PolishOutcome(finalText: "句二润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("句二原。")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sut.previews.count, countAfterConfirm)
+        XCTAssertEqual(sut.controller.phase, .idle)
+    }
+
+    /// 契约⑧：录音中全局/场景开关切关（incrementalReleaseGate=false，codex P1-5）——
+    /// 松手不进增量分支：增量 cancel+close，走 V1 整段路径；V1 开关语义（松手时读取）
+    /// 不被增量创建快照改变。
+    func test_global_switch_off_midrecording_falls_back_to_v1_at_release() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。"
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        let sut = makeSUT(streamingASRs: { asr },
+                          polishResult: "整段润色结果。",
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          },
+                          incrementalReleaseGate: { _ in false })   // 录音中切关全局/场景开关
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 1 }
+        XCTAssertTrue(dispatched)   // 录音期增量正常（创建时快照语义不受松手复检影响）
+
+        await sut.controller.pttUp()
+        // 松手准入失败 → V1 整段路径（gateFactory 按关直出/润色）
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.originalText, "句一原。")
+        XCTAssertEqual(preview?.polishedText, "整段润色结果。")   // V1 整段润色
+        XCTAssertEqual(sut.polishProvider.callCount, 1)
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+    }
+
+    // ── V1.1 Task 8：逐句持久化与崩溃恢复组装呈现 ──
+
+    /// fold（Eng I1=老林裁 B 按 spec 做）：spec §4.2 逐句呈现+未润色句标记。
+    /// 注入崩溃残留记录（含版本化逐句快照）→ 恢复预览 polishedText=逐句组装+pending、
+    /// recoveredSegments 逐句显示段（未润色句 isPolished=false 供呈现层加标记）、
+    /// sourceSummary 含「含增量润色」摘要。
+    func test_recovery_preview_renders_per_sentence_with_unpolished_tags() async throws {
+        let snapshot = #"{"v":1,"sentences":[{"i":0,"raw":"句一原。","state":"polished","pol":"句一润。"},{"i":1,"raw":"句二原。","state":"failed"}]}"#
+        try seedRecord(sessionId: "rec-v11", sceneType: "office_writing",
+                       at: Date(timeIntervalSince1970: 3_000_000),
+                       completed: "句一原。句二原。", pending: "尾",
+                       polishedParts: snapshot)
+        let sut = makeSUT()
+        sut.controller.presentRecoveredSessions(try recoverActive())
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.kind, .recoveredDraft)
+        XCTAssertEqual(preview?.polishedText, "句一润。句二原。尾")   // 润色句取 pol + 未润句原文 + pending
+        XCTAssertEqual(preview?.originalText, "句一原。句二原。尾")   // 全文原文
+        XCTAssertEqual(preview?.recoveredSegments?.count, 3)
+        XCTAssertEqual(preview?.recoveredSegments?[0].text, "句一润。")
+        XCTAssertEqual(preview?.recoveredSegments?[0].isPolished, true)
+        XCTAssertEqual(preview?.recoveredSegments?[1].text, "句二原。")
+        XCTAssertEqual(preview?.recoveredSegments?[1].isPolished, false)   // 呈现层加「未润色」标记
+        XCTAssertEqual(preview?.recoveredSegments?[2].text, "尾")
+        XCTAssertEqual(preview?.recoveredSegments?[2].isPolished, false)
+        XCTAssertTrue(preview?.sourceSummary?.contains("含增量润色") ?? false)
+    }
+
+    /// Wave 1 修复（final review 跨厂商 P1-4 / KH-T8-1/T8-2 共识裁决，老林 08-21 裁 merge 前修）：
+    /// 逐句 raw 拼接+pending 必须等于全文原文，否则快照判陈旧/不完整（漂移窗残留 /
+    /// 双写窗丢尾句）→ 回退全文原文路径（无逐句段、无「含增量润色」摘要）。
+    func test_recovery_inconsistent_snapshot_falls_back_to_whole_original() async throws {
+        // 快照句表 raw 拼接="句一原。句二原。"，completed 已被 final 覆写多一句
+        // （KH-T8-1 漂移窗残留形态：completed_text 新、polished_parts 旧）
+        let snapshot = #"{"v":1,"sentences":[{"i":0,"raw":"句一原。","state":"polished","pol":"句一润。"},{"i":1,"raw":"句二原。","state":"failed"}]}"#
+        try seedRecord(sessionId: "rec-inconsistent", sceneType: "office_writing",
+                       at: Date(timeIntervalSince1970: 4_000_000),
+                       completed: "句一原。句二原。句三新增。", pending: "",
+                       polishedParts: snapshot)
+        let sut = makeSUT()
+        sut.controller.presentRecoveredSessions(try recoverActive())
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.kind, .recoveredDraft)
+        XCTAssertEqual(preview?.originalText, "句一原。句二原。句三新增。")   // 全文原文
+        XCTAssertNil(preview?.recoveredSegments)                            // 陈旧快照不逐句呈现
+        XCTAssertFalse(preview?.sourceSummary?.contains("含增量润色") ?? true)
+    }
+
+    /// fold（codex P2-6 隐私面）：数据生命周期——①confirm settle → 记录整行删除（既有语义，
+    /// 增量快照随之消失）；②streamingLost → polished_parts 清空（增量丢弃，spec §5 条款 3），
+    /// 记录行保留（completed_text 由后续本地链接管，V1 语义不变）。
+    func test_settle_and_streaming_lost_clear_polished_parts() async throws {
+        // ① confirm settle → 整行删除
+        let asr = FakeStreamingASR()
+        asr.finalText = "句一原。"
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("句一原。", finalized: true)
+        let persisted = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.contains("句一润。")) ?? false
+        }
+        XCTAssertTrue(persisted)   // 录音期句状态变化 → 逐句快照持久化（fold P1-4）
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        await sut.controller.confirmPreview()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)   // settle 整行删除，增量快照随之消失
+
+        // ② streamingLost → polished_parts 清空、记录行保留
+        let asr2 = FakeStreamingASR()
+        let port2 = ControllableSentencePolishPort()
+        port2.hang("句二原。")   // 在飞挂起（未润色句也在册）
+        let sut2 = makeSUT(streamingASRs: { asr2 },
+                           makeIncrementalPolish: { scene, traceId in
+                               IncrementalPolishSession(polishPort: port2, scene: scene,
+                                                        traceId: traceId, maxInFlight: 3)
+                           })
+        await sut2.controller.pttDown()
+        asr2.emitPartial("句二原。", finalized: true)
+        let hasParts = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.contains("句二原。")) ?? false
+        }
+        XCTAssertTrue(hasParts)
+        asr2.fireLost()   // 断网丢弃增量（spec §5 条款 3）
+        let cleared = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.isEmpty) ?? false
+        }
+        XCTAssertTrue(cleared)                       // polished_parts 已清空
+        XCTAssertEqual(try recoverActive().count, 1)   // 记录行保留（V1 语义）
+    }
+
+    /// fold（codex P2-6）：损坏 JSON 安全回退合同——非法 JSON/缺字段/重复 i/越界 i/乱序，
+    /// 恢复组装一律回退全文原文（polishedText == originalText），不抛错不崩、无逐句段。
+    func test_corrupted_polished_parts_falls_back_to_raw_recovery() async throws {
+        let corruptVariants = [
+            "不是 JSON",
+            #"{"v":1}"#,   // 缺 sentences 字段
+            #"{"v":1,"sentences":[{"i":0,"raw":"甲原。","state":"polished","pol":"甲润。"},{"i":0,"raw":"乙原。","state":"failed"}]}"#,   // 重复 i
+            #"{"v":1,"sentences":[{"i":5,"raw":"甲原。","state":"failed"}]}"#,   // 越界 i
+            #"{"v":1,"sentences":[{"i":1,"raw":"乙原。","state":"failed"},{"i":0,"raw":"甲原。","state":"failed"}]}"#,   // 乱序
+        ]
+        for (idx, bad) in corruptVariants.enumerated() {
+            engine = try StorageEngine(path: nil)   // 每变体独立内存库
+            try seedRecord(sessionId: "rec-bad-\(idx)", sceneType: "office_writing",
+                           at: Date(timeIntervalSince1970: Double(4_000_000 + idx)),
+                           completed: "甲原。乙原。", pending: "",
+                           polishedParts: bad)
+            let sut = makeSUT()
+            sut.controller.presentRecoveredSessions(try recoverActive())
+            let preview = lastPreview(sut)
+            XCTAssertEqual(preview?.polishedText, "甲原。乙原。", "损坏变体 \(idx) 应回退全文原文")
+            XCTAssertEqual(preview?.originalText, "甲原。乙原。")
+            XCTAssertNil(preview?.recoveredSegments, "损坏变体 \(idx) 回退路径无逐句段")
+        }
+    }
+
+    // ── V1.1 Task 12：集成回归批（开关关 V1 全路径 + 本地模式 + 降级语义；characterization 定性——
+    //    行为已由 Task 2-11 落地，本批钉住回归铁律，直接 PASS 即合格，spec §6.3 第 4 域）──
+
+    /// 回归①：增量关（工厂返回 nil）+云流式成功+长文本——走整段润色（pipeline 收整段一次）、
+    /// 预览语义与 V1 一致（originalText/polishedText/confirm/settle 全链）、增量组件从未创建。
+    func test_regression_switch_off_full_v1_path_unchanged() async throws {
+        let asr = FakeStreamingASR()
+        let longText = String(repeating: "字", count: 120)
+        asr.finalText = longText
+        let factoryCalls = Recorder<String>()
+        let sut = makeSUT(streamingASRs: { asr },
+                          polishResult: "整段润色结果。",
+                          makeIncrementalPolish: { _, _ in factoryCalls.append("call"); return nil })
+        await sut.controller.pttDown()
+        asr.emitPartial(longText, finalized: true)
+        let partialSeen = await waitUntil { sut.partials.count >= 1 }
+        XCTAssertTrue(partialSeen)
+
+        await sut.controller.pttUp()
+        // 整段润色（pipeline 收整段恰一次）+ V1 预览语义
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.originalText, longText)
+        XCTAssertEqual(preview?.polishedText, "整段润色结果。")
+        XCTAssertEqual(sut.polishProvider.callCount, 1)
+        XCTAssertEqual(factoryCalls.count, 1)     // 工厂 pttDown 被调一次返回 nil（开关语义归工厂）；port 从未传入 SUT，dispatchedCount 恒 0 不具断言价值
+
+        // confirm/settle 全链 V1 语义
+        await sut.controller.confirmPreview()
+        XCTAssertEqual(sut.injector.injected, ["整段润色结果。"])
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(try recoverActive().isEmpty)
+    }
+
+    /// 回归②：本地优先（makeStreamingASR 返回 nil）——纯本地链行为逐位不变，增量零参与。
+    func test_regression_local_mode_untouched() async throws {
+        let local1 = FakeLocalASR(providerId: "fake-local-1")
+        local1.finalText = "本地识别全文"
+        let sut = makeSUT(streamingASRs: { nil }, localChain: { [local1] },
+                          polishResult: "本地润色结果。")
+        await sut.controller.pttDown()
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)   // 无流式 = 批量录音相
+        sut.controller.enqueueAudio(pcmData([1, 2]))
+
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        let preview = lastPreview(sut)
+        XCTAssertEqual(preview?.originalText, "本地识别全文")
+        XCTAssertEqual(preview?.polishedText, "本地润色结果。")
+        XCTAssertEqual(sut.polishProvider.callCount, 1)
+
+        await sut.controller.confirmPreview()
+        XCTAssertEqual(sut.injector.injected, ["本地润色结果。"])
+        XCTAssertEqual(sut.statuses.last?.asrProvider, "fake-local-1")   // R5b-4 本地链出字级别
+        XCTAssertEqual(sut.controller.phase, .idle)
+    }
+
+    /// 回归③：录音中 streamingUnavailable（lost）——增量 cancel、后续本地 buffer 链、
+    /// 松手走本地三级链 → 整段决策（spec §5.3 断网退回 V1）。
+    /// fold（codex P1-3）关键断言：lost 之后让旧润色请求降级返回（resume）——
+    /// UI/预览/DB 均不变（onDisplayUpdate 无新发布、preview 无变化、polished_parts 已清空）。
+    func test_regression_streaming_lost_discards_incremental_and_falls_back() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "不会用到的流式文本"
+        let local1 = FakeLocalASR(providerId: "fake-local-1")
+        local1.finalText = "丢失后的本地文本"
+        let port = ControllableSentencePolishPort()
+        port.hang("在飞句。")   // 旧润色请求挂起
+        let sut = makeSUT(streamingASRs: { asr }, localChain: { [local1] },
+                          polishResult: "本地链润色结果。",
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        let displays = Recorder<IncrementalDisplaySnapshot?>()
+        sut.controller.onDisplayUpdate = { displays.append($0) }
+
+        await sut.controller.pttDown()
+        asr.emitPartial("在飞句。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 1 }
+        XCTAssertTrue(dispatched)
+
+        asr.fireLost()   // lost → 增量 cancel + 快照清空（spec §5 条款 3）
+        sut.controller.enqueueAudio(pcmData([3, 4]))   // 下一帧驱动 lost 检测 → 批量降级
+        XCTAssertEqual(sut.controller.phase, .recordingBatch)
+        let cleared = await waitUntil {
+            (try? self.recoverActive().first?.polishedParts.isEmpty) ?? false
+        }
+        XCTAssertTrue(cleared)   // polished_parts 已清空（fold P1-3/P2-6 隐私面）
+
+        let displaysCountAtLost = displays.count
+        await sut.controller.pttUp()
+        // 本地三级链 → 整段决策
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        XCTAssertEqual(lastPreview(sut)?.originalText, "丢失后的本地文本")
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "本地链润色结果。")
+        XCTAssertEqual(sut.polishProvider.callCount, 1)
+
+        // fold P1-3 关键：旧润色请求此刻降级返回——UI/预览零变化
+        port.results["在飞句。"] = PolishOutcome(finalText: "在飞句润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("在飞句。")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(displays.count, displaysCountAtLost)   // onDisplayUpdate 无新发布
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "本地链润色结果。")   // preview 无变化
+        // fold P1-3 复核：resume 降级返回后 DB polished_parts 仍清空（隐私面不变）
+        XCTAssertTrue((try? recoverActive().first?.polishedParts.isEmpty) ?? false)
+    }
+
+    /// 回归④：录音中取消——增量 cancel + settle + 无预览无注入（V1 取消语义全同）。
+    func test_regression_cancel_discards_incremental_state() async throws {
+        let asr = FakeStreamingASR()
+        asr.finalText = "取消的文本"
+        let port = ControllableSentencePolishPort()
+        port.hang("取消句。")
+        let sut = makeSUT(streamingASRs: { asr },
+                          makeIncrementalPolish: { scene, traceId in
+                              IncrementalPolishSession(polishPort: port, scene: scene,
+                                                       traceId: traceId, maxInFlight: 3)
+                          })
+        await sut.controller.pttDown()
+        asr.emitPartial("取消句。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 1 }
+        XCTAssertTrue(dispatched)
+
+        await sut.controller.cancelRecording()
+        XCTAssertEqual(sut.controller.phase, .idle)
+        XCTAssertTrue(sut.injector.injected.isEmpty)                    // 无注入
+        XCTAssertTrue(sut.previews.all.allSatisfy { $0 == nil })       // 无预览
+        XCTAssertTrue(try recoverActive().isEmpty)                      // settle 清理
+
+        // 增量已关闭：晚到 resume 零更新、不崩
+        port.results["取消句。"] = PolishOutcome(finalText: "取消句润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        port.resume("取消句。")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sut.controller.phase, .idle)
+        // resume 后复核：增量已关闭，晚到结果零注入、无新非 nil 预览发布
+        XCTAssertTrue(sut.injector.injected.isEmpty)
+        XCTAssertTrue(sut.previews.all.allSatisfy { $0 == nil })
+    }
+
+    /// 回归⑤（fold Eng I2：spec §5 条款 8「录音中切换开关」）：pttDown 时工厂返回会话（增量开）
+    /// → 录音中将工厂切为返回 nil（模拟 UserDefaults 增量开关切关）→ 句定稿继续到达。
+    /// 断言：①当前会话增量组件继续工作（句定稿仍派发、松手仍增量结算）；
+    ///       ②再开新会话（第二次 pttDown）→ 工厂返回 nil → 增量组件不创建，V1 全路径。
+    func test_regression_incremental_switch_off_midrecording_current_session_continues() async throws {
+        let asr1 = FakeStreamingASR()
+        asr1.finalText = "句一原。"
+        let asr2 = FakeStreamingASR()
+        asr2.finalText = "句二原。"
+        let asrs = FakeASRChain([asr1, asr2])
+        let port = ControllableSentencePolishPort()
+        port.results["句一原。"] = PolishOutcome(finalText: "句一润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        let switchOff = Recorder<Int>()   // 模拟 UserDefaults 增量开关：count>0 = 已切关
+        let sut = makeSUT(streamingASRs: { asrs.next() },
+                          polishResult: "整段润色结果。",
+                          makeIncrementalPolish: { scene, traceId in
+                              if switchOff.count > 0 { return nil }   // 模拟开关切关
+                              return IncrementalPolishSession(polishPort: port, scene: scene,
+                                                              traceId: traceId, maxInFlight: 3)
+                          })
+
+        // 会话一：增量开
+        await sut.controller.pttDown()
+        asr1.emitPartial("句一原。", finalized: true)
+        let dispatched = await waitUntil { port.dispatchedCount >= 1 }
+        XCTAssertTrue(dispatched)
+        switchOff.append(1)   // 录音中切关开关（模拟 UserDefaults 变化）
+
+        // fold Eng I2 钉住：切关后句定稿继续到达仍被当前会话增量组件派发
+        // （当前会话创建时快照存活，spec §5 条款 8「句定稿仍派发」一面）
+        // 终稿同步含两句，避免快照(句一+句三)与 final(仅句一)不一致触发漂移降级 V1 整段
+        asr1.finalText = "句一原。句三原。"
+        port.results["句三原。"] = PolishOutcome(finalText: "句三润。", polished: true,
+                                               polishProviderId: "controllable", concern: nil)
+        asr1.emitPartial("句三原。", finalized: true)
+        let stillDispatched = await waitUntil { port.dispatchedCount >= 2 }
+        XCTAssertTrue(stillDispatched)                          // 切关后句定稿仍派发
+        XCTAssertEqual(port.dispatched.last, "句三原。")
+        try? await Task.sleep(nanoseconds: 100_000_000)        // 让句三润色返回 settle
+
+        // ① 当前会话增量组件继续工作：松手仍增量结算（创建时快照语义，spec §5 条款 8）
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "句一润。句三润。")
+        XCTAssertEqual(lastPreview(sut)?.originalText, "句一原。句三原。")
+        await sut.controller.confirmPreview()
+        XCTAssertEqual(sut.controller.phase, .idle)
+
+        // ② 新会话：工厂返回 nil → 增量组件不创建，V1 全路径
+        let dispatchedAfterSession1 = port.dispatchedCount
+        await sut.controller.pttDown()
+        asr2.emitPartial("句二原。", finalized: true)
+        let partialSeen = await waitUntil { sut.partials.all.contains("句二原。") }
+        XCTAssertTrue(partialSeen)
+        await sut.controller.pttUp()
+        XCTAssertEqual(sut.controller.phase, .previewing)
+        XCTAssertEqual(lastPreview(sut)?.originalText, "句二原。")
+        XCTAssertEqual(lastPreview(sut)?.polishedText, "整段润色结果。")   // V1 整段润色
+        XCTAssertEqual(sut.polishProvider.callCount, 1)   // 会话二整段润色一次（会话一增量走 port 不耗 pipeline）
+        XCTAssertEqual(port.dispatchedCount, dispatchedAfterSession1)   // 会话二增量零参与（相对值，不受会话一句数影响）
+    }
+
+    /// 回归⑥（fold codex P2-4：开关关=V1 的字数边界在控制器级钉住）：增量关 + 云流式成功，
+    /// 四组文本：0 字/纯空白/49 字/50 字。断言：0 字与纯空白=needsContext 直出不进润色
+    /// （空 final → .streamingUnavailable → 本地链 .empty）；49 字=gateFactory 50 字规则拦截
+    /// → 直出原文（pipeline 零调用）；50 字=整段润色一次 → V1 预览语义；
+    /// 且四组增量组件均从未创建（工厂返回 nil 并记录调用）。
+    func test_regression_switch_off_gate_boundaries_at_controller_level() async throws {
+        // gateFactory 注入 V1 50 字规则（SceneRouter.shouldPolish(text:) 逐字语义：text.count >= 50）
+        let v1Gate: @Sendable (String) -> @Sendable (String) -> Bool = { _ in
+            { text in text.count >= 50 }
+        }
+
+        // 组 1/2：0 字与纯空白 = needsContext 直出不进润色
+        for (idx, silentText) in ["", "   "].enumerated() {
+            engine = try StorageEngine(path: nil)   // 每组独立内存库
+            let asr = FakeStreamingASR()
+            asr.finalText = silentText
+            let localEmpty = FakeLocalASR(providerId: "fake-local-empty")
+            localEmpty.finalText = ""   // 本地链成功但空 → .empty → needsContext
+            let factoryCalls = Recorder<String>()
+            let sut = makeSUT(streamingASRs: { asr }, localChain: { [localEmpty] },
+                              polishGateFactory: v1Gate,
+                              makeIncrementalPolish: { _, _ in factoryCalls.append("call"); return nil })
+            await sut.controller.pttDown()
+            await sut.controller.pttUp()
+            XCTAssertEqual(sut.statuses.last?.state, .needsContext, "静默组 \(idx) 应 needsContext 直出")
+            XCTAssertEqual(sut.polishProvider.callCount, 0, "静默组 \(idx) 不进润色")
+            XCTAssertEqual(factoryCalls.count, 1)   // 工厂被调返回 nil（增量组件从未创建）
+        }
+
+        // 组 3/4：49 字 gate 拦截直出原文；50 字整段润色一次
+        let text49 = String(repeating: "字", count: 49)
+        let text50 = String(repeating: "字", count: 50)
+        for (idx, longText) in [text49, text50].enumerated() {
+            engine = try StorageEngine(path: nil)
+            let asr = FakeStreamingASR()
+            asr.finalText = longText
+            let factoryCalls = Recorder<String>()
+            let sut = makeSUT(streamingASRs: { asr },
+                              polishResult: "整段润色结果。",
+                              polishGateFactory: v1Gate,
+                              makeIncrementalPolish: { _, _ in factoryCalls.append("call"); return nil })
+            await sut.controller.pttDown()
+            await sut.controller.pttUp()
+            if idx == 0 {
+                // 49 字：gateFactory 50 字规则拦截 → 直出原文（pipeline 零调用）
+                XCTAssertEqual(sut.injector.injected, [text49], "49 字应直出原文")
+                XCTAssertEqual(sut.polishProvider.callCount, 0, "49 字 pipeline 零调用")
+                XCTAssertEqual(sut.controller.phase, .idle)
+            } else {
+                // 50 字：整段润色一次 → 预览语义与 V1 一致
+                XCTAssertEqual(sut.controller.phase, .previewing)
+                XCTAssertEqual(lastPreview(sut)?.originalText, text50)
+                XCTAssertEqual(lastPreview(sut)?.polishedText, "整段润色结果。")
+                XCTAssertEqual(sut.polishProvider.callCount, 1, "50 字整段润色一次")
+            }
+            XCTAssertEqual(factoryCalls.count, 1)   // 增量组件从未创建（工厂 nil）
+        }
     }
 }

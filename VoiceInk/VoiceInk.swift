@@ -271,18 +271,21 @@ struct VoiceInkApp: App {
                 let hubPort = UserDefaults.standard.integer(forKey: "agentVoiceHubPort")
                 let polishAdapter = HubPolishAdapter(hubPort: hubPort > 0 ? hubPort : 9876)
 
-                // 润色 gate 工厂（50 字规则 + 全局/场景开关，spec §3.3）
+                // 润色 gate 工厂（全局/场景开关 + 字数规则按增量开关裁决，spec §3.3 + V1.1 决策 6/10：
+                // 增量开=非空即润，增量关=50 字规则；组合逻辑在 router.shouldPolish 单一源）
                 // C9-1 裁决：内层闭包每次调用时读 UserDefaults（开关变更下次润色生效，
                 // 比 plan Step 5 sketch 的工厂层快照读更新鲜一档）
-                // F10 fold：组合逻辑调用 router.shouldPolish(text:globalEnabled:disabledScenes:sceneType:)
-                // （SceneRouterTests 覆盖的被测方法为单一源），不复制 50 字判断
+                // F10 fold：组合逻辑调用 router.shouldPolish(text:globalEnabled:disabledScenes:sceneType:incrementalEnabled:)
+                // （SceneRouterTests 覆盖的被测方法为单一源），不复制长度/非空判断
                 let gateFactory: @Sendable (_ sceneType: String) -> @Sendable (String) -> Bool = { sceneType in
                     { text in
                         let defaults = UserDefaults.standard
                         let globalEnabled = defaults.object(forKey: "agentVoicePolishEnabled") as? Bool ?? true
                         let disabled = Set(defaults.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? [])
+                        let incremental = defaults.object(forKey: "agentVoiceIncrementalPolishEnabled") as? Bool ?? true
                         return router.shouldPolish(text: text, globalEnabled: globalEnabled,
-                                                   disabledScenes: disabled, sceneType: sceneType)
+                                                   disabledScenes: disabled, sceneType: sceneType,
+                                                   incrementalEnabled: incremental)
                     }
                 }
 
@@ -290,7 +293,8 @@ struct VoiceInkApp: App {
                     router: router,
                     knowledge: knowledgeStore,
                     polish: polishAdapter,
-                    shouldPolishGate: { router.shouldPolish(text: $0) })   // C9-7 ②：纯 50 字规则（L2208 退化形）；全局/场景开关归控制器 polishGateFactory 消费
+                    shouldPolishGate: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                    // V1.1：pipeline 侧 gate 退化为非空规则；50 字规则归 gateFactory 按增量开关裁决（Task 4）
 
                 // 本地三级链素材：Apple Speech（macOS 26+）→ Whisper（spec §3.5.3）
                 let whisperASR = WhisperASR(transcriber: whisperTranscriber)
@@ -314,7 +318,29 @@ struct VoiceInkApp: App {
                     pipeline: pipeline,
                     injector: VoiceInkInjector(),
                     storageEngine: storageEngine,
-                    polishGateFactory: gateFactory)
+                    polishGateFactory: gateFactory,
+                    makeIncrementalPolish: { scene, traceId in
+                        // 创建准入（pttDown 时调用=「边说边润色」开关下一会话生效语义，spec §5 条款 8）：
+                        // 全局+场景+增量三键全读——场景禁用时不创建（fold P1-5 漏检修复）
+                        let defaults = UserDefaults.standard
+                        let globalEnabled = defaults.object(forKey: "agentVoicePolishEnabled") as? Bool ?? true
+                        let disabled = Set(defaults.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? [])
+                        let incrementalOn = defaults.object(forKey: "agentVoiceIncrementalPolishEnabled") as? Bool ?? true
+                        guard globalEnabled, !disabled.contains(scene.sceneType.rawValue), incrementalOn else {
+                            return nil   // 开关关/场景禁用 = 整条链走 V1 原路径
+                        }
+                        return IncrementalPolishSession(polishPort: PipelineSentencePolishPort(pipeline: pipeline),
+                                                        scene: scene, traceId: traceId,
+                                                        maxInFlight: 1)   // Task 1 实测定案值；串行结论改 1（链路事实串行，device-hub 单轮会话模型）
+                    },
+                    // fold（codex P1-5）：松手时全局/场景开关实时复检（V1 语义「录音中切换松手即生效」；
+                    // 不含增量开关——增量开关是会话级快照，由创建准入决定）
+                    incrementalReleaseGate: { sceneType in
+                        let defaults = UserDefaults.standard
+                        let globalEnabled = defaults.object(forKey: "agentVoicePolishEnabled") as? Bool ?? true
+                        let disabled = Set(defaults.stringArray(forKey: "agentVoicePolishDisabledScenes") ?? [])
+                        return globalEnabled && !disabled.contains(sceneType)
+                    })
 
                 let controller = VoiceInputSessionController(ports: ports)
                 let coordinator = AgentVoiceCoordinator(
@@ -334,6 +360,14 @@ struct VoiceInkApp: App {
                         .receive(on: DispatchQueue.main)
                         .sink { [weak engine] phase in
                             engine?.agentVoicePhaseForward = phase
+                        })
+                // V1.1（Task 9）：增量显示转发——录音中逐句润色状态流 + 松手组装结果（Task 10 消费；
+                // 对齐 previewSessionForward 的 storePreviewCancellable 模式）
+                engine.storePreviewCancellable(
+                    coordinator.$incrementalDisplay
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak engine] display in
+                            engine?.incrementalDisplayForward = display
                         })
 
                 // 启动清理时序（Task 10）：resetOnLaunch 原为独立 Task（本 Task 之后入队），
@@ -652,6 +686,16 @@ struct VoiceInkApp: App {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+// 包装 VoicePipeline 为逐句润色缝隙（V1.1）
+struct PipelineSentencePolishPort: SentencePolishPort {
+    let pipeline: VoicePipeline
+    func polishSentence(_ text: String, scene: SceneContext, traceId: String,
+                        context: String?) async -> PolishOutcome {
+        // context 预留未消费（当前 VoicePipeline.polish 无上下文参数；升级时在此接入）
+        await pipeline.polish(rawText: text, scene: scene, traceId: traceId)
     }
 }
 

@@ -135,6 +135,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
     @Published var agentVoicePhaseForward: AgentVoicePhase = .idle {
         didSet { handleAgentVoicePhaseChange(from: oldValue) }
     }
+    /// V1.1 增量显示转发（Task 9：UI 经 engine 观察刷新；VoiceInk.swift 沉 coordinator.$incrementalDisplay 写入；
+    /// nil = 无增量会话——V1 路径/会话收尾；Task 10 消费）
+    @Published var incrementalDisplayForward: IncrementalDisplaySnapshot?
     /// V1 预览转发订阅容器（VoiceInk.swift composition root 注入 sink）
     private(set) lazy var previewCancellables = Set<AnyCancellable>()
 
@@ -347,7 +350,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             // codex P1#8 fold：录音开始时快照 coordinator（防中途开关切换）
                             self.activeAgentVoiceSession = coordinator
 
-                            // partial → fork LiveTranscriptView UI 通道（D1 复用）；
+                            // partial → 录音面板流式文本 UI 通道（partialTranscript 供给句级/V1 呈现）；
                             // startID 校验 = 第二道闸（P0-1 控制器 token 匹配为第一道）
                             coordinator.onPartialUpdate = { [weak self] full in
                                 guard let self,

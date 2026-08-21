@@ -18,7 +18,7 @@ public final class VoicePipeline: @unchecked Sendable {
     private let logger = Logger(subsystem: "com.agentvoice", category: "pipeline")
 
     /// 新 init（V1 预览两段式）：polish() 单一职责，注入由 Task 5b 控制器按 PreviewDecision 执行
-    /// - Parameter shouldPolishGate: 润色准入闭包（调用方组合 50 字规则 + 全局/场景开关，Task 9）
+    /// - Parameter shouldPolishGate: 润色准入闭包（V1.1 起组合根注入非空规则；开关与长度语义归 gateFactory）
     public init(router: SceneRouter,
                 knowledge: any KnowledgePort,
                 polish: any PolishProvider,

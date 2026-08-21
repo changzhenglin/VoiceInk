@@ -87,6 +87,7 @@ enum AppDefaults {
             "agentVoiceHubPort": 9876,
             "agentVoiceASRMode": "auto",
             "agentVoicePolishEnabled": true,
+            "agentVoiceIncrementalPolishEnabled": true,
             "agentVoicePolishDisabledScenes": [String](),
 
             // AgentVoice Attention v4 灯条（Task 8A；P1 behind versioned flag，默认静默）

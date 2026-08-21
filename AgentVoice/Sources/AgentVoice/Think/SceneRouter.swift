@@ -59,6 +59,19 @@ public final class SceneRouter: Sendable {
             && shouldPolish(text: text)
     }
 
+    /// V1.1 润色准入组合（spec 决策 6/10）：增量开=非空即润（废 50 字门槛）；
+    /// 增量关=V1 原语义（50 字规则）。全局/场景开关两种模式下都优先。
+    public func shouldPolish(text: String,
+                             globalEnabled: Bool,
+                             disabledScenes: Set<String>,
+                             sceneType: String,
+                             incrementalEnabled: Bool) -> Bool {
+        guard globalEnabled, !disabledScenes.contains(sceneType) else { return false }
+        return incrementalEnabled
+            ? !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            : shouldPolish(text: text)
+    }
+
     /// 降级动作
     public func degradedAction(cloudFailed: Bool) -> String {
         cloudFailed ? policy.degradedPolicy.cloudFail : policy.degradedPolicy.localFail
